@@ -1148,6 +1148,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     kimi: { driver: "kimiAgent" },
     droid: { driver: "droidAgent" },
     cursor: { driver: "cursorAgent" },
+    bedrock: { driver: "bedrock" },
     claude: { driver: "claudeAgent" },
     codex: { driver: "codex" },
     antigravity: { driver: "antigravityAgent" },
@@ -1168,6 +1169,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   // is not expanded, matching the claude/grok/codex product-fleet probe.
   const PRODUCT_FLEET_ADDITIONS = {
     cursor: { driver: "cursorAgent" },
+    bedrock: { driver: "bedrock" },
     openaiCompat: { driver: "openai-compat" },
     ...CUSTOM_ONLY,
   } as const;

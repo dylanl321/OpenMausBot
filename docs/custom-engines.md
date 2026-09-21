@@ -89,3 +89,7 @@ entry:
   as plaintext in that file. Prefer keys scoped to the one engine.
 - A typo'd `driver` or invalid `config` never breaks the app: the instance
   shows as unavailable with the reason, and the rest of the fleet loads.
+- The built-in `bedrock` driver uses the same `instances` mechanism. Give it
+  `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optional
+  `AWS_SESSION_TOKEN` in `environment`, plus `config.region` and an optional
+  Bedrock `config.model`.

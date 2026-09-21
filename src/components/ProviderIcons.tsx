@@ -142,6 +142,8 @@ export function ProviderMark({ driverKind, size, className }: IconProps & { driv
       return <DroidMark size={size} className={className} />;
     case "cursorAgent":
       return <CursorMark size={size} className={className} />;
+    case "bedrock":
+      return <PresetProviderMark preset="aws" size={size} className={className} />;
     case "antigravityAgent":
       return <AntigravityMark size={size} className={className} />;
     case "opencodeGo":
