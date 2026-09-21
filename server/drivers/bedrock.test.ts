@@ -267,6 +267,20 @@ describe("BedrockDriver", () => {
     await instance.dispose();
   });
 
+  it("rejects a successful response with an invalid Bedrock body shape", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ usage: { inputTokens: 1, outputTokens: 1 } })));
+    const instance = await BedrockDriver.create({
+      instanceId: "bedrock-invalid-shape",
+      displayName: "Bedrock",
+      enabled: true,
+      config: { region: "us-east-1" },
+      environment: { BEDROCK_API_KEY: "bedrock-key" },
+    });
+
+    await expect(instance.generateText?.("Hello")).rejects.toThrow("Bedrock returned an invalid response shape");
+    await instance.dispose();
+  });
+
   it("does not duplicate the active prompt when the transcript already includes it", async () => {
     const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       expect(JSON.parse(String(init?.body))).toEqual({

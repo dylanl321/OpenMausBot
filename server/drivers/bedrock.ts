@@ -311,6 +311,7 @@ async function callBedrock(
   }
   if (!json?.output && bodyMessage) throw new Error(`Bedrock HTTP ${response.status}: ${safeText(bodyMessage, secrets)}`);
   if (!json) throw new Error("Bedrock returned no JSON response");
+  if (!Array.isArray(json.output?.message?.content)) throw new Error("Bedrock returned an invalid response shape");
   return decodeResponse(json);
 }
 
