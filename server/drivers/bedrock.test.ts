@@ -63,7 +63,12 @@ describe("BedrockDriver", () => {
   });
 
   it("probes model access before reporting the instance as available", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("AccessDeniedException", { status: 403 })));
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe("https://bedrock.us-east-1.amazonaws.com/foundation-models/amazon.nova-lite-v1%3A0");
+      expect(init?.method).toBe("GET");
+      return new Response("AccessDeniedException", { status: 403 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
     const instance = await BedrockDriver.create({
       instanceId: "bedrock",
       displayName: "Bedrock",
@@ -75,6 +80,7 @@ describe("BedrockDriver", () => {
       state: "unavailable",
       reason: expect.stringContaining("Bedrock HTTP 403"),
     });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     await instance.dispose();
   });
 

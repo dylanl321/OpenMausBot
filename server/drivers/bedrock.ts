@@ -109,6 +109,7 @@ function normalizeHeaderValue(value: string): string {
 }
 
 function signedHeadersFor(
+  method: "GET" | "POST",
   url: URL,
   region: string,
   body: string,
@@ -128,7 +129,7 @@ function signedHeadersFor(
   const canonicalHeaders = names.map((name) => `${name}:${normalizeHeaderValue(headers[name]!)}`).join("\n");
   const signedHeaders = names.join(";");
   const canonicalRequest = [
-    "POST",
+    method,
     url.pathname,
     "",
     `${canonicalHeaders}\n`,
@@ -173,6 +174,10 @@ function converseUrl(region: string, model: string): URL {
   return new URL(`https://bedrock-runtime.${region}.amazonaws.com/model/${encodeURIComponent(model)}/converse`);
 }
 
+function foundationModelUrl(region: string, model: string): URL {
+  return new URL(`https://bedrock.${region}.amazonaws.com/foundation-models/${encodeURIComponent(model)}`);
+}
+
 function messagesFor(turn: Pick<SendTurnInput, "text" | "transcript">): ConverseMessage[] {
   const transcript = (turn.transcript ?? [])
     .filter((message): message is { role: "user" | "assistant"; text: string } =>
@@ -212,7 +217,7 @@ async function callBedrock(
   });
   const response = await fetch(url, {
     method: "POST",
-    headers: signedHeadersFor(url, config.region, body, credentials),
+    headers: signedHeadersFor("POST", url, config.region, body, credentials),
     body,
     signal,
   });
@@ -222,6 +227,25 @@ async function callBedrock(
   }
   const json = await response.json() as BedrockResponse;
   return decodeResponse(json);
+}
+
+async function probeBedrockModel(
+  model: string,
+  config: BedrockConfig,
+  credentials: BedrockCredentials,
+  secrets: string[],
+  signal?: AbortSignal,
+): Promise<void> {
+  const url = foundationModelUrl(config.region, model);
+  const response = await fetch(url, {
+    method: "GET",
+    headers: signedHeadersFor("GET", url, config.region, "", credentials),
+    signal,
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Bedrock HTTP ${response.status}${text ? `: ${safeText(text.slice(0, 200), secrets)}` : ""}`);
+  }
 }
 
 function missingCredentialReason(config: BedrockConfig): string {
@@ -325,7 +349,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
     if (snapshotInFlight) return snapshotInFlight;
     snapshotInFlight = (async () => {
       try {
-        await callBedrock(catalog.default, { text: "ping" }, input.config, credentials, secrets, 1);
+        await probeBedrockModel(catalog.default, input.config, credentials, secrets);
         const available: ProviderSnapshot = { state: "available", authenticated: true, version: null, billing: "metered" };
         snapshotCache = { checkedAt: Date.now(), snapshot: available };
         return available;
