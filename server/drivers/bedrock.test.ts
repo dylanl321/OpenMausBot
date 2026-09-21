@@ -124,4 +124,30 @@ describe("BedrockDriver", () => {
     recorder.stop();
     await instance.dispose();
   });
+
+  it("reports an interrupted turn when the request is aborted", async () => {
+    vi.stubGlobal("fetch", vi.fn((_input: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+    })));
+    const instance = await BedrockDriver.create({
+      instanceId: "bedrock",
+      displayName: "Bedrock",
+      enabled: true,
+      config: { region: "us-west-2" },
+      environment: {
+        AWS_ACCESS_KEY_ID: "AKIAFIXTURE",
+        AWS_SECRET_ACCESS_KEY: "fixture-secret",
+      },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "thread-2", text: "cancel me" });
+    await instance.adapter.interruptTurn("thread-2", turnId);
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(completed).toMatchObject({ ok: false, stopReason: "interrupted" });
+    expect(recorder.events).not.toContainEqual(expect.objectContaining({ type: "runtime.error" }));
+    recorder.stop();
+    await instance.dispose();
+  });
 });

@@ -207,6 +207,7 @@ async function callBedrock(
   turn: Pick<SendTurnInput, "system" | "text" | "transcript">,
   config: BedrockConfig,
   credentials: BedrockCredentials,
+  secrets: string[],
   signal?: AbortSignal,
 ): Promise<BedrockCompletion> {
   const url = converseUrl(config.region, model);
@@ -222,7 +223,7 @@ async function callBedrock(
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(`Bedrock HTTP ${response.status}${text ? `: ${text.slice(0, 200)}` : ""}`);
+    throw new Error(`Bedrock HTTP ${response.status}${text ? `: ${safeText(text.slice(0, 200), secrets)}` : ""}`);
   }
   const json = await response.json() as BedrockResponse;
   return decodeResponse(json);
@@ -281,7 +282,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
       let usage: Usage | undefined;
       let failure: string | undefined;
       try {
-        const completion = await callBedrock(model, turn, input.config, credentials, abort.signal);
+        const completion = await callBedrock(model, turn, input.config, credentials, secrets, abort.signal);
         if (completion.usage) {
           usage = completion.usage;
           emit({ ...base(turn.threadId, turnId), type: "thread.token-usage.updated", ...completion.usage });
@@ -349,7 +350,14 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
     },
     generateText: async (prompt, { signal } = {}) => {
       if (!hasCredentials(credentials)) throw new Error(missingCredentialReason(input.config));
-      const completion = await callBedrock(catalog.default, { text: prompt }, input.config, credentials, signal);
+      const completion = await callBedrock(
+        catalog.default,
+        { text: prompt },
+        input.config,
+        credentials,
+        [credentials.accessKeyId, credentials.secretAccessKey, credentials.sessionToken ?? ""],
+        signal,
+      );
       if (!completion.text.trim()) throw new Error("provider returned an empty response");
       return completion.text.trim();
     },
