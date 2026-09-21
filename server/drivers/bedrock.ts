@@ -250,8 +250,7 @@ function awsDomainSuffix(region: string): string {
   return region.startsWith("cn-") ? "amazonaws.com.cn" : "amazonaws.com";
 }
 
-function endpointRoot(config: BedrockConfig): string {
-  const region = regionFrom(config.region);
+function endpointRoot(config: BedrockConfig, region: string): string {
   return config.url
     ? normalizeBaseUrl(config.url)
     : `https://bedrock-runtime.${region}.${awsDomainSuffix(region)}`;
@@ -267,9 +266,9 @@ function isInferenceProfileId(model: string): boolean {
     || /^(?:us|eu|apac|global)\./u.test(model);
 }
 
-function converseUrl(config: BedrockConfig, model: string): URL {
+function converseUrl(config: BedrockConfig, model: string, region: string): URL {
   const resource = isInferenceProfileId(model) ? "inference-profile" : "model";
-  return new URL(`${endpointRoot(config)}/${resource}/${encodeModelPath(model)}/converse`);
+  return new URL(`${endpointRoot(config, region)}/${resource}/${encodeModelPath(model)}/converse`);
 }
 
 function messagesFor(turn: Pick<SendTurnInput, "text" | "transcript">): ConverseMessage[] {
@@ -325,14 +324,15 @@ async function callBedrock(
   maxTokens?: number,
   signal?: AbortSignal,
 ): Promise<BedrockCompletion> {
-  const url = converseUrl(config, model);
+  const region = regionFrom(config.region);
+  const url = converseUrl(config, model, region);
   const body = JSON.stringify({
     messages: messagesFor(turn),
     ...(turn.system ? { system: [{ text: turn.system }] } : {}),
     ...(maxTokens ? { inferenceConfig: { maxTokens } } : {}),
   });
   const headers = auth.kind === "aws"
-    ? signedHeadersFor("POST", url, regionFrom(config.region), body, auth.credentials)
+    ? signedHeadersFor("POST", url, region, body, auth.credentials)
     : { "content-type": "application/json", [auth.header]: auth.value };
   const response = await fetch(url, {
     method: "POST",
