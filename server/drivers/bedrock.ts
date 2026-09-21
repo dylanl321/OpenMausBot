@@ -432,6 +432,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
         snapshotCache = { state: "available", authenticated: true, version: null, billing: "metered" };
         return completion.text.trim();
       } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") throw error;
         snapshotCache = snapshotFailure(safeError(error, secrets)) ?? snapshotCache;
         throw error;
       }
