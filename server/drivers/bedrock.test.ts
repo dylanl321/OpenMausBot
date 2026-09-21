@@ -62,6 +62,22 @@ describe("BedrockDriver", () => {
     await instance.dispose();
   });
 
+  it("probes model access before reporting the instance as available", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("AccessDeniedException", { status: 403 })));
+    const instance = await BedrockDriver.create({
+      instanceId: "bedrock",
+      displayName: "Bedrock",
+      enabled: true,
+      config: { region: "us-east-1" },
+      environment: { AWS_ACCESS_KEY_ID: "AKIAFIXTURE", AWS_SECRET_ACCESS_KEY: "fixture-secret" },
+    });
+    await expect(instance.snapshot()).resolves.toMatchObject({
+      state: "unavailable",
+      reason: expect.stringContaining("Bedrock HTTP 403"),
+    });
+    await instance.dispose();
+  });
+
   it("adds a custom configured model to the picker catalog", async () => {
     const instance = await BedrockDriver.create({
       instanceId: "bedrock-custom",

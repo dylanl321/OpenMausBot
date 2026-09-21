@@ -5,6 +5,7 @@ import type {
   ModelCatalog,
   ProviderDriver,
   ProviderInstance,
+  ProviderSnapshot,
   RuntimeEvent,
   RuntimeEventListener,
   SendTurnInput,
@@ -14,6 +15,7 @@ import { redactSecretsInText } from "../redact.ts";
 
 const DRIVER_KIND = "bedrock";
 const DEFAULT_REGION = "us-east-1";
+const SNAPSHOT_TTL_MS = 5 * 60_000;
 const DEFAULT_MODELS: ModelCatalog = {
   default: "amazon.nova-lite-v1:0",
   options: [
@@ -199,12 +201,14 @@ async function callBedrock(
   config: BedrockConfig,
   credentials: BedrockCredentials,
   secrets: string[],
+  maxTokens?: number,
   signal?: AbortSignal,
 ): Promise<BedrockCompletion> {
   const url = converseUrl(config.region, model);
   const body = JSON.stringify({
     messages: messagesFor(turn),
     ...(turn.system ? { system: [{ text: turn.system }] } : {}),
+    ...(maxTokens ? { inferenceConfig: { maxTokens } } : {}),
   });
   const response = await fetch(url, {
     method: "POST",
@@ -244,6 +248,9 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
   }>();
   const credentials = credentialsFrom(input.environment);
   const catalog = catalogFor(input.config);
+  const secrets = [credentials.accessKeyId, credentials.secretAccessKey, credentials.sessionToken ?? ""];
+  let snapshotCache: { checkedAt: number; snapshot: ProviderSnapshot } | null = null;
+  let snapshotInFlight: Promise<ProviderSnapshot> | null = null;
   const emit = (event: RuntimeEvent) => {
     for (const listener of Array.from(listeners)) listener(event);
   };
@@ -264,7 +271,6 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
     const done = new Promise<void>((resolve) => { resolveDone = resolve; });
     active.set(turn.threadId, { abort, turnId, done });
     const model = turn.model || catalog.default;
-    const secrets = [credentials.accessKeyId, credentials.secretAccessKey, credentials.sessionToken ?? ""];
     emit({ ...base(turn.threadId, turnId), type: "turn.started" });
     emit({ ...base(turn.threadId, turnId), type: "session.started", sessionId: null, model });
     void (async () => {
@@ -273,7 +279,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
       let usage: Usage | undefined;
       let failure: string | undefined;
       try {
-        const completion = await callBedrock(model, turn, input.config, credentials, secrets, abort.signal);
+        const completion = await callBedrock(model, turn, input.config, credentials, secrets, undefined, abort.signal);
         if (completion.usage) {
           usage = completion.usage;
           emit({ ...base(turn.threadId, turnId), type: "thread.token-usage.updated", ...completion.usage });
@@ -282,6 +288,10 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
         if (!reply) throw new Error("provider returned an empty response");
         emit({ ...base(turn.threadId, turnId), type: "item.completed", itemType: "assistant_text", text: safeText(reply, secrets) });
         ok = true;
+        snapshotCache = {
+          checkedAt: Date.now(),
+          snapshot: { state: "available", authenticated: true, version: null, billing: "metered" },
+        };
       } catch (error) {
         stopReason = abort.signal.aborted ? "interrupted" : "error";
         failure = safeError(error, secrets);
@@ -308,15 +318,35 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
     return { turnId };
   };
 
+  const snapshot = async (): Promise<ProviderSnapshot> => {
+    if (!hasCredentials(credentials)) return { state: "unavailable", reason: missingCredentialReason(input.config) };
+    const now = Date.now();
+    if (snapshotCache && now - snapshotCache.checkedAt < SNAPSHOT_TTL_MS) return snapshotCache.snapshot;
+    if (snapshotInFlight) return snapshotInFlight;
+    snapshotInFlight = (async () => {
+      try {
+        await callBedrock(catalog.default, { text: "ping" }, input.config, credentials, secrets, 1);
+        const available: ProviderSnapshot = { state: "available", authenticated: true, version: null, billing: "metered" };
+        snapshotCache = { checkedAt: Date.now(), snapshot: available };
+        return available;
+      } catch (error) {
+        const unavailable: ProviderSnapshot = { state: "unavailable", reason: safeError(error, secrets) };
+        snapshotCache = { checkedAt: Date.now(), snapshot: unavailable };
+        return unavailable;
+      } finally {
+        snapshotInFlight = null;
+      }
+    })();
+    return snapshotInFlight;
+  };
+
   return {
     instanceId: input.instanceId,
     driverKind: DRIVER_KIND,
     displayName: input.displayName,
     enabled: input.enabled,
     models: catalog,
-    snapshot: async () => hasCredentials(credentials)
-      ? { state: "available", authenticated: true, version: null, billing: "metered" }
-      : { state: "unavailable", reason: missingCredentialReason(input.config) },
+    snapshot,
     adapter: {
       provider: DRIVER_KIND,
       capabilities: { sessionModelSwitch: "in-session" },
@@ -346,7 +376,8 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
         { text: prompt },
         input.config,
         credentials,
-        [credentials.accessKeyId, credentials.secretAccessKey, credentials.sessionToken ?? ""],
+        secrets,
+        undefined,
         signal,
       );
       if (!completion.text.trim()) throw new Error("provider returned an empty response");
