@@ -223,7 +223,7 @@ function decodeResponse(json: BedrockResponse): BedrockCompletion {
   const text = parts
     .map((part) => typeof part?.text === "string" ? part.text : "")
     .filter(Boolean)
-    .join("");
+    .join("\n");
   const input = typeof json.usage?.inputTokens === "number" ? json.usage.inputTokens : null;
   const output = typeof json.usage?.outputTokens === "number" ? json.usage.outputTokens : null;
   return {
@@ -286,7 +286,7 @@ async function callBedrock(
 }
 
 function missingCredentialReason(config: BedrockConfig): string {
-  return `missing AWS credentials for Bedrock — set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for region ${regionFrom(config.region)}`;
+  return `missing AWS credentials for Bedrock — set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for region ${regionFrom(config.region)}, and include AWS_SESSION_TOKEN when using temporary credentials`;
 }
 
 function snapshotFailure(message: string): ProviderSnapshot | null {
