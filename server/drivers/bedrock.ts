@@ -169,8 +169,12 @@ function safeError(value: unknown, secrets: string[]): string {
   return safeText(text, secrets).slice(0, 2_000);
 }
 
+function awsDomainSuffix(region: string): string {
+  return region.startsWith("cn-") ? "amazonaws.com.cn" : "amazonaws.com";
+}
+
 function converseUrl(region: string, model: string): URL {
-  return new URL(`https://bedrock-runtime.${region}.amazonaws.com/model/${encodeURIComponent(model)}/converse`);
+  return new URL(`https://bedrock-runtime.${region}.${awsDomainSuffix(region)}/model/${encodeURIComponent(model)}/converse`);
 }
 
 function messagesFor(turn: Pick<SendTurnInput, "text" | "transcript">): ConverseMessage[] {
