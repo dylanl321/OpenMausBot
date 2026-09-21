@@ -108,7 +108,7 @@ describe("BedrockDriver", () => {
 
   it("sends native Bedrock requests with API-key auth when explicitly configured", async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      expect(String(input)).toBe("https://bedrock-runtime.us-east-1.amazonaws.com/model/amazon.nova-lite-v1%3A0/converse");
+      expect(String(input)).toBe("https://bedrock-runtime.us-east-1.amazonaws.com/model/amazon.nova-lite-v1:0/converse");
       const headers = new Headers(init?.headers);
       expect(headers.get("x-api-key")).toBe("bedrock-key");
       expect(headers.get("authorization")).toBeNull();
@@ -229,7 +229,7 @@ describe("BedrockDriver", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-02T03:04:05.000Z"));
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      expect(String(input)).toBe("https://bedrock-runtime.us-west-2.amazonaws.com/model/amazon.nova-lite-v1%3A0/converse");
+      expect(String(input)).toBe("https://bedrock-runtime.us-west-2.amazonaws.com/model/amazon.nova-lite-v1:0/converse");
       expect(init?.method).toBe("POST");
       const headers = new Headers(init?.headers);
       expect(headers.get("authorization")).toBe(

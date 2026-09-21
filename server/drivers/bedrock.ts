@@ -249,8 +249,12 @@ function endpointRoot(config: BedrockConfig): string {
     : `https://bedrock-runtime.${config.region}.${awsDomainSuffix(config.region)}`;
 }
 
+function encodeModelPath(model: string): string {
+  return encodeURIComponent(model).replace(/%3A/gu, ":");
+}
+
 function converseUrl(config: BedrockConfig, model: string): URL {
-  return new URL(`${endpointRoot(config)}/model/${encodeURIComponent(model)}/converse`);
+  return new URL(`${endpointRoot(config)}/model/${encodeModelPath(model)}/converse`);
 }
 
 function messagesFor(turn: Pick<SendTurnInput, "text" | "transcript">): ConverseMessage[] {
