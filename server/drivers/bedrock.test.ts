@@ -43,11 +43,9 @@ describe("BedrockDriver", () => {
     expect(BedrockDriver.metadata.displayName).toBe("Amazon Bedrock");
   });
 
-  it("defaults to us-east-1 and honors env overrides", () => {
+  it("defaults to us-east-1 and honors explicit config overrides", () => {
     expect(BedrockDriver.defaultConfig()).toEqual({ region: "us-east-1" });
-    process.env.AWS_REGION = "eu-west-1";
-    process.env.AWS_BEDROCK_MODEL = "custom.model";
-    expect(decodeBedrockConfig({})).toEqual({ region: "eu-west-1", model: "custom.model" });
+    expect(decodeBedrockConfig({ region: "eu-west-1", model: "custom.model" })).toEqual({ region: "eu-west-1", model: "custom.model" });
   });
 
   it("reports unavailable without AWS credentials", async () => {

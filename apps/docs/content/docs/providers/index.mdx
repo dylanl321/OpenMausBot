@@ -32,7 +32,7 @@ Additional driver instances can be declared in local configuration. Unavailable 
 OpenMausBot includes a built-in Bedrock driver. It reads `AWS_ACCESS_KEY_ID`,
 `AWS_SECRET_ACCESS_KEY`, and optional `AWS_SESSION_TOKEN` from the Bedrock
 instance's `environment` block in `~/.openmausbot/config.json`, plus a region
-from `config.region` (or `AWS_REGION` / `AWS_DEFAULT_REGION`).
+from `config.region`.
 
 The driver uses Bedrock's Converse API for text chat. Tool calling is not wired
 up yet, so Bedrock bots can chat and write but do not currently operate MCP

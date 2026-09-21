@@ -92,7 +92,7 @@ function hasCredentials(credentials: BedrockCredentials): boolean {
 
 function regionFrom(raw: unknown): string {
   const value = typeof raw === "string" ? raw.trim() : "";
-  return value || process.env.AWS_REGION?.trim() || process.env.AWS_DEFAULT_REGION?.trim() || DEFAULT_REGION;
+  return value || DEFAULT_REGION;
 }
 
 function catalogFor(config: BedrockConfig): ModelCatalog {
@@ -244,7 +244,7 @@ export function decodeBedrockConfig(raw: unknown): BedrockConfig {
   const config = (raw ?? {}) as Record<string, unknown>;
   const model = typeof config.model === "string" && config.model.trim()
     ? config.model.trim()
-    : process.env.AWS_BEDROCK_MODEL?.trim() || undefined;
+    : undefined;
   return {
     region: regionFrom(config.region),
     ...(model ? { model } : {}),
