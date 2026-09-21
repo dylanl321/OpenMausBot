@@ -244,9 +244,10 @@ function awsDomainSuffix(region: string): string {
 }
 
 function endpointRoot(config: BedrockConfig): string {
+  const region = regionFrom(config.region);
   return config.url
     ? normalizeBaseUrl(config.url)
-    : `https://bedrock-runtime.${config.region}.${awsDomainSuffix(config.region)}`;
+    : `https://bedrock-runtime.${region}.${awsDomainSuffix(region)}`;
 }
 
 function encodeModelPath(model: string): string {
@@ -317,7 +318,7 @@ async function callBedrock(
     ...(maxTokens ? { inferenceConfig: { maxTokens } } : {}),
   });
   const headers = auth.kind === "aws"
-    ? signedHeadersFor("POST", url, config.region, body, auth.credentials)
+    ? signedHeadersFor("POST", url, regionFrom(config.region), body, auth.credentials)
     : { "content-type": "application/json", [auth.header]: auth.value };
   const response = await fetch(url, {
     method: "POST",
