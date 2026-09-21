@@ -276,7 +276,7 @@ async function callBedrock(
 }
 
 function missingCredentialReason(config: BedrockConfig): string {
-  return `missing AWS credentials for Bedrock — set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for region ${config.region}`;
+  return `missing AWS credentials for Bedrock — set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for region ${regionFrom(config.region)}`;
 }
 
 function snapshotFailure(message: string): ProviderSnapshot | null {
