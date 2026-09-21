@@ -110,11 +110,16 @@ function normalizeHeaderValue(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
 
-function canonicalQuery(url: URL): string {
+function encodeRfc3986(value: string): string {
+  return encodeURIComponent(value).replace(/[!'()*]/g, (character) =>
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+export function canonicalQuery(url: URL): string {
   return [...url.searchParams.entries()]
     .sort(([leftKey, leftValue], [rightKey, rightValue]) =>
       leftKey === rightKey ? leftValue.localeCompare(rightValue) : leftKey.localeCompare(rightKey))
-    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .map(([key, value]) => `${encodeRfc3986(key)}=${encodeRfc3986(value)}`)
     .join("&");
 }
 

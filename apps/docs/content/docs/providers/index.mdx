@@ -34,9 +34,11 @@ OpenMausBot includes a built-in Bedrock driver. It reads `AWS_ACCESS_KEY_ID`,
 instance's `environment` block in `~/.openmausbot/config.json`, plus a region
 from `config.region`.
 
-The driver uses Bedrock's Converse API for text chat. Tool calling is not wired
-up yet, so Bedrock bots can chat and write but do not currently operate MCP
-tools or computers through this driver.
+The driver uses Bedrock's Converse API for text chat. Set `config.model` to the
+exact Bedrock model or inference-profile identifier you want the Converse
+endpoint to target. Tool calling is not wired up yet, so Bedrock bots can chat
+and write but do not currently operate MCP tools or computers through this
+driver.
 
 ## Detection
 

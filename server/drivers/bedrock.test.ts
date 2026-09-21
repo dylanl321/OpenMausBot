@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { recordEvents } from "../testing/events.ts";
-import { BedrockDriver, decodeBedrockConfig } from "./bedrock.ts";
+import { BedrockDriver, canonicalQuery, decodeBedrockConfig } from "./bedrock.ts";
 
 describe("BedrockDriver", () => {
   const saved = {
@@ -47,6 +47,11 @@ describe("BedrockDriver", () => {
   it("defaults to us-east-1 and honors explicit config overrides", () => {
     expect(BedrockDriver.defaultConfig()).toEqual({ region: "us-east-1" });
     expect(decodeBedrockConfig({ region: "eu-west-1", model: "custom.model" })).toEqual({ region: "eu-west-1", model: "custom.model" });
+  });
+
+  it("canonicalizes SigV4 query strings with RFC 3986 encoding", () => {
+    const url = new URL("https://example.test/?b=1&a=hello world&c=!*'()");
+    expect(canonicalQuery(url)).toBe("a=hello%20world&b=1&c=%21%2A%27%28%29");
   });
 
   it("reports unavailable without AWS credentials", async () => {
@@ -128,16 +133,16 @@ describe("BedrockDriver", () => {
     await instance.dispose();
   });
 
-  it("adds a custom configured model to the picker catalog", async () => {
+  it("adds a custom configured model or inference profile identifier to the picker catalog", async () => {
     const instance = await BedrockDriver.create({
       instanceId: "bedrock-custom",
       displayName: "Bedrock",
       enabled: true,
-      config: { region: "us-west-2", model: "acme.model-v1" },
+      config: { region: "us-west-2", model: "us.acme.inference-profile-v1" },
       environment: { AWS_ACCESS_KEY_ID: "AKIAFIXTURE", AWS_SECRET_ACCESS_KEY: "fixture-secret" },
     });
-    expect(instance.models.default).toBe("acme.model-v1");
-    expect(instance.models.options[0]).toEqual({ id: "acme.model-v1", label: "acme.model-v1", custom: true });
+    expect(instance.models.default).toBe("us.acme.inference-profile-v1");
+    expect(instance.models.options[0]).toEqual({ id: "us.acme.inference-profile-v1", label: "us.acme.inference-profile-v1", custom: true });
     await instance.dispose();
   });
 
