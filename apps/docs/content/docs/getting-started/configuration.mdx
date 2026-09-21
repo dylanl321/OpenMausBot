@@ -59,13 +59,17 @@ Source and headless installations can give separate Claude instances different b
 The built-in Bedrock driver is configured as an instance in
 `~/.openmausbot/config.json`:
 
+Use short-lived credentials when you can. This file is plaintext on disk, so
+prefer temporary STS credentials or another narrowly scoped secret source over
+long-lived root or IAM user keys.
+
 ```json
 {
   "instances": {
     "bedrock": {
       "driver": "bedrock",
       "environment": {
-        "AWS_ACCESS_KEY_ID": "AKIA…",
+        "AWS_ACCESS_KEY_ID": "ASI…",
         "AWS_SECRET_ACCESS_KEY": "…",
         "AWS_SESSION_TOKEN": "…"
       },

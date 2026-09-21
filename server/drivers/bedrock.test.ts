@@ -62,12 +62,8 @@ describe("BedrockDriver", () => {
     await instance.dispose();
   });
 
-  it("probes model access before reporting the instance as available", async () => {
-    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      expect(String(input)).toBe("https://bedrock.us-east-1.amazonaws.com/foundation-models/amazon.nova-lite-v1%3A0");
-      expect(init?.method).toBe("GET");
-      return new Response("AccessDeniedException", { status: 403 });
-    });
+  it("waits for a real runtime request before reporting runtime access", async () => {
+    const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const instance = await BedrockDriver.create({
       instanceId: "bedrock",
@@ -76,6 +72,26 @@ describe("BedrockDriver", () => {
       config: { region: "us-east-1" },
       environment: { AWS_ACCESS_KEY_ID: "AKIAFIXTURE", AWS_SECRET_ACCESS_KEY: "fixture-secret" },
     });
+    await expect(instance.snapshot()).resolves.toMatchObject({
+      state: "unavailable",
+      reason: expect.stringContaining("checked on first use"),
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    await instance.dispose();
+  });
+
+  it("marks the snapshot unavailable after a real runtime failure", async () => {
+    const fetchMock = vi.fn(async () => new Response("AccessDeniedException", { status: 403 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await BedrockDriver.create({
+      instanceId: "bedrock",
+      displayName: "Bedrock",
+      enabled: true,
+      config: { region: "us-east-1" },
+      environment: { AWS_ACCESS_KEY_ID: "AKIAFIXTURE", AWS_SECRET_ACCESS_KEY: "fixture-secret" },
+    });
+
+    await expect(instance.generateText?.("Hello")).rejects.toThrow(/Bedrock HTTP 403/);
     await expect(instance.snapshot()).resolves.toMatchObject({
       state: "unavailable",
       reason: expect.stringContaining("Bedrock HTTP 403"),

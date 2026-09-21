@@ -15,7 +15,6 @@ import { redactSecretsInText } from "../redact.ts";
 
 const DRIVER_KIND = "bedrock";
 const DEFAULT_REGION = "us-east-1";
-const SNAPSHOT_TTL_MS = 5 * 60_000;
 const DEFAULT_MODELS: ModelCatalog = {
   default: "amazon.nova-lite-v1:0",
   options: [
@@ -174,10 +173,6 @@ function converseUrl(region: string, model: string): URL {
   return new URL(`https://bedrock-runtime.${region}.amazonaws.com/model/${encodeURIComponent(model)}/converse`);
 }
 
-function foundationModelUrl(region: string, model: string): URL {
-  return new URL(`https://bedrock.${region}.amazonaws.com/foundation-models/${encodeURIComponent(model)}`);
-}
-
 function messagesFor(turn: Pick<SendTurnInput, "text" | "transcript">): ConverseMessage[] {
   const transcript = (turn.transcript ?? [])
     .filter((message): message is { role: "user" | "assistant"; text: string } =>
@@ -229,25 +224,6 @@ async function callBedrock(
   return decodeResponse(json);
 }
 
-async function probeBedrockModel(
-  model: string,
-  config: BedrockConfig,
-  credentials: BedrockCredentials,
-  secrets: string[],
-  signal?: AbortSignal,
-): Promise<void> {
-  const url = foundationModelUrl(config.region, model);
-  const response = await fetch(url, {
-    method: "GET",
-    headers: signedHeadersFor("GET", url, config.region, "", credentials),
-    signal,
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(`Bedrock HTTP ${response.status}${text ? `: ${safeText(text.slice(0, 200), secrets)}` : ""}`);
-  }
-}
-
 function missingCredentialReason(config: BedrockConfig): string {
   return `missing AWS credentials for Bedrock — set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for region ${config.region}`;
 }
@@ -273,8 +249,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
   const credentials = credentialsFrom(input.environment);
   const catalog = catalogFor(input.config);
   const secrets = [credentials.accessKeyId, credentials.secretAccessKey, credentials.sessionToken ?? ""];
-  let snapshotCache: { checkedAt: number; snapshot: ProviderSnapshot } | null = null;
-  let snapshotInFlight: Promise<ProviderSnapshot> | null = null;
+  let snapshotCache: ProviderSnapshot | null = null;
   const emit = (event: RuntimeEvent) => {
     for (const listener of Array.from(listeners)) listener(event);
   };
@@ -312,13 +287,11 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
         if (!reply) throw new Error("provider returned an empty response");
         emit({ ...base(turn.threadId, turnId), type: "item.completed", itemType: "assistant_text", text: safeText(reply, secrets) });
         ok = true;
-        snapshotCache = {
-          checkedAt: Date.now(),
-          snapshot: { state: "available", authenticated: true, version: null, billing: "metered" },
-        };
+        snapshotCache = { state: "available", authenticated: true, version: null, billing: "metered" };
       } catch (error) {
         stopReason = abort.signal.aborted ? "interrupted" : "error";
         failure = safeError(error, secrets);
+        if (!abort.signal.aborted) snapshotCache = { state: "unavailable", reason: failure };
       } finally {
         if (abort.signal.aborted) {
           ok = false;
@@ -344,24 +317,10 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
 
   const snapshot = async (): Promise<ProviderSnapshot> => {
     if (!hasCredentials(credentials)) return { state: "unavailable", reason: missingCredentialReason(input.config) };
-    const now = Date.now();
-    if (snapshotCache && now - snapshotCache.checkedAt < SNAPSHOT_TTL_MS) return snapshotCache.snapshot;
-    if (snapshotInFlight) return snapshotInFlight;
-    snapshotInFlight = (async () => {
-      try {
-        await probeBedrockModel(catalog.default, input.config, credentials, secrets);
-        const available: ProviderSnapshot = { state: "available", authenticated: true, version: null, billing: "metered" };
-        snapshotCache = { checkedAt: Date.now(), snapshot: available };
-        return available;
-      } catch (error) {
-        const unavailable: ProviderSnapshot = { state: "unavailable", reason: safeError(error, secrets) };
-        snapshotCache = { checkedAt: Date.now(), snapshot: unavailable };
-        return unavailable;
-      } finally {
-        snapshotInFlight = null;
-      }
-    })();
-    return snapshotInFlight;
+    return snapshotCache ?? {
+      state: "unavailable",
+      reason: "Bedrock runtime access is checked on first use. Send a message to validate the configured model and credentials.",
+    };
   };
 
   return {
@@ -395,17 +354,23 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
     },
     generateText: async (prompt, { signal } = {}) => {
       if (!hasCredentials(credentials)) throw new Error(missingCredentialReason(input.config));
-      const completion = await callBedrock(
-        catalog.default,
-        { text: prompt },
-        input.config,
-        credentials,
-        secrets,
-        undefined,
-        signal,
-      );
-      if (!completion.text.trim()) throw new Error("provider returned an empty response");
-      return completion.text.trim();
+      try {
+        const completion = await callBedrock(
+          catalog.default,
+          { text: prompt },
+          input.config,
+          credentials,
+          secrets,
+          undefined,
+          signal,
+        );
+        if (!completion.text.trim()) throw new Error("provider returned an empty response");
+        snapshotCache = { state: "available", authenticated: true, version: null, billing: "metered" };
+        return completion.text.trim();
+      } catch (error) {
+        snapshotCache = { state: "unavailable", reason: safeError(error, secrets) };
+        throw error;
+      }
     },
     dispose: async () => {
       const running = [...active.values()];
