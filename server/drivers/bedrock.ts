@@ -327,7 +327,7 @@ async function callBedrock(
   });
   const raw = await response.text();
   const json = parseJsonBody(raw);
-  const bodyMessage = bedrockErrorMessage(json, !response.ok);
+  const bodyMessage = bedrockErrorMessage(json, true);
   if (!response.ok) {
     const detail = bodyMessage ?? raw.slice(0, 200);
     throw new Error(`Bedrock HTTP ${response.status}${detail ? `: ${safeText(detail, secrets)}` : ""}`);

@@ -384,6 +384,20 @@ describe("BedrockDriver", () => {
     await instance.dispose();
   });
 
+  it("surfaces top-level provider messages from successful error payloads", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ message: "Model warming up" })));
+    const instance = await BedrockDriver.create({
+      instanceId: "bedrock-top-level-message",
+      displayName: "Bedrock",
+      enabled: true,
+      config: { region: "us-east-1", auth: "api-key" },
+      environment: { BEDROCK_API_KEY: "bedrock-key" },
+    });
+
+    await expect(instance.generateText?.("Hello")).rejects.toThrow("Bedrock HTTP 200: Model warming up");
+    await instance.dispose();
+  });
+
   it("does not duplicate the active prompt when the transcript already includes it", async () => {
     const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       expect(JSON.parse(String(init?.body))).toEqual({
