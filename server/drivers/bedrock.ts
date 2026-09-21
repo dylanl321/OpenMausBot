@@ -115,10 +115,18 @@ function encodeRfc3986(value: string): string {
     `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
+function canonicalPathSegment(segment: string): string {
+  return segment
+    .split(/(%[0-9A-Fa-f]{2})/g)
+    .filter(Boolean)
+    .map((part) => /^%[0-9A-Fa-f]{2}$/.test(part) ? part.toUpperCase() : encodeRfc3986(part))
+    .join("");
+}
+
 function canonicalUri(url: URL): string {
   return url.pathname
     .split("/")
-    .map((segment) => encodeRfc3986(decodeURIComponent(segment)))
+    .map((segment) => canonicalPathSegment(segment))
     .join("/");
 }
 
