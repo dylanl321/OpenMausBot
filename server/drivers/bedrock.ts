@@ -280,7 +280,7 @@ async function callBedrock(
     const detail = bodyMessage ?? raw.slice(0, 200);
     throw new Error(`Bedrock HTTP ${response.status}${detail ? `: ${safeText(detail, secrets)}` : ""}`);
   }
-  if (bodyMessage) throw new Error(`Bedrock HTTP ${response.status}: ${safeText(bodyMessage, secrets)}`);
+  if (!json?.output && bodyMessage) throw new Error(`Bedrock HTTP ${response.status}: ${safeText(bodyMessage, secrets)}`);
   if (!json) throw new Error("Bedrock returned no JSON response");
   return decodeResponse(json);
 }
