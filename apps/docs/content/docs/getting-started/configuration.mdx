@@ -110,6 +110,10 @@ gateway's Bedrock base URL and put the API key in the instance environment:
 If your Bedrock-compatible gateway expects the key on a different header, set
 `config.apiKeyHeader` to that header name instead.
 
+If you need to use an API key with the standard Bedrock runtime URL instead of
+AWS SigV4 credentials, set `config.auth` to `"api-key"` and provide the key in
+`config.apiKeyEnv` (or `BEDROCK_API_KEY` by default).
+
 ### Claude Code isolation
 
 A bot on the Claude engine sees only what its owner gave it: the MCP servers under **Settings → MCP servers**, its integrations (computer, browser, agents, phone), and its own project's `.mcp.json`. It does **not** load this machine's Claude Code setup — the MCP servers and claude.ai connectors in your user or local Claude config, your skills and agents, your hooks, or your personal `~/.claude/CLAUDE.md`. Loading those into every turn of every bot cost one measured desktop about 407 extra tools and 10k tokens per model call.

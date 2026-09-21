@@ -93,4 +93,6 @@ entry:
   either `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optional
   `AWS_SESSION_TOKEN` in `environment` for native AWS Bedrock, or an API key in
   `environment` plus `config.url`/`config.apiKeyEnv` for a Bedrock-compatible
-  endpoint like Mantel. `config.model` remains optional in both modes.
+  endpoint like Mantel. Set `config.auth` to `"api-key"` when the standard
+  Bedrock runtime URL should use an API key. `config.model` remains optional in
+  both modes.

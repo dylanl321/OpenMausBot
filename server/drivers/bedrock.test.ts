@@ -49,12 +49,14 @@ describe("BedrockDriver", () => {
     expect(decodeBedrockConfig({
       region: "eu-west-1",
       model: "custom.model",
+      auth: "api-key",
       url: "https://mantel.example/bedrock/",
       apiKeyEnv: "MANTEL_API_KEY",
       apiKeyHeader: "authorization",
     })).toEqual({
       region: "eu-west-1",
       model: "custom.model",
+      auth: "api-key",
       url: "https://mantel.example/bedrock",
       apiKeyEnv: "MANTEL_API_KEY",
       apiKeyHeader: "authorization",
@@ -93,7 +95,7 @@ describe("BedrockDriver", () => {
       instanceId: "bedrock-api-key",
       displayName: "Bedrock",
       enabled: true,
-      config: { region: "us-east-1", apiKeyEnv: "BEDROCK_API_KEY", apiKeyHeader: "x-api-key" },
+      config: { region: "us-east-1", auth: "api-key", apiKeyEnv: "BEDROCK_API_KEY", apiKeyHeader: "x-api-key" },
       environment: { BEDROCK_API_KEY: "bedrock-key" },
     });
     await expect(instance.snapshot()).resolves.toMatchObject({
@@ -264,6 +266,33 @@ describe("BedrockDriver", () => {
       expect(headers.get("content-type")).toBe("application/json");
       return Response.json({
         output: { message: { content: [{ text: "Hi from Mantel" }] } },
+      });
+
+      it("prefers AWS signing on native Bedrock unless API-key mode is explicit", async () => {
+        const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+          const headers = new Headers(init?.headers);
+          expect(headers.get("authorization")).toMatch(/^AWS4-HMAC-SHA256 Credential=AKIAFIXTURE\//u);
+          expect(headers.get("x-api-key")).toBeNull();
+          return Response.json({
+            output: { message: { content: [{ text: "aws path" }] } },
+          });
+        });
+        vi.stubGlobal("fetch", fetchMock);
+        const instance = await BedrockDriver.create({
+          instanceId: "bedrock-native",
+          displayName: "Bedrock",
+          enabled: true,
+          config: { region: "us-east-1" },
+          environment: {
+            AWS_ACCESS_KEY_ID: "AKIAFIXTURE",
+            AWS_SECRET_ACCESS_KEY: "fixture-secret",
+            BEDROCK_API_KEY: "bedrock-key",
+          },
+        });
+
+        await expect(instance.generateText?.("Hello")).resolves.toBe("aws path");
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        await instance.dispose();
       });
     });
     vi.stubGlobal("fetch", fetchMock);

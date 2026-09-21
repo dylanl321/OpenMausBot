@@ -30,6 +30,7 @@ export interface BedrockConfig {
   region: string;
   model?: string;
   url?: string;
+  auth?: "aws" | "api-key";
   apiKeyEnv?: string;
   apiKeyHeader?: string;
 }
@@ -102,11 +103,13 @@ function hasAwsCredentials(credentials: AwsCredentials): boolean {
 }
 
 function authFrom(config: BedrockConfig, environment: Record<string, string>): BedrockAuth | null {
+  const authMode = config.auth === "api-key" || config.url ? "api-key" : "aws";
   const apiKeyEnv = config.apiKeyEnv?.trim() || "BEDROCK_API_KEY";
   const apiKeyHeader = config.apiKeyHeader?.trim() || "x-api-key";
-  const apiKey = environment[apiKeyEnv]?.trim();
-  if (apiKey) return { kind: "api-key", header: apiKeyHeader, value: apiKey };
-  if (config.url) return null;
+  if (authMode === "api-key") {
+    const apiKey = environment[apiKeyEnv]?.trim();
+    return apiKey ? { kind: "api-key", header: apiKeyHeader, value: apiKey } : null;
+  }
   const credentials = awsCredentialsFrom(environment);
   return hasAwsCredentials(credentials) ? { kind: "aws", credentials } : null;
 }
@@ -333,7 +336,11 @@ async function callBedrock(
 
 function missingCredentialReason(config: BedrockConfig): string {
   const apiKeyEnv = config.apiKeyEnv?.trim() || "BEDROCK_API_KEY";
-  if (config.url) return `missing Bedrock API key for ${normalizeBaseUrl(config.url)} — set ${apiKeyEnv}`;
+  if (config.auth === "api-key" || config.url) {
+    return config.url
+      ? `missing Bedrock API key for ${normalizeBaseUrl(config.url)} — set ${apiKeyEnv}`
+      : `missing Bedrock API key — set ${apiKeyEnv}`;
+  }
   return `missing Bedrock credentials — set ${apiKeyEnv} for API-key endpoints, or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for region ${regionFrom(config.region)} and include AWS_SESSION_TOKEN when using temporary credentials`;
 }
 
@@ -349,10 +356,12 @@ export function decodeBedrockConfig(raw: unknown): BedrockConfig {
     ? config.model.trim()
     : undefined;
   const url = decodeBaseUrl(config.url);
+  const auth = config.auth === "api-key" || config.auth === "aws" ? config.auth : undefined;
   return {
     region: regionFrom(config.region),
     ...(url ? { url } : {}),
     ...(model ? { model } : {}),
+    ...(auth ? { auth } : {}),
     apiKeyEnv: typeof config.apiKeyEnv === "string" && config.apiKeyEnv.trim() ? config.apiKeyEnv.trim() : "BEDROCK_API_KEY",
     apiKeyHeader: decodeApiKeyHeader(config.apiKeyHeader),
   };

@@ -35,7 +35,8 @@ with `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optional
 Bedrock-compatible endpoint such as Mantel with an API key from
 `config.apiKeyEnv` (default `BEDROCK_API_KEY`). `config.region` is still used
 for native AWS Bedrock signing, while `config.url` overrides the runtime base
-URL for compatible gateways.
+URL for compatible gateways. Set `config.auth` to `"api-key"` if you want the
+standard Bedrock runtime URL to use an API key instead of SigV4 signing.
 
 The driver uses Bedrock's Converse API for text chat. Set `config.model` to the
 exact Bedrock model or inference-profile identifier you want the Converse
