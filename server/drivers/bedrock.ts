@@ -79,18 +79,9 @@ function timestamp(now: Date) {
 }
 
 function credentialsFrom(environment: Record<string, string>): BedrockCredentials {
-  const accessKeyId =
-    environment.AWS_ACCESS_KEY_ID?.trim() ||
-    process.env.AWS_ACCESS_KEY_ID?.trim() ||
-    "";
-  const secretAccessKey =
-    environment.AWS_SECRET_ACCESS_KEY?.trim() ||
-    process.env.AWS_SECRET_ACCESS_KEY?.trim() ||
-    "";
-  const sessionToken =
-    environment.AWS_SESSION_TOKEN?.trim() ||
-    process.env.AWS_SESSION_TOKEN?.trim() ||
-    undefined;
+  const accessKeyId = environment.AWS_ACCESS_KEY_ID?.trim() || "";
+  const secretAccessKey = environment.AWS_SECRET_ACCESS_KEY?.trim() || "";
+  const sessionToken = environment.AWS_SESSION_TOKEN?.trim() || undefined;
   return { accessKeyId, secretAccessKey, ...(sessionToken ? { sessionToken } : {}) };
 }
 
