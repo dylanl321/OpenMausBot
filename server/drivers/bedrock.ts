@@ -107,6 +107,14 @@ function normalizeHeaderValue(value: string): string {
   return value.trim().replace(/\s+/g, " ");
 }
 
+function canonicalQuery(url: URL): string {
+  return [...url.searchParams.entries()]
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) =>
+      leftKey === rightKey ? leftValue.localeCompare(rightValue) : leftKey.localeCompare(rightKey))
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .join("&");
+}
+
 function signedHeadersFor(
   method: "GET" | "POST",
   url: URL,
@@ -130,7 +138,7 @@ function signedHeadersFor(
   const canonicalRequest = [
     method,
     url.pathname,
-    "",
+    canonicalQuery(url),
     `${canonicalHeaders}\n`,
     signedHeaders,
     payloadHash,
@@ -359,6 +367,8 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
     generateText: async (prompt, { signal } = {}) => {
       if (!hasCredentials(credentials)) throw new Error(missingCredentialReason(input.config));
       try {
+        // Helper calls are instance-scoped summaries/titles, so they stay on
+        // the instance's configured default instead of taking a per-turn model.
         const completion = await callBedrock(
           catalog.default,
           { text: prompt },
