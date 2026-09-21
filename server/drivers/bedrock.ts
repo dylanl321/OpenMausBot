@@ -105,6 +105,7 @@ function authFrom(config: BedrockConfig, environment: Record<string, string>): B
   const apiKeyHeader = config.apiKeyHeader?.trim() || "x-api-key";
   const apiKey = environment[apiKeyEnv]?.trim();
   if (apiKey) return { kind: "api-key", header: apiKeyHeader, value: apiKey };
+  if (config.url) return null;
   const credentials = awsCredentialsFrom(environment);
   return hasAwsCredentials(credentials) ? { kind: "aws", credentials } : null;
 }
@@ -317,6 +318,7 @@ async function callBedrock(
 
 function missingCredentialReason(config: BedrockConfig): string {
   const apiKeyEnv = config.apiKeyEnv?.trim() || "BEDROCK_API_KEY";
+  if (config.url) return `missing Bedrock API key for ${normalizeBaseUrl(config.url)} — set ${apiKeyEnv}`;
   return `missing Bedrock credentials — set ${apiKeyEnv} for API-key endpoints, or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for region ${regionFrom(config.region)} and include AWS_SESSION_TOKEN when using temporary credentials`;
 }
 

@@ -96,6 +96,21 @@ describe("BedrockDriver", () => {
     await instance.dispose();
   });
 
+  it("does not fall back to AWS credentials for a custom endpoint", async () => {
+    const instance = await BedrockDriver.create({
+      instanceId: "bedrock-custom-url",
+      displayName: "Bedrock",
+      enabled: true,
+      config: { region: "us-east-1", url: "https://mantel.example/bedrock" },
+      environment: { AWS_ACCESS_KEY_ID: "AKIAFIXTURE", AWS_SECRET_ACCESS_KEY: "fixture-secret" },
+    });
+    await expect(instance.snapshot()).resolves.toMatchObject({
+      state: "unavailable",
+      reason: expect.stringContaining("BEDROCK_API_KEY"),
+    });
+    await instance.dispose();
+  });
+
   it("defers validation until a real runtime request runs", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
