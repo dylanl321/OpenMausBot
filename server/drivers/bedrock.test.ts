@@ -78,6 +78,7 @@ describe("BedrockDriver", () => {
     });
     await expect(instance.snapshot()).resolves.toMatchObject({
       state: "available",
+      authenticated: false,
       warning: expect.objectContaining({ message: expect.stringContaining("first request") }),
     });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -197,6 +198,42 @@ describe("BedrockDriver", () => {
     expect(recorder.events).toContainEqual(
       expect.objectContaining({ type: "item.completed", itemType: "assistant_text", text: "Hi from Bedrock" }),
     );
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it("does not duplicate the active prompt when the transcript already includes it", async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({
+        messages: [
+          { role: "user", content: [{ text: "Hello once" }] },
+        ],
+      });
+      return Response.json({
+        output: { message: { content: [{ text: "ok" }] } },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await BedrockDriver.create({
+      instanceId: "bedrock",
+      displayName: "Bedrock",
+      enabled: true,
+      config: { region: "us-west-2" },
+      environment: {
+        AWS_ACCESS_KEY_ID: "AKIAFIXTURE",
+        AWS_SECRET_ACCESS_KEY: "fixture-secret",
+      },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({
+      threadId: "thread-dedupe",
+      text: "Hello once",
+      transcript: [{ role: "user", text: "Hello once" }],
+    });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     recorder.stop();
     await instance.dispose();
   });

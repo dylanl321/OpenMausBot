@@ -205,6 +205,8 @@ function messagesFor(turn: Pick<SendTurnInput, "text" | "transcript">): Converse
     .filter((message): message is { role: "user" | "assistant"; text: string } =>
       (message.role === "user" || message.role === "assistant") && Boolean(message.text.trim()))
     .map((message) => ({ role: message.role, content: [{ text: message.text }] }));
+  const last = transcript.at(-1);
+  if (last?.role === "user" && last.content[0]?.text === turn.text) return transcript;
   return [...transcript, { role: "user", content: [{ text: turn.text }] }];
 }
 
@@ -376,6 +378,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
     if (!hasCredentials(credentials)) return { state: "unavailable", reason: missingCredentialReason(input.config) };
     return snapshotCache ?? {
       state: "available",
+      authenticated: false,
       version: null,
       billing: "metered",
       warning: {
