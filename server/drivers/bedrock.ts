@@ -219,9 +219,9 @@ function parseJsonBody(text: string): BedrockResponse | null {
   }
 }
 
-function bedrockBodyMessage(body: BedrockResponse | null): string | null {
+function bedrockErrorMessage(body: BedrockResponse | null, includeTopLevelMessage: boolean): string | null {
   if (!body) return null;
-  if (typeof body.message === "string" && body.message.trim()) return body.message;
+  if (includeTopLevelMessage && typeof body.message === "string" && body.message.trim()) return body.message;
   if (body.error && typeof body.error === "object" && !Array.isArray(body.error)) {
     const message = (body.error as { message?: unknown }).message;
     if (typeof message === "string" && message.trim()) return message;
@@ -253,7 +253,7 @@ async function callBedrock(
   });
   const raw = await response.text();
   const json = parseJsonBody(raw);
-  const bodyMessage = bedrockBodyMessage(json);
+  const bodyMessage = bedrockErrorMessage(json, !response.ok);
   if (!response.ok) {
     const detail = bodyMessage ?? raw.slice(0, 200);
     throw new Error(`Bedrock HTTP ${response.status}${detail ? `: ${safeText(detail, secrets)}` : ""}`);
