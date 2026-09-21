@@ -319,12 +319,12 @@ async function callBedrock(
   model: string,
   turn: Pick<SendTurnInput, "system" | "text" | "transcript">,
   config: BedrockConfig,
+  region: string,
   auth: BedrockAuth,
   secrets: string[],
   maxTokens?: number,
   signal?: AbortSignal,
 ): Promise<BedrockCompletion> {
-  const region = regionFrom(config.region);
   const url = converseUrl(config, model, region);
   const body = JSON.stringify({
     messages: messagesFor(turn),
@@ -433,7 +433,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
       let usage: Usage | undefined;
       let failure: string | undefined;
       try {
-        const completion = await callBedrock(model, turn, runtimeConfig, auth, secrets, undefined, abort.signal);
+        const completion = await callBedrock(model, turn, runtimeConfig, runtimeConfig.region!, auth, secrets, undefined, abort.signal);
         if (completion.usage) {
           usage = completion.usage;
           emit({ ...base(turn.threadId, turnId), type: "thread.token-usage.updated", ...completion.usage });
@@ -522,6 +522,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
           catalog.default,
           { text: prompt },
           runtimeConfig,
+          runtimeConfig.region!,
           auth,
           secrets,
           undefined,
