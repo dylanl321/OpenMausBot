@@ -106,6 +106,30 @@ describe("BedrockDriver", () => {
     await instance.dispose();
   });
 
+  it("sends native Bedrock requests with API-key auth when explicitly configured", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe("https://bedrock-runtime.us-east-1.amazonaws.com/model/amazon.nova-lite-v1%3A0/converse");
+      const headers = new Headers(init?.headers);
+      expect(headers.get("x-api-key")).toBe("bedrock-key");
+      expect(headers.get("authorization")).toBeNull();
+      return Response.json({
+        output: { message: { content: [{ text: "api key path" }] } },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await BedrockDriver.create({
+      instanceId: "bedrock-api-key-request",
+      displayName: "Bedrock",
+      enabled: true,
+      config: { region: "us-east-1", auth: "api-key", apiKeyEnv: "BEDROCK_API_KEY", apiKeyHeader: "x-api-key" },
+      environment: { BEDROCK_API_KEY: "bedrock-key" },
+    });
+
+    await expect(instance.generateText?.("Hello")).resolves.toBe("api key path");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await instance.dispose();
+  });
+
   it("does not fall back to AWS credentials for a custom endpoint", async () => {
     const instance = await BedrockDriver.create({
       instanceId: "bedrock-custom-url",

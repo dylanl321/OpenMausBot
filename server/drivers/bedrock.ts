@@ -369,14 +369,15 @@ export function decodeBedrockConfig(raw: unknown): BedrockConfig {
 }
 
 function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): ProviderInstance {
+  const config = decodeBedrockConfig(input.config);
   const listeners = new Set<RuntimeEventListener>();
   const active = new Map<string, {
     abort: AbortController;
     turnId: string;
     done: Promise<void>;
   }>();
-  const auth = authFrom(input.config, input.environment);
-  const catalog = catalogFor(input.config);
+  const auth = authFrom(config, input.environment);
+  const catalog = catalogFor(config);
   const secrets = auth?.kind === "aws"
     ? [auth.credentials.accessKeyId, auth.credentials.secretAccessKey, auth.credentials.sessionToken ?? ""]
     : auth?.kind === "api-key"
@@ -395,7 +396,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
   });
 
   const sendTurn = async (turn: SendTurnInput) => {
-    if (!auth) throw new Error(missingCredentialReason(input.config));
+    if (!auth) throw new Error(missingCredentialReason(config));
     if (active.has(turn.threadId)) throw new Error("a turn is already running on this thread");
     const turnId = newId();
     const abort = new AbortController();
@@ -411,7 +412,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
       let usage: Usage | undefined;
       let failure: string | undefined;
       try {
-        const completion = await callBedrock(model, turn, input.config, auth, secrets, undefined, abort.signal);
+        const completion = await callBedrock(model, turn, config, auth, secrets, undefined, abort.signal);
         if (completion.usage) {
           usage = completion.usage;
           emit({ ...base(turn.threadId, turnId), type: "thread.token-usage.updated", ...completion.usage });
@@ -449,7 +450,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
   };
 
   const snapshot = async (): Promise<ProviderSnapshot> => {
-    if (!auth) return { state: "unavailable", reason: missingCredentialReason(input.config) };
+    if (!auth) return { state: "unavailable", reason: missingCredentialReason(config) };
     return snapshotCache ?? {
       state: "available",
       authenticated: false,
@@ -492,14 +493,14 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
       },
     },
     generateText: async (prompt, { signal } = {}) => {
-      if (!auth) throw new Error(missingCredentialReason(input.config));
+      if (!auth) throw new Error(missingCredentialReason(config));
       try {
         // Helper calls are instance-scoped summaries/titles, so they stay on
         // the instance's configured default instead of taking a per-turn model.
         const completion = await callBedrock(
           catalog.default,
           { text: prompt },
-          input.config,
+          config,
           auth,
           secrets,
           undefined,
