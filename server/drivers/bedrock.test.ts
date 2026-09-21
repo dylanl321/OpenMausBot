@@ -34,6 +34,7 @@ describe("BedrockDriver", () => {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -112,11 +113,17 @@ describe("BedrockDriver", () => {
   });
 
   it("sends a converse request and reports the reply", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-02T03:04:05.000Z"));
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       expect(String(input)).toBe("https://bedrock-runtime.us-west-2.amazonaws.com/model/amazon.nova-lite-v1%3A0/converse");
       expect(init?.method).toBe("POST");
       const headers = new Headers(init?.headers);
-      expect(headers.get("authorization")).toContain("Credential=AKIAFIXTURE/");
+      expect(headers.get("authorization")).toBe(
+        "AWS4-HMAC-SHA256 Credential=AKIAFIXTURE/20260102/us-west-2/bedrock/aws4_request, " +
+        "SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, " +
+        "Signature=f50d4710df4db8b2690d0c75c9778211890e1e3a23e75e6854d3b6af0c49ab96",
+      );
       expect(headers.get("x-amz-date")).toMatch(/^\d{8}T\d{6}Z$/);
       expect(headers.get("x-amz-security-token")).toBe("fixture-session");
       expect(JSON.parse(String(init?.body))).toEqual({

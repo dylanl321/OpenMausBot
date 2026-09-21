@@ -61,6 +61,9 @@ interface BedrockResponse {
     inputTokens?: unknown;
     outputTokens?: unknown;
   };
+  message?: unknown;
+  error?: unknown;
+  __type?: unknown;
 }
 
 function sha256Hex(value: string): string {
@@ -207,6 +210,26 @@ function decodeResponse(json: BedrockResponse): BedrockCompletion {
   };
 }
 
+function parseJsonBody(text: string): BedrockResponse | null {
+  if (!text.trim()) return null;
+  try {
+    return JSON.parse(text) as BedrockResponse;
+  } catch {
+    return null;
+  }
+}
+
+function bedrockBodyMessage(body: BedrockResponse | null): string | null {
+  if (!body) return null;
+  if (typeof body.message === "string" && body.message.trim()) return body.message;
+  if (body.error && typeof body.error === "object" && !Array.isArray(body.error)) {
+    const message = (body.error as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message;
+  }
+  if (typeof body.__type === "string" && body.__type.trim()) return body.__type;
+  return null;
+}
+
 async function callBedrock(
   model: string,
   turn: Pick<SendTurnInput, "system" | "text" | "transcript">,
@@ -228,11 +251,15 @@ async function callBedrock(
     body,
     signal,
   });
+  const raw = await response.text();
+  const json = parseJsonBody(raw);
+  const bodyMessage = bedrockBodyMessage(json);
   if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(`Bedrock HTTP ${response.status}${text ? `: ${safeText(text.slice(0, 200), secrets)}` : ""}`);
+    const detail = bodyMessage ?? raw.slice(0, 200);
+    throw new Error(`Bedrock HTTP ${response.status}${detail ? `: ${safeText(detail, secrets)}` : ""}`);
   }
-  const json = await response.json() as BedrockResponse;
+  if (bodyMessage) throw new Error(`Bedrock HTTP ${response.status}: ${safeText(bodyMessage, secrets)}`);
+  if (!json) throw new Error("Bedrock returned no JSON response");
   return decodeResponse(json);
 }
 
