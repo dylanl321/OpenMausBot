@@ -319,6 +319,33 @@ describe("BedrockDriver", () => {
     await instance.dispose();
   });
 
+  it("honors explicit AWS auth for a custom endpoint", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe("https://mantel.example/bedrock/model/custom-model/converse");
+      const headers = new Headers(init?.headers);
+      expect(headers.get("authorization")).toMatch(/^AWS4-HMAC-SHA256 Credential=AKIAFIXTURE\//u);
+      expect(headers.get("x-api-key")).toBeNull();
+      return Response.json({
+        output: { message: { content: [{ text: "signed custom endpoint" }] } },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await BedrockDriver.create({
+      instanceId: "bedrock-custom-aws",
+      displayName: "Bedrock",
+      enabled: true,
+      config: { region: "us-east-1", url: "https://mantel.example/bedrock", model: "custom-model", auth: "aws" },
+      environment: {
+        AWS_ACCESS_KEY_ID: "AKIAFIXTURE",
+        AWS_SECRET_ACCESS_KEY: "fixture-secret",
+      },
+    });
+
+    await expect(instance.generateText?.("Hello")).resolves.toBe("signed custom endpoint");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await instance.dispose();
+  });
+
   it("rejects a successful response with an invalid Bedrock body shape", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ usage: { inputTokens: 1, outputTokens: 1 } })));
     const instance = await BedrockDriver.create({
