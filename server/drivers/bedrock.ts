@@ -15,6 +15,7 @@ import { redactSecretsInText } from "../redact.ts";
 
 const DRIVER_KIND = "bedrock";
 const DEFAULT_REGION = "us-east-1";
+const HTTP_HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const DEFAULT_MODELS: ModelCatalog = {
   default: "amazon.nova-lite-v1:0",
   options: [
@@ -125,6 +126,20 @@ function catalogFor(config: BedrockConfig): ModelCatalog {
 
 function normalizeBaseUrl(value: string): string {
   return value.trim().replace(/\/+$/, "");
+}
+
+function decodeBaseUrl(raw: unknown): string | undefined {
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  const value = normalizeBaseUrl(raw);
+  const url = new URL(value);
+  if (url.protocol !== "https:") throw new Error("Bedrock custom endpoint must use https");
+  return value;
+}
+
+function decodeApiKeyHeader(raw: unknown): string {
+  const value = typeof raw === "string" && raw.trim() ? raw.trim() : "x-api-key";
+  if (!HTTP_HEADER_NAME.test(value)) throw new Error("Bedrock apiKeyHeader must be a valid HTTP header name");
+  return value;
 }
 
 function normalizeHeaderValue(value: string): string {
@@ -333,15 +348,13 @@ export function decodeBedrockConfig(raw: unknown): BedrockConfig {
   const model = typeof config.model === "string" && config.model.trim()
     ? config.model.trim()
     : undefined;
-  const url = typeof config.url === "string" && config.url.trim()
-    ? normalizeBaseUrl(config.url)
-    : undefined;
+  const url = decodeBaseUrl(config.url);
   return {
     region: regionFrom(config.region),
     ...(url ? { url } : {}),
     ...(model ? { model } : {}),
     apiKeyEnv: typeof config.apiKeyEnv === "string" && config.apiKeyEnv.trim() ? config.apiKeyEnv.trim() : "BEDROCK_API_KEY",
-    apiKeyHeader: typeof config.apiKeyHeader === "string" && config.apiKeyHeader.trim() ? config.apiKeyHeader.trim() : "x-api-key",
+    apiKeyHeader: decodeApiKeyHeader(config.apiKeyHeader),
   };
 }
 

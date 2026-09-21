@@ -61,6 +61,14 @@ describe("BedrockDriver", () => {
     });
   });
 
+  it("rejects non-https custom Bedrock endpoints", () => {
+    expect(() => decodeBedrockConfig({ url: "http://mantel.example/bedrock" })).toThrow(/https/u);
+  });
+
+  it("rejects invalid API-key header names", () => {
+    expect(() => decodeBedrockConfig({ apiKeyHeader: "x-api-key\nother" })).toThrow(/header name/u);
+  });
+
   it("canonicalizes SigV4 query strings with RFC 3986 encoding", () => {
     const url = new URL("https://example.test/?b=1&a=hello world&c=!*'()");
     expect(canonicalQuery(url)).toBe("a=hello%20world&b=1&c=%21%2A%27%28%29");
