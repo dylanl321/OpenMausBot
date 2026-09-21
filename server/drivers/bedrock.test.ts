@@ -63,6 +63,10 @@ describe("BedrockDriver", () => {
     });
   });
 
+  it("leaves region unset in decoded config when the instance should resolve it later", () => {
+    expect(decodeBedrockConfig({})).toEqual({ apiKeyEnv: "BEDROCK_API_KEY", apiKeyHeader: "x-api-key" });
+  });
+
   it("rejects non-https custom Bedrock endpoints", () => {
     expect(() => decodeBedrockConfig({ url: "http://mantel.example/bedrock" })).toThrow(/https/u);
   });
@@ -126,6 +130,33 @@ describe("BedrockDriver", () => {
     });
 
     await expect(instance.generateText?.("Hello")).resolves.toBe("api key path");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await instance.dispose();
+  });
+
+  it("resolves the Bedrock region from instance environment when config omits it", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe("https://bedrock-runtime.eu-central-1.amazonaws.com/model/amazon.nova-lite-v1:0/converse");
+      const headers = new Headers(init?.headers);
+      expect(headers.get("authorization")).toMatch(/Credential=AKIAFIXTURE\/\d{8}\/eu-central-1\/bedrock\/aws4_request/u);
+      return Response.json({
+        output: { message: { content: [{ text: "env region" }] } },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await BedrockDriver.create({
+      instanceId: "bedrock-env-region",
+      displayName: "Bedrock",
+      enabled: true,
+      config: {},
+      environment: {
+        AWS_ACCESS_KEY_ID: "AKIAFIXTURE",
+        AWS_SECRET_ACCESS_KEY: "fixture-secret",
+        AWS_REGION: "eu-central-1",
+      },
+    });
+
+    await expect(instance.generateText?.("Hello")).resolves.toBe("env region");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     await instance.dispose();
   });
@@ -375,6 +406,30 @@ describe("BedrockDriver", () => {
     });
 
     await expect(instance.generateText?.("Hello")).resolves.toBe("signed custom endpoint");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await instance.dispose();
+  });
+
+  it("uses the inference-profile Bedrock path for inference profile identifiers", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      expect(String(input)).toBe("https://bedrock-runtime.us-west-2.amazonaws.com/inference-profile/us.acme.inference-profile-v1/converse");
+      return Response.json({
+        output: { message: { content: [{ text: "profile path" }] } },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await BedrockDriver.create({
+      instanceId: "bedrock-profile-path",
+      displayName: "Bedrock",
+      enabled: true,
+      config: { region: "us-west-2", model: "us.acme.inference-profile-v1" },
+      environment: {
+        AWS_ACCESS_KEY_ID: "AKIAFIXTURE",
+        AWS_SECRET_ACCESS_KEY: "fixture-secret",
+      },
+    });
+
+    await expect(instance.generateText?.("Hello")).resolves.toBe("profile path");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     await instance.dispose();
   });

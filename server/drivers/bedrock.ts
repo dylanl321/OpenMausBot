@@ -27,7 +27,7 @@ const DEFAULT_MODELS: ModelCatalog = {
 };
 
 export interface BedrockConfig {
-  region: string;
+  region?: string;
   model?: string;
   url?: string;
   auth?: "aws" | "api-key";
@@ -117,6 +117,13 @@ function authFrom(config: BedrockConfig, environment: Record<string, string>): B
 function regionFrom(raw: unknown): string {
   const value = typeof raw === "string" ? raw.trim() : "";
   return value || DEFAULT_REGION;
+}
+
+function resolveRegion(config: BedrockConfig, environment: Record<string, string>): string {
+  return config.region?.trim()
+    || environment.AWS_REGION?.trim()
+    || environment.AWS_DEFAULT_REGION?.trim()
+    || DEFAULT_REGION;
 }
 
 function catalogFor(config: BedrockConfig): ModelCatalog {
@@ -254,8 +261,15 @@ function encodeModelPath(model: string): string {
   return encodeURIComponent(model).replace(/%3A/gu, ":");
 }
 
+function isInferenceProfileId(model: string): boolean {
+  return /^arn:[^:\s]+:bedrock:[^:\s]*:\d{12}:(?:application-)?inference-profile\//u.test(model)
+    || /(^|[.:/-])inference-profile([.:/-]|$)/u.test(model)
+    || /^(?:us|eu|apac|global)\./u.test(model);
+}
+
 function converseUrl(config: BedrockConfig, model: string): URL {
-  return new URL(`${endpointRoot(config)}/model/${encodeModelPath(model)}/converse`);
+  const resource = isInferenceProfileId(model) ? "inference-profile" : "model";
+  return new URL(`${endpointRoot(config)}/${resource}/${encodeModelPath(model)}/converse`);
 }
 
 function messagesFor(turn: Pick<SendTurnInput, "text" | "transcript">): ConverseMessage[] {
@@ -358,13 +372,14 @@ function snapshotFailure(message: string): ProviderSnapshot | null {
 
 export function decodeBedrockConfig(raw: unknown): BedrockConfig {
   const config = (raw ?? {}) as Record<string, unknown>;
+  const region = typeof config.region === "string" && config.region.trim() ? config.region.trim() : undefined;
   const model = typeof config.model === "string" && config.model.trim()
     ? config.model.trim()
     : undefined;
   const url = decodeBaseUrl(config.url);
   const auth = config.auth === "api-key" || config.auth === "aws" ? config.auth : undefined;
   return {
-    region: regionFrom(config.region),
+    ...(region ? { region } : {}),
     ...(url ? { url } : {}),
     ...(model ? { model } : {}),
     ...(auth ? { auth } : {}),
@@ -375,14 +390,15 @@ export function decodeBedrockConfig(raw: unknown): BedrockConfig {
 
 function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): ProviderInstance {
   const config = decodeBedrockConfig(input.config);
+  const runtimeConfig = { ...config, region: resolveRegion(config, input.environment) };
   const listeners = new Set<RuntimeEventListener>();
   const active = new Map<string, {
     abort: AbortController;
     turnId: string;
     done: Promise<void>;
   }>();
-  const auth = authFrom(config, input.environment);
-  const catalog = catalogFor(config);
+  const auth = authFrom(runtimeConfig, input.environment);
+  const catalog = catalogFor(runtimeConfig);
   const secrets = auth?.kind === "aws"
     ? [auth.credentials.accessKeyId, auth.credentials.secretAccessKey, auth.credentials.sessionToken ?? ""]
     : auth?.kind === "api-key"
@@ -401,7 +417,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
   });
 
   const sendTurn = async (turn: SendTurnInput) => {
-    if (!auth) throw new Error(missingCredentialReason(config));
+    if (!auth) throw new Error(missingCredentialReason(runtimeConfig));
     if (active.has(turn.threadId)) throw new Error("a turn is already running on this thread");
     const turnId = newId();
     const abort = new AbortController();
@@ -417,7 +433,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
       let usage: Usage | undefined;
       let failure: string | undefined;
       try {
-        const completion = await callBedrock(model, turn, config, auth, secrets, undefined, abort.signal);
+        const completion = await callBedrock(model, turn, runtimeConfig, auth, secrets, undefined, abort.signal);
         if (completion.usage) {
           usage = completion.usage;
           emit({ ...base(turn.threadId, turnId), type: "thread.token-usage.updated", ...completion.usage });
@@ -455,7 +471,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
   };
 
   const snapshot = async (): Promise<ProviderSnapshot> => {
-    if (!auth) return { state: "unavailable", reason: missingCredentialReason(config) };
+    if (!auth) return { state: "unavailable", reason: missingCredentialReason(runtimeConfig) };
     return snapshotCache ?? {
       state: "available",
       authenticated: false,
@@ -498,14 +514,14 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
       },
     },
     generateText: async (prompt, { signal } = {}) => {
-      if (!auth) throw new Error(missingCredentialReason(config));
+      if (!auth) throw new Error(missingCredentialReason(runtimeConfig));
       try {
         // Helper calls are instance-scoped summaries/titles, so they stay on
         // the instance's configured default instead of taking a per-turn model.
         const completion = await callBedrock(
           catalog.default,
           { text: prompt },
-          config,
+          runtimeConfig,
           auth,
           secrets,
           undefined,
@@ -540,7 +556,7 @@ export const BedrockDriver: ProviderDriver<BedrockConfig> = {
     docsUrl: "https://docs.aws.amazon.com/bedrock/",
   },
   decodeConfig: decodeBedrockConfig,
-  defaultConfig: () => decodeBedrockConfig({}),
+  defaultConfig: () => ({ region: DEFAULT_REGION, apiKeyEnv: "BEDROCK_API_KEY", apiKeyHeader: "x-api-key" }),
   models: DEFAULT_MODELS,
   async create(input) {
     return createBedrockRuntime(input);
