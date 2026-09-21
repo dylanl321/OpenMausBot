@@ -28,13 +28,20 @@ const DEFAULT_MODELS: ModelCatalog = {
 export interface BedrockConfig {
   region: string;
   model?: string;
+  url?: string;
+  apiKeyEnv: string;
+  apiKeyHeader: string;
 }
 
-interface BedrockCredentials {
+interface AwsCredentials {
   accessKeyId: string;
   secretAccessKey: string;
   sessionToken?: string;
 }
+
+type BedrockAuth =
+  | { kind: "aws"; credentials: AwsCredentials }
+  | { kind: "api-key"; header: string; value: string };
 
 interface ConverseMessage {
   role: "user" | "assistant";
@@ -82,15 +89,22 @@ function timestamp(now: Date) {
   };
 }
 
-function credentialsFrom(environment: Record<string, string>): BedrockCredentials {
+function awsCredentialsFrom(environment: Record<string, string>): AwsCredentials {
   const accessKeyId = environment.AWS_ACCESS_KEY_ID?.trim() || "";
   const secretAccessKey = environment.AWS_SECRET_ACCESS_KEY?.trim() || "";
   const sessionToken = environment.AWS_SESSION_TOKEN?.trim() || undefined;
   return { accessKeyId, secretAccessKey, ...(sessionToken ? { sessionToken } : {}) };
 }
 
-function hasCredentials(credentials: BedrockCredentials): boolean {
+function hasAwsCredentials(credentials: AwsCredentials): boolean {
   return Boolean(credentials.accessKeyId && credentials.secretAccessKey);
+}
+
+function authFrom(config: BedrockConfig, environment: Record<string, string>): BedrockAuth | null {
+  const apiKey = environment[config.apiKeyEnv]?.trim();
+  if (apiKey) return { kind: "api-key", header: config.apiKeyHeader, value: apiKey };
+  const credentials = awsCredentialsFrom(environment);
+  return hasAwsCredentials(credentials) ? { kind: "aws", credentials } : null;
 }
 
 function regionFrom(raw: unknown): string {
@@ -104,6 +118,10 @@ function catalogFor(config: BedrockConfig): ModelCatalog {
     default: config.model,
     options: [{ id: config.model, label: config.model, custom: true }, ...DEFAULT_MODELS.options],
   };
+}
+
+function normalizeBaseUrl(value: string): string {
+  return value.trim().replace(/\/+$/, "");
 }
 
 function normalizeHeaderValue(value: string): string {
@@ -143,7 +161,7 @@ function signedHeadersFor(
   url: URL,
   region: string,
   body: string,
-  credentials: BedrockCredentials,
+  credentials: AwsCredentials,
   now = new Date(),
 ): Record<string, string> {
   const { amzDate, dateStamp } = timestamp(now);
@@ -204,8 +222,14 @@ function awsDomainSuffix(region: string): string {
   return region.startsWith("cn-") ? "amazonaws.com.cn" : "amazonaws.com";
 }
 
-function converseUrl(region: string, model: string): URL {
-  return new URL(`https://bedrock-runtime.${region}.${awsDomainSuffix(region)}/model/${encodeURIComponent(model)}/converse`);
+function endpointRoot(config: BedrockConfig): string {
+  return config.url
+    ? normalizeBaseUrl(config.url)
+    : `https://bedrock-runtime.${config.region}.${awsDomainSuffix(config.region)}`;
+}
+
+function converseUrl(config: BedrockConfig, model: string): URL {
+  return new URL(`${endpointRoot(config)}/model/${encodeURIComponent(model)}/converse`);
 }
 
 function messagesFor(turn: Pick<SendTurnInput, "text" | "transcript">): ConverseMessage[] {
@@ -256,20 +280,23 @@ async function callBedrock(
   model: string,
   turn: Pick<SendTurnInput, "system" | "text" | "transcript">,
   config: BedrockConfig,
-  credentials: BedrockCredentials,
+  auth: BedrockAuth,
   secrets: string[],
   maxTokens?: number,
   signal?: AbortSignal,
 ): Promise<BedrockCompletion> {
-  const url = converseUrl(config.region, model);
+  const url = converseUrl(config, model);
   const body = JSON.stringify({
     messages: messagesFor(turn),
     ...(turn.system ? { system: [{ text: turn.system }] } : {}),
     ...(maxTokens ? { inferenceConfig: { maxTokens } } : {}),
   });
+  const headers = auth.kind === "aws"
+    ? signedHeadersFor("POST", url, config.region, body, auth.credentials)
+    : { "content-type": "application/json", [auth.header]: auth.value };
   const response = await fetch(url, {
     method: "POST",
-    headers: signedHeadersFor("POST", url, config.region, body, credentials),
+    headers,
     body,
     signal,
   });
@@ -286,7 +313,7 @@ async function callBedrock(
 }
 
 function missingCredentialReason(config: BedrockConfig): string {
-  return `missing AWS credentials for Bedrock — set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for region ${regionFrom(config.region)}, and include AWS_SESSION_TOKEN when using temporary credentials`;
+  return `missing Bedrock credentials — set ${config.apiKeyEnv} for API-key endpoints, or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for region ${regionFrom(config.region)} and include AWS_SESSION_TOKEN when using temporary credentials`;
 }
 
 function snapshotFailure(message: string): ProviderSnapshot | null {
@@ -300,9 +327,15 @@ export function decodeBedrockConfig(raw: unknown): BedrockConfig {
   const model = typeof config.model === "string" && config.model.trim()
     ? config.model.trim()
     : undefined;
+  const url = typeof config.url === "string" && config.url.trim()
+    ? normalizeBaseUrl(config.url)
+    : undefined;
   return {
     region: regionFrom(config.region),
+    ...(url ? { url } : {}),
     ...(model ? { model } : {}),
+    apiKeyEnv: typeof config.apiKeyEnv === "string" && config.apiKeyEnv.trim() ? config.apiKeyEnv.trim() : "BEDROCK_API_KEY",
+    apiKeyHeader: typeof config.apiKeyHeader === "string" && config.apiKeyHeader.trim() ? config.apiKeyHeader.trim() : "x-api-key",
   };
 }
 
@@ -313,9 +346,13 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
     turnId: string;
     done: Promise<void>;
   }>();
-  const credentials = credentialsFrom(input.environment);
+  const auth = authFrom(input.config, input.environment);
   const catalog = catalogFor(input.config);
-  const secrets = [credentials.accessKeyId, credentials.secretAccessKey, credentials.sessionToken ?? ""];
+  const secrets = auth?.kind === "aws"
+    ? [auth.credentials.accessKeyId, auth.credentials.secretAccessKey, auth.credentials.sessionToken ?? ""]
+    : auth?.kind === "api-key"
+      ? [auth.value]
+      : [];
   let snapshotCache: ProviderSnapshot | null = null;
   const emit = (event: RuntimeEvent) => {
     for (const listener of Array.from(listeners)) listener(event);
@@ -329,7 +366,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
   });
 
   const sendTurn = async (turn: SendTurnInput) => {
-    if (!hasCredentials(credentials)) throw new Error(missingCredentialReason(input.config));
+    if (!auth) throw new Error(missingCredentialReason(input.config));
     if (active.has(turn.threadId)) throw new Error("a turn is already running on this thread");
     const turnId = newId();
     const abort = new AbortController();
@@ -345,7 +382,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
       let usage: Usage | undefined;
       let failure: string | undefined;
       try {
-        const completion = await callBedrock(model, turn, input.config, credentials, secrets, undefined, abort.signal);
+        const completion = await callBedrock(model, turn, input.config, auth, secrets, undefined, abort.signal);
         if (completion.usage) {
           usage = completion.usage;
           emit({ ...base(turn.threadId, turnId), type: "thread.token-usage.updated", ...completion.usage });
@@ -383,7 +420,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
   };
 
   const snapshot = async (): Promise<ProviderSnapshot> => {
-    if (!hasCredentials(credentials)) return { state: "unavailable", reason: missingCredentialReason(input.config) };
+    if (!auth) return { state: "unavailable", reason: missingCredentialReason(input.config) };
     return snapshotCache ?? {
       state: "available",
       authenticated: false,
@@ -426,7 +463,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
       },
     },
     generateText: async (prompt, { signal } = {}) => {
-      if (!hasCredentials(credentials)) throw new Error(missingCredentialReason(input.config));
+      if (!auth) throw new Error(missingCredentialReason(input.config));
       try {
         // Helper calls are instance-scoped summaries/titles, so they stay on
         // the instance's configured default instead of taking a per-turn model.
@@ -434,7 +471,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
           catalog.default,
           { text: prompt },
           input.config,
-          credentials,
+          auth,
           secrets,
           undefined,
           signal,

@@ -45,8 +45,20 @@ describe("BedrockDriver", () => {
   });
 
   it("defaults to us-east-1 and honors explicit config overrides", () => {
-    expect(BedrockDriver.defaultConfig()).toEqual({ region: "us-east-1" });
-    expect(decodeBedrockConfig({ region: "eu-west-1", model: "custom.model" })).toEqual({ region: "eu-west-1", model: "custom.model" });
+    expect(BedrockDriver.defaultConfig()).toEqual({ region: "us-east-1", apiKeyEnv: "BEDROCK_API_KEY", apiKeyHeader: "x-api-key" });
+    expect(decodeBedrockConfig({
+      region: "eu-west-1",
+      model: "custom.model",
+      url: "https://mantel.example/bedrock/",
+      apiKeyEnv: "MANTEL_API_KEY",
+      apiKeyHeader: "authorization",
+    })).toEqual({
+      region: "eu-west-1",
+      model: "custom.model",
+      url: "https://mantel.example/bedrock",
+      apiKeyEnv: "MANTEL_API_KEY",
+      apiKeyHeader: "authorization",
+    });
   });
 
   it("canonicalizes SigV4 query strings with RFC 3986 encoding", () => {
@@ -54,7 +66,7 @@ describe("BedrockDriver", () => {
     expect(canonicalQuery(url)).toBe("a=hello%20world&b=1&c=%21%2A%27%28%29");
   });
 
-  it("reports unavailable without AWS credentials", async () => {
+  it("reports unavailable without Bedrock credentials", async () => {
     const instance = await BedrockDriver.create({
       instanceId: "bedrock",
       displayName: "Bedrock",
@@ -63,6 +75,24 @@ describe("BedrockDriver", () => {
       environment: {},
     });
     await expect(instance.snapshot()).resolves.toMatchObject({ state: "unavailable" });
+    await instance.dispose();
+  });
+
+  it("accepts an API key without AWS credentials", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await BedrockDriver.create({
+      instanceId: "bedrock-api-key",
+      displayName: "Bedrock",
+      enabled: true,
+      config: { region: "us-east-1", apiKeyEnv: "BEDROCK_API_KEY", apiKeyHeader: "x-api-key" },
+      environment: { BEDROCK_API_KEY: "bedrock-key" },
+    });
+    await expect(instance.snapshot()).resolves.toMatchObject({
+      state: "available",
+      authenticated: false,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
     await instance.dispose();
   });
 
@@ -199,6 +229,41 @@ describe("BedrockDriver", () => {
       expect.objectContaining({ type: "item.completed", itemType: "assistant_text", text: "Hi from Bedrock" }),
     );
     recorder.stop();
+    await instance.dispose();
+  });
+
+  it("supports a custom Bedrock-compatible endpoint with API-key auth", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe("https://mantel.example/bedrock/model/mantel.chat-v1/converse");
+      const headers = new Headers(init?.headers);
+      expect(headers.get("x-api-key")).toBe("mantel-key");
+      expect(headers.get("authorization")).toBeNull();
+      expect(headers.get("content-type")).toBe("application/json");
+      return Response.json({
+        output: { message: { content: [{ text: "Hi from Mantel" }] } },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await BedrockDriver.create({
+      instanceId: "mantel",
+      displayName: "Mantel",
+      enabled: true,
+      config: {
+        region: "us-east-1",
+        model: "mantel.chat-v1",
+        url: "https://mantel.example/bedrock/",
+        apiKeyEnv: "MANTEL_API_KEY",
+        apiKeyHeader: "x-api-key",
+      },
+      environment: { MANTEL_API_KEY: "mantel-key" },
+    });
+
+    await expect(instance.generateText?.("Hello Mantel")).resolves.toBe("Hi from Mantel");
+    await expect(instance.snapshot()).resolves.toMatchObject({
+      state: "available",
+      authenticated: true,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     await instance.dispose();
   });
 

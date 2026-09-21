@@ -85,6 +85,31 @@ prefer temporary STS credentials over long-lived root or IAM user keys.
 `config.model` is omitted, OpenMausBot uses the driver's default Bedrock model
 and still lets you pick another catalog entry later.
 
+For Bedrock-compatible gateways such as Mantel, point `config.url` at the
+gateway's Bedrock base URL and put the API key in the instance environment:
+
+```json
+{
+  "instances": {
+    "mantel-bedrock": {
+      "driver": "bedrock",
+      "environment": {
+        "MANTEL_API_KEY": "…"
+      },
+      "config": {
+        "url": "https://mantel.example/bedrock",
+        "apiKeyEnv": "MANTEL_API_KEY",
+        "apiKeyHeader": "x-api-key",
+        "model": "mantel.chat-v1"
+      }
+    }
+  }
+}
+```
+
+If your Bedrock-compatible gateway expects the key on a different header, set
+`config.apiKeyHeader` to that header name instead.
+
 ### Claude Code isolation
 
 A bot on the Claude engine sees only what its owner gave it: the MCP servers under **Settings → MCP servers**, its integrations (computer, browser, agents, phone), and its own project's `.mcp.json`. It does **not** load this machine's Claude Code setup — the MCP servers and claude.ai connectors in your user or local Claude config, your skills and agents, your hooks, or your personal `~/.claude/CLAUDE.md`. Loading those into every turn of every bot cost one measured desktop about 407 extra tools and 10k tokens per model call.
