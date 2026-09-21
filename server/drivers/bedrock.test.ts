@@ -267,33 +267,6 @@ describe("BedrockDriver", () => {
       return Response.json({
         output: { message: { content: [{ text: "Hi from Mantel" }] } },
       });
-
-      it("prefers AWS signing on native Bedrock unless API-key mode is explicit", async () => {
-        const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
-          const headers = new Headers(init?.headers);
-          expect(headers.get("authorization")).toMatch(/^AWS4-HMAC-SHA256 Credential=AKIAFIXTURE\//u);
-          expect(headers.get("x-api-key")).toBeNull();
-          return Response.json({
-            output: { message: { content: [{ text: "aws path" }] } },
-          });
-        });
-        vi.stubGlobal("fetch", fetchMock);
-        const instance = await BedrockDriver.create({
-          instanceId: "bedrock-native",
-          displayName: "Bedrock",
-          enabled: true,
-          config: { region: "us-east-1" },
-          environment: {
-            AWS_ACCESS_KEY_ID: "AKIAFIXTURE",
-            AWS_SECRET_ACCESS_KEY: "fixture-secret",
-            BEDROCK_API_KEY: "bedrock-key",
-          },
-        });
-
-        await expect(instance.generateText?.("Hello")).resolves.toBe("aws path");
-        expect(fetchMock).toHaveBeenCalledTimes(1);
-        await instance.dispose();
-      });
     });
     vi.stubGlobal("fetch", fetchMock);
     const instance = await BedrockDriver.create({
@@ -319,13 +292,40 @@ describe("BedrockDriver", () => {
     await instance.dispose();
   });
 
+  it("prefers AWS signing on native Bedrock unless API-key mode is explicit", async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.get("authorization")).toMatch(/^AWS4-HMAC-SHA256 Credential=AKIAFIXTURE\//u);
+      expect(headers.get("x-api-key")).toBeNull();
+      return Response.json({
+        output: { message: { content: [{ text: "aws path" }] } },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await BedrockDriver.create({
+      instanceId: "bedrock-native",
+      displayName: "Bedrock",
+      enabled: true,
+      config: { region: "us-east-1" },
+      environment: {
+        AWS_ACCESS_KEY_ID: "AKIAFIXTURE",
+        AWS_SECRET_ACCESS_KEY: "fixture-secret",
+        BEDROCK_API_KEY: "bedrock-key",
+      },
+    });
+
+    await expect(instance.generateText?.("Hello")).resolves.toBe("aws path");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await instance.dispose();
+  });
+
   it("rejects a successful response with an invalid Bedrock body shape", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ usage: { inputTokens: 1, outputTokens: 1 } })));
     const instance = await BedrockDriver.create({
       instanceId: "bedrock-invalid-shape",
       displayName: "Bedrock",
       enabled: true,
-      config: { region: "us-east-1" },
+      config: { region: "us-east-1", auth: "api-key" },
       environment: { BEDROCK_API_KEY: "bedrock-key" },
     });
 
