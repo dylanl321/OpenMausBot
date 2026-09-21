@@ -115,6 +115,13 @@ function encodeRfc3986(value: string): string {
     `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
+function canonicalUri(url: URL): string {
+  return url.pathname
+    .split("/")
+    .map((segment) => encodeRfc3986(decodeURIComponent(segment)))
+    .join("/");
+}
+
 export function canonicalQuery(url: URL): string {
   return [...url.searchParams.entries()]
     .sort(([leftKey, leftValue], [rightKey, rightValue]) =>
@@ -145,7 +152,7 @@ function signedHeadersFor(
   const signedHeaders = names.join(";");
   const canonicalRequest = [
     method,
-    url.pathname,
+    canonicalUri(url),
     canonicalQuery(url),
     `${canonicalHeaders}\n`,
     signedHeaders,
@@ -272,6 +279,12 @@ function missingCredentialReason(config: BedrockConfig): string {
   return `missing AWS credentials for Bedrock — set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for region ${config.region}`;
 }
 
+function snapshotFailure(message: string): ProviderSnapshot | null {
+  return /\bBedrock HTTP (400|401|403|404)\b/.test(message)
+    ? { state: "unavailable", reason: message }
+    : null;
+}
+
 export function decodeBedrockConfig(raw: unknown): BedrockConfig {
   const config = (raw ?? {}) as Record<string, unknown>;
   const model = typeof config.model === "string" && config.model.trim()
@@ -335,7 +348,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
       } catch (error) {
         stopReason = abort.signal.aborted ? "interrupted" : "error";
         failure = safeError(error, secrets);
-        if (!abort.signal.aborted) snapshotCache = { state: "unavailable", reason: failure };
+        if (!abort.signal.aborted) snapshotCache = snapshotFailure(failure) ?? snapshotCache;
       } finally {
         if (abort.signal.aborted) {
           ok = false;
@@ -420,7 +433,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
         snapshotCache = { state: "available", authenticated: true, version: null, billing: "metered" };
         return completion.text.trim();
       } catch (error) {
-        snapshotCache = { state: "unavailable", reason: safeError(error, secrets) };
+        snapshotCache = snapshotFailure(safeError(error, secrets)) ?? snapshotCache;
         throw error;
       }
     },
