@@ -357,8 +357,14 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
   const snapshot = async (): Promise<ProviderSnapshot> => {
     if (!hasCredentials(credentials)) return { state: "unavailable", reason: missingCredentialReason(input.config) };
     return snapshotCache ?? {
-      state: "unavailable",
-      reason: "Bedrock runtime access is checked on first use. Send a message to validate the configured model and credentials.",
+      state: "available",
+      authenticated: true,
+      version: null,
+      billing: "metered",
+      warning: {
+        title: "Validation deferred until first use",
+        message: "Bedrock runtime access is checked when this instance handles its first request.",
+      },
     };
   };
 

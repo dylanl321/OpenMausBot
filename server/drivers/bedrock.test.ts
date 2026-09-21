@@ -61,7 +61,7 @@ describe("BedrockDriver", () => {
     await instance.dispose();
   });
 
-  it("waits for a real runtime request before reporting runtime access", async () => {
+  it("defers validation until a real runtime request runs", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const instance = await BedrockDriver.create({
@@ -72,8 +72,9 @@ describe("BedrockDriver", () => {
       environment: { AWS_ACCESS_KEY_ID: "AKIAFIXTURE", AWS_SECRET_ACCESS_KEY: "fixture-secret" },
     });
     await expect(instance.snapshot()).resolves.toMatchObject({
-      state: "unavailable",
-      reason: expect.stringContaining("checked on first use"),
+      state: "available",
+      authenticated: true,
+      warning: expect.objectContaining({ message: expect.stringContaining("first request") }),
     });
     expect(fetchMock).not.toHaveBeenCalled();
     await instance.dispose();
@@ -96,6 +97,34 @@ describe("BedrockDriver", () => {
       reason: expect.stringContaining("Bedrock HTTP 403"),
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    await instance.dispose();
+  });
+
+  it("marks the snapshot unavailable after a failed chat turn", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ message: "Model access denied" }, { status: 403 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await BedrockDriver.create({
+      instanceId: "bedrock",
+      displayName: "Bedrock",
+      enabled: true,
+      config: { region: "us-east-1" },
+      environment: { AWS_ACCESS_KEY_ID: "AKIAFIXTURE", AWS_SECRET_ACCESS_KEY: "fixture-secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({ threadId: "thread-fail", text: "Hello" });
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(completed).toMatchObject({ ok: false, stopReason: "error" });
+    expect(recorder.events).toContainEqual(
+      expect.objectContaining({ type: "runtime.error", message: expect.stringContaining("Model access denied") }),
+    );
+    await expect(instance.snapshot()).resolves.toMatchObject({
+      state: "unavailable",
+      reason: expect.stringContaining("Model access denied"),
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    recorder.stop();
     await instance.dispose();
   });
 
