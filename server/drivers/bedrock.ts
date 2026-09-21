@@ -376,7 +376,6 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
     if (!hasCredentials(credentials)) return { state: "unavailable", reason: missingCredentialReason(input.config) };
     return snapshotCache ?? {
       state: "available",
-      authenticated: true,
       version: null,
       billing: "metered",
       warning: {

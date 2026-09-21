@@ -78,7 +78,6 @@ describe("BedrockDriver", () => {
     });
     await expect(instance.snapshot()).resolves.toMatchObject({
       state: "available",
-      authenticated: true,
       warning: expect.objectContaining({ message: expect.stringContaining("first request") }),
     });
     expect(fetchMock).not.toHaveBeenCalled();
