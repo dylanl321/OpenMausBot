@@ -335,6 +335,7 @@ function createBedrockRuntime(input: DriverCreateInput<BedrockConfig>): Provider
         current.abort.abort();
         await current.done;
       },
+      respondToRequest: async () => "unavailable",
       hasSession: (threadId) => active.has(threadId),
       stopAll: async () => {
         const running = [...active.values()];
