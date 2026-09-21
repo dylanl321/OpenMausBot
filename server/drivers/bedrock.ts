@@ -103,7 +103,7 @@ function hasAwsCredentials(credentials: AwsCredentials): boolean {
 }
 
 function authFrom(config: BedrockConfig, environment: Record<string, string>): BedrockAuth | null {
-  const authMode = config.auth ?? (config.url ? "api-key" : "aws");
+  const authMode = config.auth ?? "aws";
   const apiKeyEnv = config.apiKeyEnv?.trim() || "BEDROCK_API_KEY";
   const apiKeyHeader = config.apiKeyHeader?.trim() || "x-api-key";
   if (authMode === "api-key") {
@@ -341,7 +341,7 @@ async function callBedrock(
 
 function missingCredentialReason(config: BedrockConfig): string {
   const apiKeyEnv = config.apiKeyEnv?.trim() || "BEDROCK_API_KEY";
-  const authMode = config.auth ?? (config.url ? "api-key" : "aws");
+  const authMode = config.auth ?? "aws";
   if (authMode === "api-key") {
     return config.url
       ? `missing Bedrock API key for ${normalizeBaseUrl(config.url)} — set ${apiKeyEnv}`

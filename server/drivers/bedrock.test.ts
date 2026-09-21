@@ -130,7 +130,17 @@ describe("BedrockDriver", () => {
     await instance.dispose();
   });
 
-  it("does not fall back to AWS credentials for a custom endpoint", async () => {
+  it("defaults custom endpoints to AWS signing unless API-key mode is explicit", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe("https://mantel.example/bedrock/model/amazon.nova-lite-v1:0/converse");
+      const headers = new Headers(init?.headers);
+      expect(headers.get("authorization")).toMatch(/^AWS4-HMAC-SHA256 Credential=AKIAFIXTURE\//u);
+      expect(headers.get("x-api-key")).toBeNull();
+      return Response.json({
+        output: { message: { content: [{ text: "aws default" }] } },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
     const instance = await BedrockDriver.create({
       instanceId: "bedrock-custom-url",
       displayName: "Bedrock",
@@ -138,10 +148,8 @@ describe("BedrockDriver", () => {
       config: { region: "us-east-1", url: "https://mantel.example/bedrock" },
       environment: { AWS_ACCESS_KEY_ID: "AKIAFIXTURE", AWS_SECRET_ACCESS_KEY: "fixture-secret" },
     });
-    await expect(instance.snapshot()).resolves.toMatchObject({
-      state: "unavailable",
-      reason: expect.stringContaining("BEDROCK_API_KEY"),
-    });
+    await expect(instance.generateText?.("Hello")).resolves.toBe("aws default");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     await instance.dispose();
   });
 
@@ -299,6 +307,7 @@ describe("BedrockDriver", () => {
       enabled: true,
       config: {
         region: "us-east-1",
+        auth: "api-key",
         model: "mantel.chat-v1",
         url: "https://mantel.example/bedrock/",
         apiKeyEnv: "MANTEL_API_KEY",
