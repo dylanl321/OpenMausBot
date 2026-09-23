@@ -17,6 +17,7 @@ export interface RoutineRunCardData {
   /** Exact terminal team-goal outcome when this run targeted a room. */
   goalStatus?: "completed" | "needs-input" | "blocked" | "limit-reached" | "paused" | "stopped" | "failed";
   executionThreadId?: string;
+  workItemIds?: string[];
   summary?: string;
   error?: string;
 }

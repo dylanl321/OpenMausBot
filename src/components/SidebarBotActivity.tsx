@@ -4,6 +4,7 @@ import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import { orderedSidebarThreads } from "./SidebarThreadRow";
 import type { SidebarDensity } from "@/lib/sidebar-preferences";
+import { sharedWorkIds } from "@/lib/shared-work-sidebar";
 
 /** Attention is not history browsing: idle conversations never enter this list.
  * Read the sibling's own status, not the bot's aggregate busy/waiting flags. */
@@ -66,7 +67,8 @@ export function AttentionThreadRows({ entries, onJump }: { entries: AttentionThr
  * These are selection-only buttons: no create, rename, move, or delete menu. */
 export function SidebarBotActivity({ bot, density }: { bot: Bot; density: SidebarDensity }) {
   const { state, dispatch } = useStore();
-  const tasks = orderedSidebarThreads(sidebarBotActivityTasks(bot, state.pendingQueued).filter((task) => task.threadId !== bot.threadId), bot.threadId);
+  const topicWorkIds = sharedWorkIds(state.groups);
+  const tasks = orderedSidebarThreads(sidebarBotActivityTasks(bot, state.pendingQueued).filter((task) => task.threadId !== bot.threadId && !topicWorkIds.has(task.workItemId ?? "")), bot.threadId);
   if (!tasks.length) return null;
   const iconOnly = density === "icons";
   return <div data-sidebar-bot-activity={bot.id} className={cn("mb-1 space-y-0.5", !iconOnly && "ml-6")}>

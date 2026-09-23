@@ -120,15 +120,34 @@ function codexAstraUpdate(
 export interface CodexConfig {
   cli: string;
   fullAuto: boolean;
+  /** Optional picker allowlist. Values remain provider-qualified selections. */
+  models?: string[];
   /** Ephemeral Company routing, supplied by the trusted desktop parent. */
   managed?: { url: string; models: string[] };
 }
 
+function configuredModelLabel(id: string): string {
+  const [route, model = route] = id.includes("::") ? id.split("::", 2) : ["", id];
+  const match = /^(?:us\.)?openai\.gpt-(\d+(?:\.\d+)?)-(sol|luna|terra|astra)$/iu.exec(model);
+  const label = match
+    ? `GPT-${match[1]} ${match[2][0].toUpperCase()}${match[2].slice(1).toLowerCase()}`
+    : model;
+  return route ? `${label} · ${route.replace(/^bedrock-/u, "")}` : label;
+}
+
 function decodeConfig(raw: unknown): CodexConfig {
   const o = (raw ?? {}) as Record<string, unknown>;
+  if (o.models !== undefined && (
+    !Array.isArray(o.models) ||
+    o.models.length === 0 ||
+    o.models.some((model) => typeof model !== "string" || !model.trim())
+  )) {
+    throw new Error("Codex models must be a non-empty list of model selections.");
+  }
   return {
     cli: typeof o.cli === "string" ? o.cli : "codex",
     fullAuto: o.fullAuto === true,
+    ...(Array.isArray(o.models) ? { models: [...new Set(o.models as string[])] } : {}),
     ...(o.managed && typeof o.managed === "object" ? { managed: decodeManagedCodex(o.managed) } : {}),
   };
 }
@@ -302,9 +321,10 @@ function mcpAppApprovalForm(params: unknown): McpApprovalForm | null {
 /** Codex persists these values on its native thread. Keep them explicit on
  * start, resume, and every turn so switching modes cannot leave a more
  * permissive sandbox/reviewer stuck to the next request. */
-/** Ask and Edits both run Codex's workspace-write sandbox with the person as
- * reviewer: Codex has no narrower "edits only" mode, so the selector never
- * offers Edits for it (supportsApprovalMode) and a stray value asks. */
+/** Ask and Auto both run Codex's workspace-write sandbox with its user-review
+ * channel. Ask surfaces that channel to the person. Auto answers recognized
+ * permission requests in-process, avoiding Codex's model-backed reviewer,
+ * which cannot resolve provider-qualified model ids such as Bedrock routes. */
 function namedApprovalParams(mode: Exclude<ApprovalMode, "custom">): CodexApprovalParams {
   if (mode === "full") {
     return {
@@ -323,12 +343,12 @@ function namedApprovalParams(mode: Exclude<ApprovalMode, "custom">): CodexApprov
   return {
     thread: {
       approvalPolicy: "on-request",
-      approvalsReviewer: mode === "auto" ? "auto_review" : "user",
+      approvalsReviewer: "user",
       sandbox: "workspace-write",
     },
     turn: {
       approvalPolicy: "on-request",
-      approvalsReviewer: mode === "auto" ? "auto_review" : "user",
+      approvalsReviewer: "user",
       sandboxPolicy: { type: "workspaceWrite" },
     },
   };
@@ -580,9 +600,13 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       return env;
     };
     const catalogEnv = childEnv();
-    let models = config.managed ? { default: config.managed.models[0], options: config.managed.models.map(id => ({ id, label: id })) } : STATIC_CODEX_MODELS;
+    let models = config.managed
+      ? { default: config.managed.models[0], options: config.managed.models.map(id => ({ id, label: id })) }
+      : config.models
+        ? { default: config.models[0], options: config.models.map(id => ({ id, label: configuredModelLabel(id), custom: true })) }
+        : STATIC_CODEX_MODELS;
     const refreshModels = async () => {
-      if (config.managed) return;
+      if (config.managed || config.models) return;
       try {
         const resolved = await readCodexModelCatalog(catalogEnv, fetch, config.cli);
         if (resolved.options.length) models = resolved;
@@ -657,7 +681,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           throw new Error(`Custom MCP server “${name}” cannot set reserved environment variable “${reserved}”`);
         }
       }
-      let autoAcceptPermissions = approvalMode === "full";
+      let autoAcceptPermissions = approvalMode === "full" || approvalMode === "auto";
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
       const turnId = newId();
       // a retry relaunches the whole app-server; the backoff is scaled down in
@@ -1397,10 +1421,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           approvalParams = namedApprovalParams(approvalMode);
         }
         // Codex's `never` means "do not ask to escalate", not "grant every
-        // requested permission". Only the user's explicit OpenMausBot Full
-        // mode may synthesize approvals; Custom must preserve the sandbox
-        // boundary from config.toml (for example never + read-only).
-        autoAcceptPermissions = approvalMode === "full";
+        // requested permission". Auto keeps the workspace sandbox and answers
+        // recognized permission requests here without a model reviewer or UI
+        // card. Full does the same atop danger-full-access. Custom preserves
+        // the configured boundary (for example never + read-only).
+        autoAcceptPermissions = approvalMode === "full" || approvalMode === "auto";
         // Each turn launches a new app-server. Reassert current bot instructions
         // on start AND resume so Codex owns their lifetime through compaction.
         // Removed bot rules are cleared without dropping native configured rules.
@@ -1409,10 +1434,15 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         let resumedNativeThread = false;
         let rebuiltFromReplay = false;
         let promptText = turn.text;
+        const selection = config.managed
+          ? { model: turn.model, modelProvider: "openmaus_company" }
+          : decodeCodexSelection(turn.model);
         if (cursor) {
           const resumeThread = () => request("thread/resume", {
             threadId: cursor,
             developerInstructions,
+            model: selection.model,
+            ...(selection.modelProvider ? { modelProvider: selection.modelProvider } : {}),
             ...approvalParams.thread,
           });
           try {
@@ -1450,7 +1480,6 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           }
         }
         if (!codexThreadId) {
-          const selection = config.managed ? { model: turn.model, modelProvider: "openmaus_company" } : decodeCodexSelection(turn.model);
           const startThread = () => request("thread/start", {
               developerInstructions,
               cwd: turn.cwd ?? homedir(),

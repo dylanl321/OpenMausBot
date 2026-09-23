@@ -408,7 +408,7 @@ describe("independent bot tasks through the isolated control surface", () => {
     evidence.push({ groupDefaultPreservedUntilStop: true, groupId: group.id, selectedTaskId: threadId });
   }, 30_000);
 
-  it("refuses a second engine in the same selected project folder until its owner stops", async () => {
+  it("parks a second engine in the same selected project folder and starts it after release", async () => {
     const created = await tool("create_bot", { name: "Shared project fixture", instance_id: "claude", model: models[0] });
     const botId = created.bot.id;
     const taskA = created.bot.activeTaskId;
@@ -421,16 +421,20 @@ describe("independent bot tasks through the isolated control surface", () => {
     const taskB = second.task.taskId;
     await control(["set-model", "--bot", botId, "--task", taskB, "--instance", "claude", "--model", models[1]]);
     await control(["send", "--bot", botId, "--task", taskB, "--text", "PROJECT_B_CONFLICT"]);
-    const blocked = await control(["wait", "--bot", botId, "--task", taskB, "--timeout", "10"]);
-    expect(blocked.status).toBe("failed");
-    expect(JSON.stringify(blocked.messages)).toContain("project folder");
+    await expect.poll(async () => (await api("GET", `/api/threads/${taskB}/messages`)).body.messages
+      .some((message: any) => message.tool?.name?.includes("Waiting for the project folder"))).toBe(true);
     expect(existsSync(modelFile(models[1], "json"))).toBe(false);
     expect((await botState(botId)).tasks.find((task: any) => task.taskId === taskA)?.busy).toBe(true);
+    expect((await botState(botId)).tasks.find((task: any) => task.taskId === taskB)?.busy).toBe(true);
 
     await control(["interrupt", "--bot", botId, "--task", taskA]);
     await control(["wait", "--bot", botId, "--task", taskA, "--timeout", "10"]);
-    await control(["send", "--bot", botId, "--task", taskB, "--text", "PROJECT_B_NOW_OWNS_FOLDER"]);
     expect((await dump(models[1])).env.OMB_FIXTURE_CWD).toBe(realpathSync(cwd));
+    const messages = (await api("GET", `/api/threads/${taskB}/messages`)).body.messages;
+    expect(messages.some((message: any) => message.tool?.name === "Project folder is free — starting")).toBe(true);
+    expect(messages.filter((message: any) => message.role === "user").map((message: any) => message.text))
+      .toContain("PROJECT_B_CONFLICT");
+    expect(JSON.stringify(messages)).not.toContain("another thread is working in this project folder");
     await control(["interrupt", "--bot", botId, "--task", taskB]);
   }, 45_000);
 

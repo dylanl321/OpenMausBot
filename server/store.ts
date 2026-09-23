@@ -101,7 +101,7 @@ export function toWireTask(task: TaskRecord): WireTask {
 const TASK_PATCH_FIELDS = [
   "title", "projectId", "modelSelection", "approvalMode", "autoApprove", "alwaysAllow",
   "unread", "rewound", "archivedAt", "pinnedMessageId", "resumeCursors", "lastInstanceId", "cwd",
-  "routineRunId", "surface", "appliedCompactionId", "contextFloor", "lastContextModel",
+  "routineRunId", "surface", "appliedCompactionId", "contextFloor", "lastContextModel", "workItemId",
 ] as const satisfies readonly (keyof TaskRecord)[];
 export type TaskPatch = Partial<Pick<TaskRecord, typeof TASK_PATCH_FIELDS[number]>>;
 
@@ -1005,6 +1005,14 @@ export class Store {
     const group = this.group(groupId);
     if (!group || group.dm) return undefined;
     return group.tasks?.find((task) => task.threadId === threadId);
+  }
+
+  linkGroupWorkItem(groupId: string, threadId: string, workItemId: string) {
+    const task = this.groupTaskByThread(groupId, threadId);
+    if (!task) throw new Error("Shared task conversation no longer exists");
+    task.workItemId = workItemId;
+    this.saveGroups();
+    this.emit({ type: "group", groupId });
   }
 
   createGroupTask(groupId: string, title?: string, activate = true): GroupTaskRecord | null {

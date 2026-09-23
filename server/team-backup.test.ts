@@ -6,6 +6,7 @@ import { Store, UNTITLED_TASK } from "./store.ts";
 import { RoutineManager } from "./routines.ts";
 import { createTeamBackup, importTeamBackup } from "./team-backup.ts";
 import { parseTeamBackup } from "../shared/team-backup.ts";
+import { WorkItems } from "./work-items.ts";
 import { soulFile, soulHash } from "./bot-folder.ts";
 import { appendMemoryLog, readMemoryFile, readMemoryLog, readMemoryTopic, searchMemoryFiles, updateMemory, workspaceDir, writeMemoryTopic } from "./workspace.ts";
 
@@ -56,6 +57,33 @@ function fixture() {
 }
 
 describe("additive portable team backups", () => {
+  it("remaps shared task hubs and worker links without replaying imported execution", () => {
+    const { store, routines, chief, scout, group } = fixture();
+    const items = new WorkItems(join(DATA_DIR, "work-items.json"));
+    const { item } = items.ensure({ scope: "Engineering", identity: "generic:project-review", groupId: group.id, threadId: group.threadId,
+      coordinatorBotId: chief.id, title: "Project review", objective: "Review the project", acceptanceCriteria: ["Checks run"] });
+    items.claim(item, { botId: scout.id, threadId: scout.threadId, message: "Run the checks" });
+    store.linkGroupWorkItem(group.id, group.threadId, item.id);
+    store.patchTask(scout.id, scout.threadId, { workItemId: item.id });
+    const backup = createTeamBackup(store, routines.listRoutines(), "Shared delivery", items);
+    const malformed = structuredClone(backup);
+    malformed.workItems![0].assignments[0].threadId = chief.threadId;
+    expect(() => parseTeamBackup(malformed)).toThrow("shared task worker");
+    const imported = importTeamBackup(store, routines, backup, selection(), items);
+    const restored = [...items.records.values()].find(candidate => candidate.id !== item.id)!;
+    expect(restored.status).toBe("blocked");
+    expect(restored.rootId).toBeUndefined();
+    expect(restored.sources).toEqual([]);
+    expect(restored.groupId).not.toBe(group.id);
+    expect(restored.threadId).not.toBe(group.threadId);
+    expect(restored.assignments[0]).toMatchObject({ status: "failed" });
+    expect(restored.assignments[0]).not.toHaveProperty("requestId");
+    expect(imported.groups.some(candidate => candidate.id === restored.groupId)).toBe(true);
+    expect(store.groupTaskByThread(restored.groupId, restored.threadId)?.workItemId).toBe(restored.id);
+    expect(store.taskByThread(restored.assignments[0].botId, restored.assignments[0].threadId)?.workItemId).toBe(restored.id);
+    expect(items.ensure({ scope: restored.scope, identity: restored.identity, groupId: restored.groupId, threadId: restored.threadId,
+      coordinatorBotId: restored.coordinatorBotId, title: restored.title, objective: restored.objective, acceptanceCriteria: restored.acceptanceCriteria }).started).toBe(false);
+  });
   beforeEach(() => rmSync(DATA_DIR, { recursive: true, force: true }));
 
   it("carries each bot's memory, topic notes and daily logs, scrubbed on the way out and private on the way in", () => {

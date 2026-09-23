@@ -70,7 +70,7 @@ describe("createOpenAIChatRuntime tool approvals", () => {
     return { command: script, args: [], env: {} };
   };
 
-  const cardRaisedFor = async (approvalMode: "ask" | "full") => {
+  const cardRaisedFor = async (approvalMode: "ask" | "full", toolApproval?: "ask" | "always") => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(
       'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"fx_write","arguments":"{}"}}]}}]}\n\n'
         + 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n',
@@ -78,7 +78,9 @@ describe("createOpenAIChatRuntime tool approvals", () => {
     )));
     const instance = await OpenAICompatDriver.create({
       instanceId: "compat", displayName: "Compat", enabled: true,
-      config: OpenAICompatDriver.decodeConfig({ url: "https://api.example.com/v1", apiKeyEnv: "K", model: "m" }),
+      config: OpenAICompatDriver.decodeConfig({
+        url: "https://api.example.com/v1", apiKeyEnv: "K", model: "m", toolApproval,
+      }),
       environment: { K: "secret" },
     });
     const events: RuntimeEvent[] = [];
@@ -104,6 +106,10 @@ describe("createOpenAIChatRuntime tool approvals", () => {
 
   it("answers for the person under Full access, so no card is raised", async () => {
     expect(await cardRaisedFor("full")).toBe(false);
+  }, 20_000);
+
+  it("honours an instance-wide always-approve tool policy", async () => {
+    expect(await cardRaisedFor("ask", "always")).toBe(false);
   }, 20_000);
 });
 

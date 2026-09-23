@@ -113,6 +113,7 @@ export interface Routine {
 }
 
 export interface RoutineRun {
+  workItemIds?: string[];
   id: string;
   routineId: string;
   routineName: string;
@@ -1618,6 +1619,32 @@ export class RoutineManager {
     this.emitRun(run);
     if (event.type === "turn.completed") queueMicrotask(() => void this.tick());
     return cloneRun(run);
+  }
+
+  linkSharedWork(threadId: string, workItemId: string) {
+    const run = this.runs.find(candidate => candidate.threadId === threadId && ["running", "waiting"].includes(candidate.status));
+    if (!run || run.workItemIds?.includes(workItemId)) return;
+    run.workItemIds = [...run.workItemIds ?? [], workItemId];
+    this.save();
+    this.emitRun(run);
+  }
+
+  settleSharedWork(threadId: string, status: "completed" | "blocked" | "needs-input" | "cancelled", detail: string, workItemIds: string[]) {
+    const run = this.runs.find(candidate => candidate.threadId === threadId && candidate.status === "waiting");
+    if (!run) return;
+    const safeDetail = redactSecretsInText(detail).slice(0, 2000);
+    if (status === "needs-input" && run.attention === safeDetail) return;
+    run.workItemIds = workItemIds;
+    if (status === "blocked") this.failRun(run, safeDetail);
+    else {
+      run.status = status === "needs-input" ? "waiting" : status;
+      run.attention = status === "needs-input" ? safeDetail : undefined;
+      run.output = safeDetail;
+      if (status !== "needs-input") run.finishedAt = this.now();
+      this.save();
+      this.emitRun(run);
+    }
+    if (status !== "needs-input") queueMicrotask(() => void this.tick());
   }
 
   failThread(threadId: string, message: string) {

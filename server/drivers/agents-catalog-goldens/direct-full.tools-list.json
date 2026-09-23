@@ -101,6 +101,149 @@
       }
     },
     {
+      "name": "ensure_work_item",
+      "description": "Before assigning a deliverable or ongoing multi-bot work, create or reuse its shared task. This automatically creates/reuses a topic room and task hub, then schedules its coordinator there. Use a stable identity including source/account and item ID (not a title or timestamp); for generic work choose a durable task key and keep reusing it. Use input only for relevant changed requirements/source content, never polling timestamps, acknowledgements or your own status comments. Unchanged active/completed/blocked work is reused without another execution. No files or permissions are transferred. End the source turn after acceptance; the task's final outcome returns automatically. Quick standalone advice does not need a task.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "work_item_id": {
+            "type": "string"
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "topic": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "identity": {
+            "type": "string",
+            "maxLength": 240
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "objective": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "acceptance_criteria": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "maxItems": 20
+          },
+          "input": {
+            "type": "string",
+            "maxLength": 12000
+          }
+        },
+        "required": [
+          "title",
+          "objective",
+          "acceptance_criteria"
+        ]
+      }
+    },
+    {
+      "name": "get_work_item",
+      "description": "Read a shared task's current brief, revision, assignments, blockers and recorded results. Omit work_item_id for the current task and accessible task directory. Read on a new instruction or returned result; do not poll waiting teammates.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "work_item_id": {
+            "type": "string"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "update_work_item",
+      "description": "Coordinator only, from the shared hub: record a decision, artifacts or terminal outcome against expected_revision. Completion needs a concrete detail, actual evidence references and every acceptance criterion in completed_criteria; all current assignments must have succeeded. Use blocked/needs-input for missing evidence or authority. Do not change requirements, reopen unchanged work or claim tests ran without execution evidence.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "work_item_id": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "blocked",
+              "needs-input",
+              "completed",
+              "cancelled"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "decision": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100
+          },
+          "completed_criteria": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20
+          },
+          "artifacts": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "ref": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "revision": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "ref",
+                "label"
+              ]
+            }
+          }
+        },
+        "required": [
+          "work_item_id",
+          "expected_revision"
+        ]
+      }
+    },
+    {
       "name": "list_bots",
       "description": "List the other bots (agents) you may contact in your own team and any additional teams the owner has explicitly allowed you to coordinate, with their team, model and current status. Call this to discover exact teammate IDs before assigning work or requesting advice through your available coordination tools.",
       "inputSchema": {

@@ -1,4 +1,5 @@
 import { t } from "./i18n";
+import { randomId } from "./random-id";
 
 interface BrowserProfileUser {
   name: string;
@@ -28,7 +29,7 @@ export function browserProfilesMutation(current: BrowserProfileRecord[], next: B
 }
 
 export function newBrowserProfileId(): string {
-  return `profile-${crypto.randomUUID().replaceAll("-", "")}`;
+  return `profile-${randomId().replaceAll("-", "")}`;
 }
 
 /** A live turn may still be issuing browser actions against this partition.

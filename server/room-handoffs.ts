@@ -12,6 +12,8 @@ const nodeSchema = z.object({
   executions: z.number().int().nonnegative().default(0), startedAt: z.number().optional(),
   approvalGranted: z.boolean().default(false),
   kind: z.enum(["work", "assignment"]).default("work"),
+  stateKey: z.string().optional(),
+  workItemId: z.string().optional(), workRevision: z.number().int().positive().optional(), workAssignmentId: z.string().optional(),
 });
 export type RoomHandoff = z.infer<typeof nodeSchema>;
 export type RoomAddress = Pick<RoomHandoff, "groupId" | "threadId" | "botId">;
@@ -21,6 +23,7 @@ const duration = (ms: number) => ms >= 60_000 ? `${Math.floor(ms / 60_000)}m` : 
 const terminal = (n: RoomHandoff) => ["completed", "failed", "cancelled"].includes(n.status);
 
 export interface RoomHandoffHooks {
+  admit?(node: RoomHandoff): string | undefined;
   /** Recheck addresses and route permission immediately before every dispatch. */
   validate(node: RoomHandoff, parent?: RoomHandoff): string | undefined;
   busy(node: RoomHandoff): boolean;
@@ -163,9 +166,35 @@ export class RoomHandoffs {
     return `Room handoff hard cap exhausted: node was ${n.status} after ${duration(this.now() - root.createdAt)} of the ${duration(this.limits.hardCapMs)} wall-clock cap`;
   }
 
+  startWork(source: RoomAddress, id: string, text: string, workItemId: string, workRevision: number) {
+    if (this.loadError) throw new Error(this.loadError);
+    const existing = this.nodes.get(id);
+    if (existing) return existing;
+    const node: RoomHandoff = { ...source, id, rootId: id, key: "shared-task", text: text.slice(0, 12_000),
+      createdAt: this.now(), status: "queued", result: "", reported: true, executions: 0,
+      approvalGranted: false, kind: "work", workItemId, workRevision };
+    const problem = this.hooks.validate(node);
+    if (problem) throw new Error(problem);
+    this.nodes.set(id, node);
+    this.publish(node);
+    return node;
+  }
+
+  stopWork(workItemId: string, reason: string) {
+    for (const node of this.nodes.values()) {
+      if (node.workItemId !== workItemId || terminal(node) || (node.parentId && node.status === "running")) continue;
+      node.status = "cancelled";
+      node.result = reason;
+      this.controllers.get(node.id)?.abort();
+      this.publish(node);
+    }
+    this.trackExecutionPauses();
+  }
+
   enqueue(source: RoomAddress, generation: string, parentId: string | undefined,
     target: RoomAddress, key: string, text: string, approvalGranted = false,
-    rework = false, sourceText = ""): { node: RoomHandoff; duplicate: boolean } {
+    rework = false, sourceText = "", stateKey?: string,
+    work?: Pick<RoomHandoff, "workItemId" | "workRevision" | "workAssignmentId">): { node: RoomHandoff; duplicate: boolean } {
     if (this.loadError) throw new Error(this.loadError);
     let parent = parentId ? this.nodes.get(parentId) : this.nodes.get(generation);
     if (parentId && (!parent || parent.status !== "running")) throw new Error("The originating room task is no longer running");
@@ -184,6 +213,17 @@ export class RoomHandoffs {
       if (existing.groupId !== target.groupId || existing.botId !== target.botId || existing.text !== text ||
         existing.kind !== kind) throw new Error("request_key was already used for different work");
       return { node: existing, duplicate: true };
+    }
+    // A routine or a new user turn creates a fresh root, so request_key alone
+    // cannot see equivalent work from an earlier tree. Callers that know the
+    // artifact revision and gate can supply a stable state key. Reuse the
+    // prior result until that key changes; explicit rework remains the escape
+    // hatch for a concrete correction or an intentionally repeated check.
+    if (stateKey && !rework) {
+      const prior = [...this.nodes.values()].reverse().find(n =>
+        n.stateKey === stateKey && n.kind === kind &&
+        n.groupId === target.groupId && n.botId === target.botId);
+      if (prior) return { node: prior, duplicate: true };
     }
     if (!rework && this.children(parent.id).some(n => n.kind === kind &&
       n.groupId === target.groupId && n.botId === target.botId && n.status === "completed")) {
@@ -217,7 +257,7 @@ export class RoomHandoffs {
     }
     const node: RoomHandoff = { ...target, id: randomUUID(), rootId: parent.rootId, parentId: parent.id,
       key, text, createdAt: this.now(), status: "queued", result: "", reported: false, executions: 0, approvalGranted,
-      kind };
+      kind, ...(stateKey ? { stateKey } : {}), ...work };
     const problem = this.hooks.validate(node, parent);
     if (problem) throw new Error(problem);
     if (fresh) this.nodes.set(parent.id, parent);
@@ -324,6 +364,8 @@ export class RoomHandoffs {
       // dropped with it. A teammate mid-turn keeps its process and reports.
       if (parent && terminal(parent) && n.status === "queued") { this.cancelTree(n, "Originating request has ended"); continue; }
       if (this.hooks.busy(n)) continue;
+      const admissionError = this.hooks.admit?.(n);
+      if (admissionError) { this.cancelTree(n, admissionError, "failed"); continue; }
       const root = this.root(n);
       const executionCost = 1;
       if (root.executions + executionCost > this.limits.executions) { this.cancelTree(n, "Room execution budget exhausted", "failed"); continue; }

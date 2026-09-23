@@ -68,7 +68,8 @@ entry:
       "config": {
         "url": "http://127.0.0.1:1234/v1",
         "apiKeyEnv": "MY_ENDPOINT_KEY",
-        "model": "my-model"
+        "model": "my-model",
+        "tools": true
       }
     }
   }
@@ -79,9 +80,21 @@ entry:
   instances can hold different keys without colliding.
 - The driver lists the endpoint's `/models` when it can and keeps your
   `model` as a custom option either way.
-- Honest limits: chat text + reasoning streams only — **no tool calls**, so
-  bots on these instances answer and write, but don't operate computers or
-  connected apps.
+- Set `tools` to `true` when the endpoint supports OpenAI function tools.
+- `toolApproval: "always"` executes every mounted tool without approval
+  cards. This trusts the model with all selected MCP integrations; omit it or
+  use `"ask"` when each operation should still require confirmation.
+- `modelUrls` maps individual model ids to a different OpenAI-compatible base
+  URL. This is useful for Bedrock models or inference profiles that live in
+  different AWS regions while keeping one model picker:
+
+  ```json
+  {
+    "modelUrls": {
+      "us.openai.gpt-6-luna": "https://bedrock-runtime.us-east-2.amazonaws.com/openai/v1"
+    }
+  }
+  ```
 
 ## Notes
 
@@ -96,3 +109,13 @@ entry:
   endpoint like Mantel. Set `config.auth` to `"api-key"` whenever the instance
   should use API-key auth instead of SigV4, including Mantel-style endpoints.
   `config.model` remains optional in both modes.
+- Native Bedrock bearer tokens use `config.auth: "bearer"` and
+  `AWS_BEARER_TOKEN_BEDROCK`. The driver sends the token as
+  `Authorization: Bearer ...`; do not include the `Bearer` prefix in the
+  environment value.
+- OpenAI models use Bedrock's OpenAI-compatible Chat Completions endpoint.
+  The catalog may include both GPT-5.6 and GPT-6 inference-profile ids. GPT-6
+  models require a supported reasoning effort. GPT-6 Sol and Luna use `none`
+  for Chat Completions tool compatibility; Astra uses `low`, but Astra tool
+  calling requires a Responses-capable engine such as native Codex. GPT-5.6
+  tool calls retain `none`.

@@ -17,12 +17,11 @@ const DRIVER_KIND = "bedrock";
 const DEFAULT_REGION = "us-east-1";
 const HTTP_HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const DEFAULT_MODELS: ModelCatalog = {
-  default: "amazon.nova-lite-v1:0",
+  default: "us.openai.gpt-5.6-sol",
   options: [
-    { id: "amazon.nova-lite-v1:0", label: "Amazon Nova Lite", custom: true },
-    { id: "amazon.nova-pro-v1:0", label: "Amazon Nova Pro", custom: true },
-    { id: "anthropic.claude-3-5-sonnet-20241022-v2:0", label: "Claude 3.5 Sonnet", custom: true },
-    { id: "meta.llama3-3-70b-instruct-v1:0", label: "Llama 3.3 70B Instruct", custom: true },
+    { id: "us.openai.gpt-5.6-sol", label: "OpenAI GPT-5.6 Sol", custom: true },
+    { id: "us.openai.gpt-5.6-terra", label: "OpenAI GPT-5.6 Terra", custom: true },
+    { id: "us.openai.gpt-5.6-luna", label: "OpenAI GPT-5.6 Luna", custom: true },
   ],
 };
 
@@ -30,7 +29,7 @@ export interface BedrockConfig {
   region?: string;
   model?: string;
   url?: string;
-  auth?: "aws" | "api-key";
+  auth?: "aws" | "api-key" | "bearer";
   apiKeyEnv?: string;
   apiKeyHeader?: string;
 }
@@ -73,6 +72,13 @@ interface BedrockResponse {
   message?: unknown;
   error?: unknown;
   __type?: unknown;
+  choices?: Array<{
+    message?: {
+      content?: unknown;
+    };
+  }>;
+  prompt_tokens?: unknown;
+  completion_tokens?: unknown;
 }
 
 function sha256Hex(value: string): string {
@@ -104,11 +110,14 @@ function hasAwsCredentials(credentials: AwsCredentials): boolean {
 
 function authFrom(config: BedrockConfig, environment: Record<string, string>): BedrockAuth | null {
   const authMode = config.auth ?? "aws";
-  const apiKeyEnv = config.apiKeyEnv?.trim() || "BEDROCK_API_KEY";
-  const apiKeyHeader = config.apiKeyHeader?.trim() || "x-api-key";
-  if (authMode === "api-key") {
-    const apiKey = environment[apiKeyEnv]?.trim();
-    return apiKey ? { kind: "api-key", header: apiKeyHeader, value: apiKey } : null;
+  const apiKeyEnv = config.apiKeyEnv?.trim()
+    || (authMode === "bearer" ? "AWS_BEARER_TOKEN_BEDROCK" : "BEDROCK_API_KEY");
+  if (authMode === "api-key" || authMode === "bearer") {
+    const apiKey = (environment[apiKeyEnv] ?? process.env[apiKeyEnv])?.trim();
+    if (!apiKey) return null;
+    return authMode === "bearer"
+      ? { kind: "api-key", header: "authorization", value: `Bearer ${apiKey.replace(/^Bearer\s+/iu, "")}` }
+      : { kind: "api-key", header: config.apiKeyHeader?.trim() || "x-api-key", value: apiKey };
   }
   const credentials = awsCredentialsFrom(environment);
   return hasAwsCredentials(credentials) ? { kind: "aws", credentials } : null;
@@ -127,7 +136,10 @@ function resolveRegion(config: BedrockConfig, environment: Record<string, string
 }
 
 function catalogFor(config: BedrockConfig): ModelCatalog {
-  if (!config.model || DEFAULT_MODELS.options.some((option) => option.id === config.model)) return DEFAULT_MODELS;
+  if (!config.model) return DEFAULT_MODELS;
+  if (DEFAULT_MODELS.options.some((option) => option.id === config.model)) {
+    return { ...DEFAULT_MODELS, default: config.model };
+  }
   return {
     default: config.model,
     options: [{ id: config.model, label: config.model, custom: true }, ...DEFAULT_MODELS.options],
@@ -295,6 +307,23 @@ function decodeResponse(json: BedrockResponse): BedrockCompletion {
   };
 }
 
+function decodeOpenAiResponse(json: BedrockResponse): BedrockCompletion {
+  const raw = json.choices?.[0]?.message?.content;
+  const text = typeof raw === "string"
+    ? raw.replace(/<reasoning>[\s\S]*?<\/reasoning>/giu, "").trim()
+    : "";
+  const usage = json.usage as BedrockResponse["usage"] & {
+    prompt_tokens?: unknown;
+    completion_tokens?: unknown;
+  };
+  const input = typeof usage?.prompt_tokens === "number" ? usage.prompt_tokens : null;
+  const output = typeof usage?.completion_tokens === "number" ? usage.completion_tokens : null;
+  return {
+    text,
+    usage: input === null && output === null ? null : { input: input ?? 0, output: output ?? 0 },
+  };
+}
+
 function parseJsonBody(text: string): BedrockResponse | null {
   if (!text.trim()) return null;
   try {
@@ -325,12 +354,30 @@ async function callBedrock(
   maxTokens?: number,
   signal?: AbortSignal,
 ): Promise<BedrockCompletion> {
-  const url = converseUrl(config, model, region);
-  const body = JSON.stringify({
-    messages: messagesFor(turn),
-    ...(turn.system ? { system: [{ text: turn.system }] } : {}),
-    ...(maxTokens ? { inferenceConfig: { maxTokens } } : {}),
-  });
+  const openAiModel = /(?:^|\.)openai\./u.test(model);
+  const gpt56Model = /(?:^|\.)openai\.gpt-5\.6-/u.test(model);
+  const url = openAiModel
+    ? new URL(`${endpointRoot(config, region)}/openai/v1/chat/completions`)
+    : converseUrl(config, model, region);
+  const body = openAiModel
+    ? JSON.stringify({
+        model,
+        messages: [
+          ...(turn.system ? [{ role: "system", content: turn.system }] : []),
+          ...messagesFor(turn).map((message) => ({
+            role: message.role,
+            content: message.content.map((part) => part.text).join("\n"),
+          })),
+        ],
+        ...(maxTokens
+          ? gpt56Model ? { max_completion_tokens: maxTokens } : { max_tokens: maxTokens }
+          : {}),
+      })
+    : JSON.stringify({
+        messages: messagesFor(turn),
+        ...(turn.system ? { system: [{ text: turn.system }] } : {}),
+        ...(maxTokens ? { inferenceConfig: { maxTokens } } : {}),
+      });
   const headers = auth.kind === "aws"
     ? signedHeadersFor("POST", url, region, body, auth.credentials)
     : { "content-type": "application/json", [auth.header]: auth.value };
@@ -349,13 +396,21 @@ async function callBedrock(
   }
   if (!json?.output && bodyMessage) throw new Error(`Bedrock HTTP ${response.status}: ${safeText(bodyMessage, secrets)}`);
   if (!json) throw new Error("Bedrock returned no JSON response");
+  if (openAiModel) {
+    if (!Array.isArray(json.choices)) throw new Error("Bedrock returned an invalid OpenAI response shape");
+    return decodeOpenAiResponse(json);
+  }
   if (!Array.isArray(json.output?.message?.content)) throw new Error("Bedrock returned an invalid response shape");
   return decodeResponse(json);
 }
 
 function missingCredentialReason(config: BedrockConfig): string {
-  const apiKeyEnv = config.apiKeyEnv?.trim() || "BEDROCK_API_KEY";
   const authMode = config.auth ?? "aws";
+  const apiKeyEnv = config.apiKeyEnv?.trim()
+    || (authMode === "bearer" ? "AWS_BEARER_TOKEN_BEDROCK" : "BEDROCK_API_KEY");
+  if (authMode === "bearer") {
+    return `missing Bedrock bearer token — set ${apiKeyEnv}`;
+  }
   if (authMode === "api-key") {
     return config.url
       ? `missing Bedrock API key for ${normalizeBaseUrl(config.url)} — set ${apiKeyEnv}`
@@ -377,13 +432,17 @@ export function decodeBedrockConfig(raw: unknown): BedrockConfig {
     ? config.model.trim()
     : undefined;
   const url = decodeBaseUrl(config.url);
-  const auth = config.auth === "api-key" || config.auth === "aws" ? config.auth : undefined;
+  const auth = config.auth === "api-key" || config.auth === "bearer" || config.auth === "aws"
+    ? config.auth
+    : undefined;
   return {
     ...(region ? { region } : {}),
     ...(url ? { url } : {}),
     ...(model ? { model } : {}),
     ...(auth ? { auth } : {}),
-    apiKeyEnv: typeof config.apiKeyEnv === "string" && config.apiKeyEnv.trim() ? config.apiKeyEnv.trim() : "BEDROCK_API_KEY",
+    apiKeyEnv: typeof config.apiKeyEnv === "string" && config.apiKeyEnv.trim()
+      ? config.apiKeyEnv.trim()
+      : auth === "bearer" ? "AWS_BEARER_TOKEN_BEDROCK" : "BEDROCK_API_KEY",
     apiKeyHeader: decodeApiKeyHeader(config.apiKeyHeader),
   };
 }

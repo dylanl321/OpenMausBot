@@ -426,6 +426,24 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     const r = await api("/api/internal/room-targets");
     return { text: JSON.stringify(r), ...(r.error ? { isError: true } : {}) };
   }
+  if (name === "ensure_work_item") {
+    const result = await api("/api/internal/work-items/ensure", { method: "POST", body: JSON.stringify({
+      workItemId: args.work_item_id, groupId: args.group_id, topic: args.topic, identity: args.identity,
+      title: args.title, objective: args.objective, acceptanceCriteria: args.acceptance_criteria, input: args.input,
+    }) });
+    return { text: JSON.stringify(result), ...(result.error ? { isError: true } : {}) };
+  }
+  if (name === "get_work_item") {
+    const result = await api(`/api/internal/work-items${typeof args.work_item_id === "string" ? `?workItemId=${encodeURIComponent(args.work_item_id)}` : ""}`);
+    return { text: JSON.stringify(result), ...(result.error ? { isError: true } : {}) };
+  }
+  if (name === "update_work_item") {
+    const result = await api("/api/internal/work-items/update", { method: "POST", body: JSON.stringify({
+      workItemId: args.work_item_id, expectedRevision: args.expected_revision, status: args.status, detail: args.detail,
+      decision: args.decision, artifacts: args.artifacts, evidence: args.evidence, completedCriteria: args.completed_criteria,
+    }) });
+    return { text: JSON.stringify(result), ...(result.error ? { isError: true } : {}) };
+  }
   if (name === "coordinate_bots") {
     // The tool's arguments are snake_case, but the harness wire they land on
     // is camelCase, and a caller can reach for that spelling. Map the aliases
@@ -435,9 +453,11 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     const canonical: Json = { ...args };
     delete canonical.botIds;
     delete canonical.requestKey;
+    delete canonical.stateKey;
     delete canonical.groupId;
     if (canonical.bot_ids === undefined) canonical.bot_ids = args.botIds;
     if (canonical.request_key === undefined) canonical.request_key = args.requestKey;
+    if (canonical.state_key === undefined) canonical.state_key = args.stateKey;
     if (canonical.group_id === undefined) canonical.group_id = args.groupId;
     const ids = canonical.bot_ids;
     const usable = Array.isArray(ids) && ids.length > 0 && ids.every((id) => typeof id === "string")
@@ -445,13 +465,15 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       && typeof canonical.request_key === "string" && canonical.request_key.trim().length > 0;
     if (!usable) {
       return {
-        text: `coordinate_bots takes snake_case arguments: bot_ids (an array of 1-4 teammate ids), message and request_key are required; group_id, rework and label are optional. Received: ${Object.keys(args).join(", ") || "none"}.`,
+        text: `coordinate_bots takes snake_case arguments: bot_ids (an array of 1-4 teammate ids), message and request_key are required; state_key, group_id, rework and label are optional. Received: ${Object.keys(args).join(", ") || "none"}.`,
         isError: true,
       };
     }
     const r = await api("/api/internal/coordinate-bots", { method: "POST", body: JSON.stringify({
       groupId: canonical.group_id, botIds: ids, message: canonical.message,
-      requestKey: canonical.request_key, rework: canonical.rework, label: canonical.label,
+      requestKey: canonical.request_key, stateKey: canonical.state_key,
+      rework: canonical.rework, label: canonical.label,
+      intent: canonical.intent, workItemId: canonical.work_item_id, assignmentId: canonical.assignment_id,
     }) });
     return { text: JSON.stringify(r), ...(r.error ? { isError: true } : {}) };
   }

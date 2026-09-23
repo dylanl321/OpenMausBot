@@ -36,6 +36,7 @@ import { ConnectorCard } from "./ConnectorCard";
 import { SecretRequestCard } from "./SecretRequestCard";
 import { hasRoutineExecutionTask, RoutineRunCard } from "./RoutineRunCard";
 import { GoalRunCard } from "./GoalRunCard";
+import { WorkItemPanel } from "./WorkItemPanel";
 import { AttachmentGallery, MessageAttachmentGallery } from "./AttachmentGallery";
 import { OptionCard } from "./OptionCard";
 import { GroupCallButton, GroupCallOverlay } from "./GroupCallView";
@@ -889,7 +890,10 @@ function RoomSetup({ group, members }: { group: Group; members: Bot[] }) {
     </section>
   );
 }
-export function GroupView({ group }: { group: Group }) {
+export function GroupView({ group: suppliedGroup }: { group: Group }) {
+  const selectedWork = suppliedGroup.tasks?.find(task => task.threadId === suppliedGroup.threadId)?.workItem;
+  const group = selectedWork ? { ...suppliedGroup, working: selectedWork.status === "active",
+    busyBotId: suppliedGroup.busyThreadId === suppliedGroup.threadId ? suppliedGroup.busyBotId : null } : suppliedGroup;
   const { state, dispatch } = useStore();
   const remoteClient = window.ogb?.remoteClient?.active === true;
   // Same Windows caption handling as ChatView: drag on the header, shift the
@@ -1206,6 +1210,8 @@ export function GroupView({ group }: { group: Group }) {
       </div>
 
       {findOpen && <ChatFindBar threadId={group.threadId} onClose={() => setFindOpen(false)} />}
+      {group.tasks?.find(task => task.threadId === group.threadId)?.workItem &&
+        <WorkItemPanel key={group.threadId} item={group.tasks.find(task => task.threadId === group.threadId)!.workItem!} />}
 
       {/* Bulletin: one pinned line; click to edit */}
       {!setupPending && <div className="w-full px-5">

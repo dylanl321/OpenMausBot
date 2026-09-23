@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { workItemSchema } from "./work-item.ts";
 
 export const MAX_TEAM_BACKUP_BYTES = 50 * 1024 * 1024;
 export const TEAM_BACKUP_CONTENTS = "Bot profiles, instructions, sections, rooms, playbooks, routines, each bot's memory (MEMORY.md, topic notes and daily logs) and conversation text (all tasks and branches).";
@@ -98,6 +99,7 @@ const backupSchema = z.object({
     durationMinutes: z.number().finite().positive(),
     timeoutMinutes: z.number().int().min(5).max(240).optional(),
   })).max(2_000),
+  workItems: z.array(workItemSchema.extend({ identity: z.string().min(1).max(240), inputHash: z.string().max(64) })).max(10_000).optional(),
 });
 
 export type TeamBackup = z.infer<typeof backupSchema>;
@@ -119,6 +121,21 @@ export function parseTeamBackup(input: unknown): TeamBackup {
   };
   const bots = unique(backup.bots.map((bot) => bot.key), "bot key");
   const groups = unique(backup.groups.map((group) => group.key), "room key");
+  unique((backup.workItems ?? []).map(item => item.id), "shared task key");
+  const sharedThreads = new Set<string>();
+  for (const item of backup.workItems ?? []) {
+    const group = backup.groups.find(candidate => candidate.key === item.groupId);
+    if (!group || group.dm || !group.tasks.some(task => task.key === item.threadId) || !group.memberIds.includes(item.coordinatorBotId) || !bots.has(item.coordinatorBotId)) {
+      throw new Error("Invalid backup: unknown shared task hub or coordinator");
+    }
+    if (sharedThreads.has(item.threadId)) throw new Error("Invalid backup: shared task hub has multiple owners");
+    sharedThreads.add(item.threadId);
+    unique(item.assignments.map(assignment => assignment.id), "shared assignment key");
+    for (const assignment of item.assignments) {
+      const bot = backup.bots.find(candidate => candidate.key === assignment.botId);
+      if (!bot?.tasks.some(task => task.key === assignment.threadId) || assignment.revision > item.revision) throw new Error("Invalid backup: unknown shared task worker or revision");
+    }
+  }
   const chiefs = new Set<string>();
   for (const bot of backup.bots) {
     if (!bot.chiefOfStaff) continue;

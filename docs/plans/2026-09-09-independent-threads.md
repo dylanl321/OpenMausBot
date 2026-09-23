@@ -55,10 +55,12 @@ not grant an automated run attended permissions.
 
 New local-agent threads receive independent default working directories.
 Existing pinned directories and provider sessions are retained. Overlapping
-selected project folders are serialized, including symlink aliases. Managed
+selected project folders are serialized, including symlink aliases: a
+competing thread waits visibly and starts automatically after the current
+owner releases the folder. Separate worktrees still run in parallel. Managed
 browser and host-computer tools acquire a resource on first use and retain
-it for the turn. A competing thread receives a clear refusal rather than
-interleaving screen actions. Explicit Local VM/VPS work and cloud lifecycle
+it for the turn. A competing screen action receives a clear refusal rather
+than interleaving input. Explicit Local VM/VPS work and cloud lifecycle
 operations remain conservative. File/folder coordination is **not** a sandbox
 against arbitrary commands issued by a Full-access provider.
 

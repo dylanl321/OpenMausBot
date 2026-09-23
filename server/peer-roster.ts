@@ -5,6 +5,7 @@
 // that drift.
 
 import type { BotActivity } from "./store.ts";
+import { SHARED_WORK_INSTRUCTIONS } from "./work-instructions.ts";
 
 export interface RosterMember {
   id: string;
@@ -256,6 +257,7 @@ const ROSTER_CLOSE = "[/TEAM ROSTER]";
  * the missing half, not permission — hence a roster and no new powers. */
 export function peerRosterSystemPrompt(team: readonly RosterMember[], boundedCoordination = false): string {
   return [
+    SHARED_WORK_INSTRUCTIONS,
     boundedCoordination
       ? "You can ask reachable teammates for advice or bounded subwork needed for your assigned task. They use their own permissions; you cannot grant them your access, answer on their behalf or create bots unless you are a Chief of Staff. Do the rest yourself."
       : "You can reach the other bots in your section with the agents tools. They are peers, not staff: you cannot give them orders, answer on their behalf, or create new bots — only the section's Chief of Staff creates bots. Bring a teammate in when your own task genuinely needs what they know, and do the rest yourself.",

@@ -95,7 +95,17 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
       evidence.push(await call("tools/list"));
       evidence.push(await call("tools/call", { name: "list_room_targets", arguments: {} }));
       for (const step of steps) {
-        const response = await call("tools/call", { name: step.tool ?? "coordinate_bots", arguments: step.arguments });
+        const argumentsForStep = { ...step.arguments };
+        if (argumentsForStep.work_item_id === "$current") {
+          const lookup = await call("tools/call", { name: "get_work_item", arguments: {} });
+          evidence.push(lookup);
+          const current = JSON.parse(lookup.result.content[0].text).current;
+          if (!current) throw new Error("Fixture expected a current shared task");
+          argumentsForStep.work_item_id = current.id;
+          if (argumentsForStep.expected_revision === "$current") argumentsForStep.expected_revision = current.revision;
+          if (argumentsForStep.completed_criteria === "$current") argumentsForStep.completed_criteria = current.acceptanceCriteria;
+        }
+        const response = await call("tools/call", { name: step.tool ?? "coordinate_bots", arguments: argumentsForStep });
         evidence.push({ step, response });
         if (Boolean(response.error || response.result?.isError) !== Boolean(step.expectError)) throw new Error(`Unexpected tool outcome: ${JSON.stringify(response)}`);
       }

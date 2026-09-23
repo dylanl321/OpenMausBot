@@ -49,6 +49,50 @@ describe("CodexDriver.decodeConfig", () => {
     expect(CodexDriver.decodeConfig({ fullAuto: "yes" }).fullAuto).toBe(false);
   });
 
+  it("accepts a provider-qualified model picker allowlist", () => {
+    expect(CodexDriver.decodeConfig({
+      models: [
+        "bedrock-us-east-1::us.openai.gpt-6-sol",
+        "bedrock-us-east-1::us.openai.gpt-6-sol",
+        "bedrock-us-west-2::us.openai.gpt-6-astra",
+      ],
+    }).models).toEqual([
+      "bedrock-us-east-1::us.openai.gpt-6-sol",
+      "bedrock-us-west-2::us.openai.gpt-6-astra",
+    ]);
+    expect(() => CodexDriver.decodeConfig({ models: [] })).toThrow("Codex models must be a non-empty list");
+    expect(() => CodexDriver.decodeConfig({ models: [""] })).toThrow("Codex models must be a non-empty list");
+  });
+
+  it("shows provider-qualified Bedrock models with readable region labels", async () => {
+    const instance = await CodexDriver.create({
+      instanceId: "codex-bedrock-labels",
+      displayName: "Codex via Bedrock",
+      enabled: true,
+      config: CodexDriver.decodeConfig({
+        cli: FAKE_CLI,
+        models: [
+          "bedrock-us-east-1::us.openai.gpt-6-sol",
+          "bedrock-us-west-2::us.openai.gpt-6-astra",
+        ],
+      }),
+      environment: {},
+    });
+    expect(instance.models.options).toEqual([
+      {
+        id: "bedrock-us-east-1::us.openai.gpt-6-sol",
+        label: "GPT-6 Sol · us-east-1",
+        custom: true,
+      },
+      {
+        id: "bedrock-us-west-2::us.openai.gpt-6-astra",
+        label: "GPT-6 Astra · us-west-2",
+        custom: true,
+      },
+    ]);
+    await instance.dispose();
+  });
+
   it("allows Company endpoints over HTTPS, and over HTTP only on loopback", () => {
     expect(CodexDriver.decodeConfig({ managed: { url: "https://company.example/v1", models: ["m"] } }))
       .toMatchObject({ managed: { url: "https://company.example/v1", models: ["m"] } });
@@ -313,12 +357,12 @@ describe("CodexDriver turns (fake app-server)", () => {
       }>;
       expect(calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
         approvalPolicy,
-        approvalsReviewer: approvalMode === "auto" ? "auto_review" : "user",
+        approvalsReviewer: "user",
         sandbox,
       });
       expect(calls.find((call) => call.method === "turn/start")?.params).toMatchObject({
         approvalPolicy,
-        approvalsReviewer: approvalMode === "auto" ? "auto_review" : "user",
+        approvalsReviewer: "user",
         sandboxPolicy: { type: turnSandbox },
       });
     },
@@ -353,12 +397,12 @@ describe("CodexDriver turns (fake app-server)", () => {
         expect(calls.find((call) => call.method === (resumed ? "thread/resume" : "thread/start"))?.params).toMatchObject({
           ...(resumed ? { threadId: "codex-thread-1" } : { model }),
           approvalPolicy,
-          approvalsReviewer: approvalMode === "auto" ? "auto_review" : "user",
+          approvalsReviewer: "user",
           sandbox,
         });
         expect(calls.find((call) => call.method === "turn/start")?.params).toMatchObject({
           approvalPolicy,
-          approvalsReviewer: approvalMode === "auto" ? "auto_review" : "user",
+          approvalsReviewer: "user",
           sandboxPolicy: { type: turnSandbox },
         });
       }
@@ -801,7 +845,7 @@ describe("CodexDriver turns (fake app-server)", () => {
     for (const method of ["thread/start", "turn/start"]) {
       expect(seen.calls.find((call: { method: string }) => call.method === method)?.params).toMatchObject({
         approvalPolicy: "on-request",
-        approvalsReviewer: approvalMode === "auto" ? "auto_review" : "user",
+        approvalsReviewer: "user",
       });
     }
   });
@@ -877,11 +921,13 @@ describe("CodexDriver turns (fake app-server)", () => {
     await create({ mode: "resume" });
     const dump = join(scratch, "dump.json");
     process.env.FAKE_CODEX_DUMP = dump;
+    const model = "bedrock-us-west-2::us.openai.gpt-6-astra";
 
     await instance.adapter.sendTurn({
       threadId: "t-resume",
       text: "again",
       resumeCursor: "codex-thread-9",
+      model,
       approvalMode: "full",
     });
     const started = await recorder.until((e) => e.type === "session.started");
@@ -896,6 +942,8 @@ describe("CodexDriver turns (fake app-server)", () => {
     expect(methods).toContain("thread/resume");
     expect(methods).not.toContain("thread/start");
     expect(calls.find((call) => call.method === "thread/resume")?.params).toMatchObject({
+      model: "us.openai.gpt-6-astra",
+      modelProvider: "bedrock-us-west-2",
       approvalPolicy: "never",
       approvalsReviewer: "user",
       sandbox: "danger-full-access",
@@ -1457,6 +1505,22 @@ describe("CodexDriver turns (fake app-server)", () => {
       threadId: "t-per-turn-full",
       text: "clean up",
       approvalMode: "full",
+    });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    expect(recorder.events.some((event) => event.type === "request.opened")).toBe(false);
+    expect(JSON.parse(readFileSync(dump, "utf8")).decision).toEqual({ decision: "approved" });
+  });
+
+  it("auto-approves recognized permission requests in Auto without opening a card", async () => {
+    await create({ mode: "approval" });
+    const dump = join(scratch, "per-turn-auto.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({
+      threadId: "t-per-turn-auto",
+      text: "clean up",
+      approvalMode: "auto",
     });
     await recorder.until((event) => event.type === "turn.completed");
 

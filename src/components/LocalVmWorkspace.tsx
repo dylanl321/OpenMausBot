@@ -17,6 +17,7 @@ import {
 import { api, useStore, type Action, type Bot } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { transitionComputerControlLease } from "@/lib/computer-control";
+import { randomId } from "@/lib/random-id";
 import {
   initialLocalVmWorkspaceSlots,
   nativeViewOverlayIntersects,
@@ -554,7 +555,7 @@ export function LocalVmWorkspace({
   const [controlledBotId, setControlledBotId] = useState<string | null>(null);
   const controlledBotIdRef = useRef<string | null>(null);
   const controlLeaseIdRef = useRef<string | null>(null);
-  const controlLeaseId = controlLeaseIdRef.current ?? crypto.randomUUID();
+  const controlLeaseId = controlLeaseIdRef.current ?? randomId();
   controlLeaseIdRef.current = controlLeaseId;
   // React disables both buttons after the state update commits, but a second
   // discrete event can arrive before that render. Guard the mutation itself

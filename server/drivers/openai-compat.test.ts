@@ -104,6 +104,30 @@ describe("OpenAICompatDriver", () => {
     await inst.dispose();
   });
 
+  it("exposes configured Bedrock models in the custom picker with readable labels", async () => {
+    const inst = await OpenAICompatDriver.create({
+      instanceId: "test-managed-models",
+      displayName: "Amazon Bedrock",
+      enabled: true,
+      config: {
+        url: "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1",
+        apiKeyEnv: "TEST_KEY",
+        managedModels: ["us.openai.gpt-6-sol", "us.openai.gpt-6-luna", "vendor.other-model"],
+      },
+      environment: { TEST_KEY: "secret" },
+    });
+
+    expect(inst.models).toEqual({
+      default: "us.openai.gpt-6-sol",
+      options: [
+        { id: "us.openai.gpt-6-sol", label: "GPT-6 Sol", custom: true },
+        { id: "us.openai.gpt-6-luna", label: "GPT-6 Luna", custom: true },
+        { id: "vendor.other-model", label: "vendor.other-model", custom: true },
+      ],
+    });
+    await inst.dispose();
+  });
+
   it("includes streamed token totals and bounds the cancellable stream", async () => {
     const anySignal = vi.spyOn(AbortSignal, "any");
     vi.stubGlobal(
@@ -309,6 +333,85 @@ describe("OpenAICompatDriver", () => {
 
     expect(sentBody?.model).toBe("deepseek/deepseek-v4-flash-0731");
     expect(sentBody?.provider).toEqual({ order: ["fireworks"], allow_fallbacks: false });
+    recorder.stop();
+    await inst.dispose();
+  });
+
+  it("disables reasoning for Bedrock GPT-5.6 tool compatibility", async () => {
+    let sentBody: any = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        if (String(input).endsWith("/models")) {
+          return new Response(JSON.stringify({ data: [] }), { status: 200 });
+        }
+        sentBody = JSON.parse(String(init?.body));
+        return new Response(
+          'data: {"choices":[{"delta":{"content":"ready"}}]}\n' + "data: [DONE]\n",
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }),
+    );
+    const inst = await OpenAICompatDriver.create({
+      instanceId: "test-bedrock-gpt-56",
+      displayName: "Bedrock GPT-5.6",
+      enabled: true,
+      config: { url: "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1", apiKeyEnv: "TEST_KEY" },
+      environment: { TEST_KEY: "secret" },
+    });
+    const recorder = recordEvents(inst.adapter);
+
+    await inst.adapter.sendTurn({
+      threadId: "thread-gpt-56",
+      text: "prompt",
+      model: "us.openai.gpt-5.6-sol",
+    });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    expect(sentBody?.reasoning_effort).toBe("none");
+    recorder.stop();
+    await inst.dispose();
+  });
+
+  it("routes GPT-6 models to their configured region and uses supported reasoning", async () => {
+    let requestUrl = "";
+    let sentBody: any = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        requestUrl = String(input);
+        sentBody = JSON.parse(String(init?.body));
+        return new Response(
+          'data: {"choices":[{"delta":{"content":"ready"}}]}\n' + "data: [DONE]\n",
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }),
+    );
+    const inst = await OpenAICompatDriver.create({
+      instanceId: "test-bedrock-gpt-6",
+      displayName: "Bedrock GPT-6",
+      enabled: true,
+      config: {
+        url: "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1",
+        modelUrls: {
+          "us.openai.gpt-6-luna": "https://bedrock-runtime.us-east-2.amazonaws.com/openai/v1/",
+        },
+        apiKeyEnv: "TEST_KEY",
+        managedModels: ["us.openai.gpt-6-luna"],
+      },
+      environment: { TEST_KEY: "secret" },
+    });
+    const recorder = recordEvents(inst.adapter);
+
+    await inst.adapter.sendTurn({
+      threadId: "thread-gpt-6",
+      text: "prompt",
+      model: "us.openai.gpt-6-luna",
+    });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    expect(requestUrl).toBe("https://bedrock-runtime.us-east-2.amazonaws.com/openai/v1/chat/completions");
+    expect(sentBody?.reasoning_effort).toBe("none");
     recorder.stop();
     await inst.dispose();
   });
@@ -614,4 +717,21 @@ it("openai-compat preserves an explicit tools-off connection and rejects ambiguo
   expect(OpenAICompatDriver.decodeConfig({ tools: false })).toMatchObject({ tools: false });
   expect(OpenAICompatDriver.decodeConfig({ tools: true })).toMatchObject({ tools: true });
   expect(() => OpenAICompatDriver.decodeConfig({ tools: "false" })).toThrow("tools must be a boolean");
+});
+
+it("openai-compat validates its instance-wide tool approval policy", () => {
+  expect(OpenAICompatDriver.decodeConfig({})).not.toHaveProperty("toolApproval");
+  expect(OpenAICompatDriver.decodeConfig({ toolApproval: "ask" })).toMatchObject({ toolApproval: "ask" });
+  expect(OpenAICompatDriver.decodeConfig({ toolApproval: "always" })).toMatchObject({ toolApproval: "always" });
+  expect(() => OpenAICompatDriver.decodeConfig({ toolApproval: "sometimes" })).toThrow("toolApproval must be ask or always");
+});
+
+it("openai-compat validates and normalizes per-model URLs", () => {
+  expect(OpenAICompatDriver.decodeConfig({
+    modelUrls: { "us.openai.gpt-6-luna": "https://bedrock-runtime.us-east-2.amazonaws.com/openai/v1/" },
+  }).modelUrls).toEqual({
+    "us.openai.gpt-6-luna": "https://bedrock-runtime.us-east-2.amazonaws.com/openai/v1",
+  });
+  expect(() => OpenAICompatDriver.decodeConfig({ modelUrls: [] })).toThrow("modelUrls must be an object");
+  expect(() => OpenAICompatDriver.decodeConfig({ modelUrls: { model: "not a url" } })).toThrow("Invalid model URL");
 });

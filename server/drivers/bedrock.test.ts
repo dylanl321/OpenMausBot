@@ -99,7 +99,13 @@ describe("BedrockDriver", () => {
       instanceId: "bedrock-api-key",
       displayName: "Bedrock",
       enabled: true,
-      config: { region: "us-east-1", auth: "api-key", apiKeyEnv: "BEDROCK_API_KEY", apiKeyHeader: "x-api-key" },
+      config: {
+        region: "us-east-1",
+        model: "amazon.nova-lite-v1:0",
+        auth: "api-key",
+        apiKeyEnv: "BEDROCK_API_KEY",
+        apiKeyHeader: "x-api-key",
+      },
       environment: { BEDROCK_API_KEY: "bedrock-key" },
     });
     await expect(instance.snapshot()).resolves.toMatchObject({
@@ -107,6 +113,31 @@ describe("BedrockDriver", () => {
       authenticated: false,
     });
     expect(fetchMock).not.toHaveBeenCalled();
+    await instance.dispose();
+  });
+
+  it("sends native Bedrock requests with bearer-token auth", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe("https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1/chat/completions");
+      const headers = new Headers(init?.headers);
+      expect(headers.get("authorization")).toBe("Bearer bedrock-token");
+      expect(headers.get("x-api-key")).toBeNull();
+      return Response.json({
+        choices: [{ message: { content: "bearer path" } }],
+        usage: { prompt_tokens: 12, completion_tokens: 4 },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await BedrockDriver.create({
+      instanceId: "bedrock-bearer",
+      displayName: "Bedrock",
+      enabled: true,
+      config: { region: "us-east-1", auth: "bearer" },
+      environment: { AWS_BEARER_TOKEN_BEDROCK: "bedrock-token" },
+    });
+
+    await expect(instance.generateText?.("Hello")).resolves.toBe("bearer path");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     await instance.dispose();
   });
 
@@ -125,7 +156,13 @@ describe("BedrockDriver", () => {
       instanceId: "bedrock-api-key-request",
       displayName: "Bedrock",
       enabled: true,
-      config: { region: "us-east-1", auth: "api-key", apiKeyEnv: "BEDROCK_API_KEY", apiKeyHeader: "x-api-key" },
+      config: {
+        region: "us-east-1",
+        model: "amazon.nova-lite-v1:0",
+        auth: "api-key",
+        apiKeyEnv: "BEDROCK_API_KEY",
+        apiKeyHeader: "x-api-key",
+      },
       environment: { BEDROCK_API_KEY: "bedrock-key" },
     });
 
@@ -148,7 +185,7 @@ describe("BedrockDriver", () => {
       instanceId: "bedrock-env-region",
       displayName: "Bedrock",
       enabled: true,
-      config: {},
+      config: { model: "amazon.nova-lite-v1:0" },
       environment: {
         AWS_ACCESS_KEY_ID: "AKIAFIXTURE",
         AWS_SECRET_ACCESS_KEY: "fixture-secret",
@@ -176,7 +213,11 @@ describe("BedrockDriver", () => {
       instanceId: "bedrock-custom-url",
       displayName: "Bedrock",
       enabled: true,
-      config: { region: "us-east-1", url: "https://mantel.example/bedrock" },
+      config: {
+        region: "us-east-1",
+        model: "amazon.nova-lite-v1:0",
+        url: "https://mantel.example/bedrock",
+      },
       environment: { AWS_ACCESS_KEY_ID: "AKIAFIXTURE", AWS_SECRET_ACCESS_KEY: "fixture-secret" },
     });
     await expect(instance.generateText?.("Hello")).resolves.toBe("aws default");
@@ -295,7 +336,7 @@ describe("BedrockDriver", () => {
       instanceId: "bedrock",
       displayName: "Bedrock",
       enabled: true,
-      config: { region: "us-west-2" },
+      config: { region: "us-west-2", model: "amazon.nova-lite-v1:0" },
       environment: {
         AWS_ACCESS_KEY_ID: "AKIAFIXTURE",
         AWS_SECRET_ACCESS_KEY: "fixture-secret",
@@ -370,7 +411,7 @@ describe("BedrockDriver", () => {
       instanceId: "bedrock-native",
       displayName: "Bedrock",
       enabled: true,
-      config: { region: "us-east-1" },
+      config: { region: "us-east-1", model: "amazon.nova-lite-v1:0" },
       environment: {
         AWS_ACCESS_KEY_ID: "AKIAFIXTURE",
         AWS_SECRET_ACCESS_KEY: "fixture-secret",
@@ -440,7 +481,7 @@ describe("BedrockDriver", () => {
       instanceId: "bedrock-invalid-shape",
       displayName: "Bedrock",
       enabled: true,
-      config: { region: "us-east-1", auth: "api-key" },
+      config: { region: "us-east-1", model: "amazon.nova-lite-v1:0", auth: "api-key" },
       environment: { BEDROCK_API_KEY: "bedrock-key" },
     });
 

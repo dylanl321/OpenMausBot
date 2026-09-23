@@ -110,8 +110,151 @@
       }
     },
     {
+      "name": "ensure_work_item",
+      "description": "Before assigning a deliverable or ongoing multi-bot work, create or reuse its shared task. This automatically creates/reuses a topic room and task hub, then schedules its coordinator there. Use a stable identity including source/account and item ID (not a title or timestamp); for generic work choose a durable task key and keep reusing it. Use input only for relevant changed requirements/source content, never polling timestamps, acknowledgements or your own status comments. Unchanged active/completed/blocked work is reused without another execution. No files or permissions are transferred. End the source turn after acceptance; the task's final outcome returns automatically. Quick standalone advice does not need a task.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "work_item_id": {
+            "type": "string"
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "topic": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "identity": {
+            "type": "string",
+            "maxLength": 240
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "objective": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "acceptance_criteria": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "maxItems": 20
+          },
+          "input": {
+            "type": "string",
+            "maxLength": 12000
+          }
+        },
+        "required": [
+          "title",
+          "objective",
+          "acceptance_criteria"
+        ]
+      }
+    },
+    {
+      "name": "get_work_item",
+      "description": "Read a shared task's current brief, revision, assignments, blockers and recorded results. Omit work_item_id for the current task and accessible task directory. Read on a new instruction or returned result; do not poll waiting teammates.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "work_item_id": {
+            "type": "string"
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "update_work_item",
+      "description": "Coordinator only, from the shared hub: record a decision, artifacts or terminal outcome against expected_revision. Completion needs a concrete detail, actual evidence references and every acceptance criterion in completed_criteria; all current assignments must have succeeded. Use blocked/needs-input for missing evidence or authority. Do not change requirements, reopen unchanged work or claim tests ran without execution evidence.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "work_item_id": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "blocked",
+              "needs-input",
+              "completed",
+              "cancelled"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "decision": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100
+          },
+          "completed_criteria": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20
+          },
+          "artifacts": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "ref": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "revision": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "ref",
+                "label"
+              ]
+            }
+          }
+        },
+        "required": [
+          "work_item_id",
+          "expected_revision"
+        ]
+      }
+    },
+    {
       "name": "coordinate_bots",
-      "description": "Ask existing OpenMausBot teammates for advice or assign concrete work. From normal chat every assignment you send a teammate continues your one standing conversation with that teammate, so they keep the context of what you asked before; from a room it defaults to this room. Use group_id from list_room_targets for a specific room. Give 1-4 bot_ids — teammate ids as list_bots or your roster prints them; a unique teammate name also resolves: they receive only your brief and use their own model, tools and permissions. Busy bots queue. They can consult their specialists; all results return here and resume you automatically. Include exact file paths, constraints and what must be verified. After sending all assignments, END your turn; do not poll or wait. On return, resolve tradeoffs, verify the requested outcome and request concrete corrections if necessary before giving one final answer. Do not send acknowledgements as new work.",
+      "description": "Contact actual OpenMausBot teammates using their own models and permissions. For deliverables use intent=work and ensure_work_item first: the shared hub owns coordination, and specialists execute in task-specific linked threads. A task-bound turn inherits its task automatically. Only quick standalone advice uses intent=consultation, retaining the existing room or standing bot-pair conversation. Give 1-4 exact bot_ids, a self-contained brief, accessible artifact paths and acceptance checks. End after assigning; busy bots queue and results resume you automatically. Do not poll, send acknowledgements as assignments, invent new keys for unchanged work, or substitute native helper agents. Concrete rework requires the returned assignment_id, rework=true and a changed correction brief.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -119,6 +262,22 @@
           "group_id": {
             "type": "string",
             "description": "Optional destination room. Omit for this room, or your standing conversation with each teammate when chatting directly."
+          },
+          "intent": {
+            "type": "string",
+            "enum": [
+              "work",
+              "consultation"
+            ],
+            "description": "Use work for deliverables or ongoing assignments; consultation only for quick standalone advice. Omission retains compatibility with older consultation callers."
+          },
+          "work_item_id": {
+            "type": "string",
+            "description": "Shared task ID; inherited inside its hub and worker threads."
+          },
+          "assignment_id": {
+            "type": "string",
+            "description": "Existing assignment ID returned by this tool, required for concrete rework."
           },
           "bot_ids": {
             "type": "array",
@@ -138,7 +297,11 @@
           },
           "request_key": {
             "type": "string",
-            "description": "A short unique assignment key. Reuse for an identical retry."
+            "description": "A short key unique within this turn. Reuse for an identical retry."
+          },
+          "state_key": {
+            "type": "string",
+            "description": "Optional stable delivery-state key, such as project:ticket:artifact-revision:phase:gate:owner. Reuse it across threads and routine runs while that state is unchanged; a prior status/result is returned without starting duplicate work."
           },
           "rework": {
             "type": "boolean",
@@ -152,7 +315,8 @@
         "required": [
           "bot_ids",
           "message",
-          "request_key"
+          "request_key",
+          "intent"
         ]
       }
     },

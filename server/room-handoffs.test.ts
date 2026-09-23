@@ -138,6 +138,23 @@ describe("addressed room request tree", () => {
     expect(again.duplicate).toBe(true); expect(again.node.id).toBe(first.node.id); expect(again.node.threadId).toBe("B-thread");
     expect(() => engine.enqueue(addr("A"), "turn", undefined, addr("B"), "csv", "different")).toThrow("different work");
   }));
+  it("deduplicates stable delivery state across roots until the state changes", () => fixture(engine => {
+    const first = engine.enqueue(addr("A"), "turn-one", undefined, addr("B"), "review-one", "Review head abc",
+      false, false, "", "crux:29:abc:review:security").node;
+    first.status = "completed";
+    first.result = "approved";
+    const same = engine.enqueue(addr("C"), "turn-two", undefined, addr("B"), "different-request", "Review head abc again",
+      false, false, "", "crux:29:abc:review:security");
+    expect(same.duplicate).toBe(true);
+    expect(same.node.id).toBe(first.id);
+    expect(same.node.result).toBe("approved");
+    const changed = engine.enqueue(addr("C"), "turn-two", undefined, addr("B"), "new-head", "Review head def",
+      false, false, "", "crux:29:def:review:security");
+    expect(changed.duplicate).toBe(false);
+    const recheck = engine.enqueue(addr("D"), "turn-three", undefined, addr("B"), "explicit-recheck", "Recheck head abc",
+      false, true, "", "crux:29:abc:review:security");
+    expect(recheck.duplicate).toBe(false);
+  }));
   it("retains the original request while descendants work and bounds its stored length", () => fixture(engine => {
     engine.enqueue(addr("A"), "turn", undefined, addr("B"), "work", "build", false, false, "original request");
     expect(engine.nodes.get("turn")?.text).toBe("original request");
