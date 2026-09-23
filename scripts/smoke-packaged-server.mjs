@@ -12,12 +12,13 @@
 // how the bug escaped. The copy is the whole point; do not "simplify" it away.
 import { execFile, spawn } from "node:child_process";
 import assert from "node:assert/strict";
-import { cpSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, promisify } from "node:util";
 import { browserBundlePaths, browserBundleSpec } from "../server/browser-bundle-release.ts";
+import { BEDROCK_FIXTURE_KEY, BEDROCK_FIXTURE_SECRET, BEDROCK_FIXTURE_TOKEN, fakeBedrock } from "../server/testing/fake-bedrock.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const { values } = parseArgs({ options: { "browser-bundle": { type: "string" } } });
@@ -60,6 +61,7 @@ const fixtureEnv = {
   XDG_CONFIG_HOME: join(home, ".config"),
   XDG_CACHE_HOME: join(home, ".cache"),
   XDG_DATA_HOME: join(home, ".local", "share"),
+  AWS_EC2_METADATA_DISABLED: "true",
   OMB_DATA_DIR: join(home, ".openmausbot"),
   OMB_PORT: String(port),
   ...(browserBundle ? {
@@ -119,6 +121,42 @@ if (browserBundle && listening) {
     const config = await response.json();
     browserReport = { browserEngine: config.browserEngine, browserEnabled: config.features?.browser };
   } catch (error) { browserReport = { error: String(error) }; }
+}
+
+// AWS credential providers load some helpers lazily. Startup alone cannot
+// prove these bundled paths work outside node_modules: use the real SDK,
+// synthetic credentials and a loopback catalog from the staged server.
+let bedrockReport = null;
+if (listening) {
+  const upstream = await fakeBedrock();
+  try {
+    const aws = join(home, ".aws");
+    mkdirSync(aws, { recursive: true });
+    writeFileSync(join(aws, "config"), "[profile packaged-fixture]\nregion=us-west-2\n", { mode: 0o600 });
+    writeFileSync(join(aws, "credentials"), `[packaged-fixture]\naws_access_key_id=${BEDROCK_FIXTURE_KEY}\naws_secret_access_key=${BEDROCK_FIXTURE_SECRET}\n`, { mode: 0o600 });
+    const origin = `http://127.0.0.1:${port}`;
+    const request = async (path, method, body) => {
+      const response = await fetch(`${origin}${path}`, { method, headers: { "content-type": "application/json", origin },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(20_000) });
+      assert.equal(response.status, 200, `Packaged Bedrock ${method} ${path}`);
+      const result = await response.json();
+      for (const secret of [BEDROCK_FIXTURE_TOKEN, BEDROCK_FIXTURE_KEY, BEDROCK_FIXTURE_SECRET]) assert(!JSON.stringify(result).includes(secret), "Packaged Bedrock exposed a credential");
+      return result;
+    };
+    for (const auth of ["api-key", "profile"]) {
+      await request("/api/instances/bedrock/bedrock", "PATCH", { auth, apiKey: BEDROCK_FIXTURE_TOKEN,
+        profile: "packaged-fixture", region: auth === "profile" ? "" : "us-east-1", url: upstream.url, controlUrl: upstream.url });
+      const result = await request("/api/instances/bedrock/refresh-models", "POST");
+      const instance = result.instances.find((entry) => entry.instanceId === "bedrock");
+      assert.equal(instance.snapshot.state, "available");
+      assert(instance.models.options.some((model) => model.id === (auth === "profile" ? "qwen.qwen3-32b-v1:0" : "amazon.nova-lite-v1:0")));
+      assert.equal(instance.bedrock.resolvedRegion, auth === "profile" ? "us-west-2" : "us-east-1");
+    }
+    assert(upstream.requests.some((request) => request.headers.authorization === `Bearer ${BEDROCK_FIXTURE_TOKEN}`));
+    assert(upstream.requests.some((request) => request.headers.authorization?.includes(`/us-west-2/bedrock/aws4_request`)));
+    bedrockReport = { ok: true };
+  } catch (error) { bedrockReport = { error: error.message }; }
+  finally { await upstream.close(); }
 }
 
 // Serving /api/health is necessary but nowhere near sufficient. Bundling
@@ -212,6 +250,12 @@ if (!listening) {
   process.exit(1);
 }
 
+if (!bedrockReport?.ok) {
+  console.error("the packaged Bedrock SDK failed token/profile catalog discovery:");
+  console.error(JSON.stringify(bedrockReport));
+  process.exit(1);
+}
+
 if (!proxyReport || proxyReport.error || proxyReport.missing.length > 0) {
   console.error("spawned proxy paths do not resolve inside the packaged server dir:");
   console.error(JSON.stringify(proxyReport, null, 2));
@@ -245,4 +289,5 @@ const count = Object.keys(proxyReport.resolved).length;
 console.log(`packaged server started with no node_modules in reach (port ${port}) ✓`);
 console.log(`all ${count} spawned proxy paths resolve inside the packaged server dir ✓`);
 console.log("packaged MCP stdio server reached the API and flushed its final frames ✓");
+console.log("packaged Bedrock SDK discovered regional models with a token and a named AWS profile ✓");
 if (browserBundle) console.log(`packaged browser discovered without installation; access remains opt-in ✓ ${JSON.stringify(browserReport)}`);

@@ -17,6 +17,12 @@ process.env.USERPROFILE = home;
 delete process.env.OMB_DATA_DIR;
 // Do not let a developer's Hermes global config path leak into per-test homes.
 delete process.env.HERMES_HOME;
+// AWS SDK discovery must never reach a developer's account, alternate
+// credential file, container endpoint or instance metadata during tests.
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith("AWS_") || key === "OMB_BEDROCK_API_KEY") delete process.env[key];
+}
+process.env.AWS_EC2_METADATA_DISABLED = "true";
 // The companion keeps its paired devices in its own directory, and resolves
 // it from homedir() the same way — so the redirect above already covers it.
 // Named explicitly all the same: the device tests delete this directory

@@ -352,6 +352,7 @@ export function verificationServerEnvironment(parentEnv: NodeJS.ProcessEnv, data
     OMB_DATA_DIR: dataDir,
     OMB_PORT: String(port),
     OMB_WEBHOOK_PORT: String(port + 1),
+    AWS_EC2_METADATA_DISABLED: "true",
     // The fixture's default CLI behaviour; a caller that sets
     // FAKE_CLAUDE_MODE explicitly overrides it below to drive the CLI's
     // failure paths (exit-early, dead-session, hang...) through the real

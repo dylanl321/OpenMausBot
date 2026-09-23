@@ -22,7 +22,7 @@ const providers: Record<string, string> = {
 export function EngineCard({ instance, children }: { instance: InstanceInfo; children: ReactNode }) {
   const ready = engineReady(instance);
   const email = instance.snapshot.authenticated === true ? instance.snapshot.account?.email : undefined;
-  const subtitle = email ?? (instance.access === "custom"
+  const subtitle = instance.driverKind === "bedrock" ? [instance.bedrock?.endpoint === "mantle" ? "Bedrock Mantle" : "Amazon Web Services", instance.bedrock?.resolvedRegion].filter(Boolean).join(" · ") : email ?? (instance.access === "custom"
     ? t("engines.library.custom")
     : providers[instance.driverKind] ?? instance.driverKind);
   // Some CLIs return their executable name rather than a version. Do not show

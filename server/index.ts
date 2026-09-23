@@ -460,6 +460,10 @@ import {
 import { json, readBody } from "./harness/http.ts";
 import { ROUTES, dispatchRoutes } from "./routes/table.ts";
 import { createHostedSlackRoutes } from "./routes/hosted-slack.ts";
+import { createBedrockRoutes } from "./routes/bedrock.ts";
+import { describeBedrockSettings } from "./drivers/bedrock.ts";
+import { mergeBedrockConfig, publicBedrockSettings } from "./bedrock-config.ts";
+import { bedrockAccessError, bedrockArnRegion, bedrockModelError, bedrockRoutingError } from "../shared/bedrock.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const WEBHOOK_PORT = Number(process.env.OMB_WEBHOOK_PORT || PORT + 1);
@@ -1606,7 +1610,17 @@ function checkedModelSelection(
   if (current?.busy && changed) {
     return { ok: false, status: 409, error: "the bot is working — stop it before changing models" };
   }
-  const target = registry.get(selection.instanceId);
+  const target = registry.get(selection.instanceId, selection.model);
+  if (target?.driverKind === "bedrock") {
+    const settings = describeBedrockSettings(target, undefined);
+    const info = settings.models?.find((model) => model.id === selection.model);
+    const modelRegion = bedrockArnRegion(selection.model);
+    const error = bedrockModelError(selection.model) ?? info?.unavailable ?? info?.accessError
+      ?? bedrockAccessError(selection.model, settings, info?.modelIds)
+      ?? bedrockRoutingError(selection.model, settings, settings.resolvedRegion ?? "")
+      ?? (modelRegion && modelRegion !== settings.resolvedRegion ? `This model ARN belongs to ${modelRegion}. Select the matching Bedrock region.` : null);
+    if (error) return { ok: false, status: 400, error };
+  }
   if (providerInstancesChanging.has(selection.instanceId)) {
     return { ok: false, status: 409, error: "this provider account is being updated — try again shortly" };
   }
@@ -1911,7 +1925,7 @@ async function botOverview(bot: BotRecord): Promise<BotOverview> {
     composio.connectorAvailability(cfg),
     () => composio.connectedServices(cfg),
   );
-  const engine = registry.get(bot.modelSelection.instanceId)?.adapter.capabilities ?? null;
+  const engine = registry.get(bot.modelSelection.instanceId, bot.modelSelection.model)?.adapter.capabilities ?? null;
   const sectionPeers = reachablePeers(store.bots, bot).length;
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   // Same flush as GET /history: profile-change rows queue in
@@ -4370,7 +4384,7 @@ function providerOperationConflict(provider: RemoteComputerProvider): string | n
 }
 
 function turnSurfacePlan(bot: BotRecord, runOn?: RoutineRunOn, threadId?: string) {
-  const instance = registry.get(bot.modelSelection.instanceId);
+  const instance = registry.get(bot.modelSelection.instanceId, bot.modelSelection.model);
   const forcedBox = runOn === "cloud" || Boolean(inheritedTeamComputer(bot));
   return resolveSurface({
     destination: forcedBox ? "cloud" : bot.computer,
@@ -4395,7 +4409,7 @@ function turnInstance(bot: BotRecord, runOn?: RoutineRunOn, threadId?: string): 
   const onBox = turnProvider(bot, runOn, threadId) === "box";
   return onBox
     ? registry.instances().find((candidate) => candidate.driverKind === "boxAgent") ?? null
-    : registry.get(bot.modelSelection.instanceId);
+    : registry.get(bot.modelSelection.instanceId, bot.modelSelection.model);
 }
 
 /** Preview requests carry the selected conversation, not whichever thread
@@ -4411,7 +4425,7 @@ function computerPreviewBot(botId: string, url: URL): BotRecord | null {
 async function computerPreviewSurface(bot: BotRecord, threadId?: string) {
   const plan = turnSurfacePlan(bot, undefined, threadId);
   if (plan.computer !== undefined) return plan.computer === "off" && plan.browser ? "browser" : plan.computer;
-  const instance = registry.get(bot.modelSelection.instanceId);
+  const instance = registry.get(bot.modelSelection.instanceId, bot.modelSelection.model);
   if (instance?.driverKind === "boxAgent") return "cloud";
   if (bot.cloudBackend === "vps") {
     const remote = await vps.vpsComputerStatus(cfg, bot.id);
@@ -4431,7 +4445,7 @@ async function computerPreviewSurface(bot: BotRecord, threadId?: string) {
 /** Discovery is read-only. Starting or creating a configured computer is
  * deferred until a chat tool selects it and the old turn releases its tools. */
 async function selectableComputers(bot: BotRecord) {
-  const caps = registry.get(bot.modelSelection.instanceId)?.adapter.capabilities;
+  const caps = registry.get(bot.modelSelection.instanceId, bot.modelSelection.model)?.adapter.capabilities;
   const off = bot.computer === "off";
   const localEngine = registry.get(bot.modelSelection.instanceId)?.driverKind !== "boxAgent";
   return Promise.all((["cloud", "vm", "local", "browser"] as const).map(async surface => {
@@ -10900,6 +10914,7 @@ function configStatus() {
     billing: { currency: cfg.billing?.currency ?? "USD", prices: cfg.billing?.prices ?? {} },
     // the base URL is a setting, not a secret; the key stays write-only
     openaiCompat: { configured: Boolean(cfg.openaiCompat?.key), url: cfg.openaiCompat?.url ?? "" },
+    bedrock: publicBedrockSettings(cfg.bedrock ?? {}),
     composio: {
       configured: composio.configured(cfg),
       mode: composio.connectionMode(cfg),
@@ -11001,7 +11016,9 @@ async function describeInstances() {
   const configs = providerConfigs();
   return (await registry.describe()).map((instance) => {
     const entry = configs[instance.instanceId];
-    const described = entry?.icon ? { ...instance, icon: entry.icon } : instance;
+    const described = { ...instance, ...(entry?.icon ? { icon: entry.icon } : {}),
+      ...(entry?.driver === "bedrock" ? { bedrock: describeBedrockSettings(registry.get(instance.instanceId), entry.config) } : {}),
+    };
     if (hostedModels) return { ...described, readOnly: true,
       install: undefined, authentication: undefined, cli: undefined, cliCandidates: [],
     };
@@ -11168,6 +11185,15 @@ async function reloadProviders() {
 // and reload sequence single-flight so two settings requests cannot drop one
 // another's changes or dispose a fleet while another reload is creating it.
 let providerConfigBusy = false;
+
+function busyProviderSelections() {
+  return store.bots.flatMap((bot) => {
+    const busyTasks = store.tasks(bot.id).filter((task) => threadBusy(bot.id, task.threadId));
+    const selections = busyTasks.map((task) => botForThread(bot.id, task.threadId)!.modelSelection);
+    if (activeGroupTurnForBot(bot.id) || (bot.busy && busyTasks.length === 0)) selections.push(bot.modelSelection);
+    return selections;
+  });
+}
 const providerInstancesChanging = new Set<string>();
 let mcpConfigBusy = false;
 const MAX_CONCURRENT_MCP_PROBES = 2;
@@ -11275,6 +11301,27 @@ const workspaceBackupRoutes = createWorkspaceBackupRoutes({
 // Route modules (server/routes/README.md). `workspaceAccess` is assigned at
 // boot, after this line, so the dependency reads it per request.
 ROUTES.push(createHostedSlackRoutes({ bot: (id) => store.bot(id), hostedReady: () => Boolean(workspaceAccess) && entitled("admin") }));
+ROUTES.push(createBedrockRoutes({
+  entry: (id) => providerConfigs()[id],
+  instance: (id) => registry.get(id),
+  editable: (id) => !hostedModels && !managedDesktop.owns(id),
+  save: async (id, patch) => {
+    if (providerConfigBusy) throw Object.assign(new Error("Provider settings are already being updated."), { status: 409 });
+    if (busyProviderSelections().some((selection) => selection.instanceId === id)) {
+      throw Object.assign(new Error("Wait for bots using this Bedrock connection to finish before changing its settings."), { status: 409 });
+    }
+    providerConfigBusy = true;
+    providerInstancesChanging.add(id);
+    try {
+      const instances = persistableInstanceConfigs(cfg);
+      const entry = instances[id];
+      if (!entry || entry.driver !== "bedrock") throw Object.assign(new Error("No such Bedrock connection."), { status: 404 });
+      entry.config = mergeBedrockConfig(entry.config, patch);
+      await persistProviderInstance(id, instances);
+      return describeInstances();
+    } finally { providerInstancesChanging.delete(id); providerConfigBusy = false; }
+  },
+}));
 
 const toolResults = new ToolResults();
 const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
@@ -17511,13 +17558,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     // executable already configured for this Claude instance. The JSON gate
     // keeps a hostile page from triggering a local process with a simple
     // cross-origin form request.
-    const busyProviderSelections = () => store.bots.flatMap((bot) => {
-      const busyTasks = store.tasks(bot.id).filter((task) => threadBusy(bot.id, task.threadId));
-      const selections = busyTasks.map((task) => botForThread(bot.id, task.threadId)!.modelSelection);
-      // Rooms still run from the profile default; a direct thread does not.
-      if (activeGroupTurnForBot(bot.id) || (bot.busy && busyTasks.length === 0)) selections.push(bot.modelSelection);
-      return selections;
-    });
     const claudeUpdate = /^\/api\/instances\/([\w.-]+)\/claude-update$/.exec(path);
     if (method === "POST" && claudeUpdate) {
       if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
@@ -17757,7 +17797,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     }
     if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
       const body = await readBody(req);
-      if (hostedModels && ["instances", "anthropic", "openaiCompat", "xai", "opencodeGo"].some(key => Object.hasOwn(body, key))) return json(res, 403, { error: HOSTED_PROVIDER_SETTINGS_ERROR });
+      if (hostedModels && ["instances", "anthropic", "openaiCompat", "bedrock", "xai", "opencodeGo"].some(key => Object.hasOwn(body, key))) return json(res, 403, { error: HOSTED_PROVIDER_SETTINGS_ERROR });
       const patch = parseConfigPatch(body);
       if (hostedModels && patch.defaultModelSelection) {
         const checked = checkedModelSelection(patch.defaultModelSelection);

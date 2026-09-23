@@ -699,7 +699,8 @@ export interface InstanceInfo {
       message: string;
     };
   };
-  models: { default: string; options: Array<{ id: string; label: string; custom?: boolean; loaded?: boolean; provider?: string; variants?: ModelVariantOption[] }> };
+  models: { default: string; options: Array<{ id: string; label: string; custom?: boolean; loaded?: boolean; provider?: string; variants?: ModelVariantOption[]; capabilities?: import("../../shared/model-capabilities").ModelCapabilities }> };
+  bedrock?: import("../../shared/bedrock").BedrockSettings;
   capabilities?: {
     computerMcp?: boolean;
     agentsMcp?: boolean;

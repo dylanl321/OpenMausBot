@@ -37,6 +37,7 @@ import { peerLine } from "@/lib/peer-message";
 import { BotAvatar, InitialsAvatar } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
 import { cn } from "@/lib/cn";
+import { selectedModelCapabilities } from "@/lib/model-capabilities";
 import { lastNonReceipt } from "@/lib/receipts";
 import { t } from "@/lib/i18n";
 import { isRoutineProblemRun } from "@/lib/routines";
@@ -683,8 +684,7 @@ export function BotContextMenu({
 
   if (!bot) return null;
   const deleting = state.deletingBots[bot.id] === true;
-  const engine = state.instances.find((instance) => instance.instanceId === bot.modelSelection.instanceId);
-  const canCoordinate = engine?.capabilities?.agentsMcp === true;
+  const canCoordinate = selectedModelCapabilities(state.instances, bot.modelSelection).agentsMcp === true;
   const visibleBotCount = state.bots.filter((candidate) => !candidate.hidden).length;
   const archiveBlocked = Boolean(bot.chiefOfStaff) || visibleBotCount <= 1;
   const archiveHint = bot.chiefOfStaff

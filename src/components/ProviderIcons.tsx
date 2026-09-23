@@ -129,6 +129,8 @@ export function PiMark({ size = 16, className }: IconProps) {
 
 export function ProviderMark({ driverKind, size, className }: IconProps & { driverKind: string }) {
   switch (driverKind) {
+    case "bedrock":
+      return <PresetProviderMark preset="aws" size={size} className={className} />;
     case "grok":
     case "grokAgent":
       return <GrokMark size={size} className={className} />;

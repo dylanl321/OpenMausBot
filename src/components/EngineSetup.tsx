@@ -8,6 +8,7 @@ import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import { CodexDeviceSignIn } from "./CodexDeviceSignIn";
 import { ClaudeSignIn } from "./ClaudeSignIn";
+import { BedrockSettings } from "./BedrockSettings";
 
 type Platform = "darwin" | "win32" | "linux";
 
@@ -398,6 +399,7 @@ export function EngineSetup({
   /** The containing engine disclosure already supplies the card surface. */
   unframed?: boolean;
 }) {
+  if (instance.driverKind === "bedrock") return <BedrockSettings instance={instance} className={className} />;
   const install = instance.install;
   const installCommand = installCommandFor(install);
   const signInCommand = install?.signInCommand;

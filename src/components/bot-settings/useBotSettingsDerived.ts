@@ -9,6 +9,7 @@ import { instanceSupportsLocalComputer, localComputerDisabledReason, localComput
 import { stateForBot } from "@/lib/mascot";
 import { useStore, type Bot } from "@/state/store";
 import { approvalModeFor } from "../../../shared/approval-mode";
+import { selectedModelCapabilities } from "@/lib/model-capabilities";
 
 export type BotPatch = Partial<
   Pick<
@@ -50,18 +51,19 @@ export function useBotSettingsDerived(bot: Bot) {
   const activeState = stateForBot(bot);
   const mascotMotion = state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
   const engine = state.instances.find((instance) => instance.instanceId === bot.modelSelection.instanceId);
+  const engineCapabilities = selectedModelCapabilities(state.instances, bot.modelSelection);
   // The approval level (ask / auto / full / custom) as the shared rule reads
   // it from the record — bots saved before approvalMode existed still carry
   // only autoApprove. Full and Custom need the packaged desktop's trusted
   // channel (SettingsPanel used the same test before the dialog replaced it).
   const approvalMode = approvalModeFor(bot);
   const trustedModesAvailable = Boolean(window.ogb?.approvals && capabilities.host.packaged);
-  const canCoordinate = engine?.capabilities?.agentsMcp === true;
-  const canUseConnectedApps = engine?.capabilities?.composioMcp === true;
-  const canUseVps = engine?.capabilities?.computerMcp === true && engine.driverKind !== "boxAgent";
+  const canCoordinate = engineCapabilities.agentsMcp === true;
+  const canUseConnectedApps = engineCapabilities.composioMcp === true;
+  const canUseVps = engineCapabilities.computerMcp === true && engine?.driverKind !== "boxAgent";
   const connectedAppsConfigured = state.config?.composio?.configured === true;
   const connectedAppsEnabled = bot.composio !== false;
-  const canUseBrowser = engine?.capabilities?.browserMcp === true;
+  const canUseBrowser = engineCapabilities.browserMcp === true;
   const desktopBrowser = browserAvailable(state.config);
   const browserBlockedOnWindows = window.ogb?.platform === "win32" && !desktopBrowser;
   const browserFeature = builtInBrowserEnabled(state.config);

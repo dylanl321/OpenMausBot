@@ -29,6 +29,7 @@ import { PlaceChip } from "./PlaceChip";
 import { FullAccessWarning } from "./FullAccessWarning";
 import { ApprovalModeSelector } from "./ApprovalModeSelector";
 import { approvalModeFor, type ApprovalMode } from "../../shared/approval-mode";
+import { selectedModelCapabilities } from "@/lib/model-capabilities";
 import {
   appendPastedText,
   handoffAttachmentImagePreview,
@@ -237,11 +238,7 @@ export function Composer({
   // image paste is offered only when every bot that will actually answer
   // can open one. sendGroup routes to mentions, else the room default —
   // `members.some` would let a mixed room send <attached-image> to Grok.
-  const botSupportsImages = (candidate?: Bot) =>
-    Boolean(
-      candidate &&
-        state.instances.find((i) => i.instanceId === candidate.modelSelection.instanceId)?.capabilities?.images,
-    );
+  const botSupportsImages = (candidate?: Bot) => selectedModelCapabilities(state.instances, candidate?.modelSelection).images === true;
   const imageTargetsSupport = (message: string, mode: "chat" | "goal") => {
     if (!group) return botSupportsImages(bot);
     if (mode === "goal") {
@@ -260,13 +257,7 @@ export function Composer({
   const locale = activeLocale();
   const commandCandidates = useMemo(() => {
     if (!slash || slash.start === dismissedSlashAt) return [];
-    const supportsAgents = (candidate?: Bot) =>
-      Boolean(
-        candidate &&
-          state.instances.find(
-            (instance) => instance.instanceId === candidate.modelSelection.instanceId,
-          )?.capabilities?.agentsMcp,
-      );
+    const supportsAgents = (candidate?: Bot) => selectedModelCapabilities(state.instances, candidate?.modelSelection).agentsMcp === true;
     const available: ComposerSlashCommand[] = [];
     if (group && !group.dm) available.push({
       id: "goal",

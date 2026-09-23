@@ -5,6 +5,8 @@ import { readFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { bedrockConfigSchema } from "./bedrock-config.ts";
+import type { BedrockConfig } from "../shared/bedrock.ts";
 import { normalizeImageGenerationUrl, type ImageGenerationConfig } from "../shared/image-generation.ts";
 
 import { writeFileAtomic } from "./atomic.ts";
@@ -355,6 +357,7 @@ const appConfigSchema = z.object({
    * Claude instances; `url` only for a proxy or a test double. Never a
    * personal-login OAuth token. */
   anthropic: z.object({ key: optionalText, url: optionalText }).optional(),
+  bedrock: bedrockConfigSchema.optional(),
   /** Monthly spend limit for the whole workspace, against the cost engines
    * report to the usage ledger. Enforced only with the `budgets` entitlement. */
   budgets: z
@@ -475,6 +478,7 @@ export interface AppConfig {
   language?: string;
   xai?: { key?: string; url?: string };
   anthropic?: { key?: string; url?: string };
+  bedrock?: BedrockConfig;
   budgets?: { monthlyUsd?: number; warnAtPercent?: number };
   billing?: { currency?: string; prices?: Record<string, { inputPerMillion: number; outputPerMillion: number; cachedInputPerMillion?: number }> };
   openaiCompat?: { key?: string; url?: string; model?: string; provider?: string };
@@ -892,6 +896,8 @@ export const WORKSPACE_CREDENTIAL_ENV = [
   "OMB_HOSTED_MODELS",
   "OPENAI_COMPAT_API_KEY",
   "OPENAI_COMPAT_URL",
+  "OMB_BEDROCK_API_KEY",
+  "AWS_BEARER_TOKEN_BEDROCK",
   "BOX_TOKEN",
   "OPENCODE_API_KEY",
   "OMB_TTS_KEY",
@@ -952,6 +958,10 @@ export const PROVIDER_CREDENTIAL_ENV = [
   "XAI_API_KEY",
   "CURSOR_API_KEY",
   "CURSOR_AUTH_TOKEN",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "AWS_BEARER_TOKEN_BEDROCK",
 ] as const;
 
 /** Merge a partial config into ~/.openmausbot/config.json (secrets never
@@ -974,7 +984,7 @@ export function saveConfig(
   // back after we have successfully recognized the legacy list.
   const storedProfiles = storedBrowserProfilesSchema.safeParse(disk.browserProfiles);
   if (storedProfiles.success) disk.browserProfiles = storedProfiles.data;
-  for (const key of ["xai", "anthropic", "openaiCompat", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "threads", "context", "localVm", "features", "budgets", "billing", "onboarding", "browserEngine"] as const) {
+  for (const key of ["xai", "anthropic", "openaiCompat", "bedrock", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "threads", "context", "localVm", "features", "budgets", "billing", "onboarding", "browserEngine"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);
@@ -1177,6 +1187,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     opencodeGo: { driver: "opencodeGo" },
     computer: { driver: "boxAgent" },
     openaiCompat: { driver: "openai-compat" },
+    bedrock: { driver: "bedrock" },
     qwen: { driver: "qwenAgent" },
     hermes: { driver: "hermesAgent" },
     pi: { driver: "piAgent" },
@@ -1190,6 +1201,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   // never see. Custom-only engines stay in CUSTOM_ONLY so a one-off test map
   // is not expanded, matching the claude/grok/codex product-fleet probe.
   const PRODUCT_FLEET_ADDITIONS = {
+    bedrock: { driver: "bedrock" },
     cursor: { driver: "cursorAgent" },
     openaiCompat: { driver: "openai-compat" },
     ...CUSTOM_ONLY,
@@ -1212,6 +1224,12 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     // would turn the first workspace URL into a stale per-instance override.
     const entry = { ...sourceEntry };
     map[id] = entry;
+    if (entry.driver === "bedrock" && cfg.bedrock) {
+      const raw = entry.config;
+      if (raw === undefined || (raw && typeof raw === "object" && !Array.isArray(raw))) {
+        entry.config = { ...cfg.bedrock, ...raw as Record<string, unknown> | undefined };
+      }
+    }
     const environment = { ...entry.environment };
     for (const [key, value] of injectedEnvironment(cfg, entry.driver)) environment[key] = value;
     entry.environment = environment;

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
 import { browserAvailable, builtInBrowserEnabled } from "@/lib/feature-flags";
 import { t } from "@/lib/i18n";
+import { selectedModelCapabilities } from "@/lib/model-capabilities";
 import { instanceSupportsLocalComputer, localComputerSelectable } from "@/lib/local-computer";
 import { effectivePlace, PLACES, placeLabelKey, type Place } from "@/lib/place";
 import { useStore, type Bot, type Task } from "@/state/store";
@@ -17,13 +18,14 @@ export function usePlaceAvailability(bot: Bot): PlaceAvailability {
   const { state } = useStore();
   const { capabilities } = useDesktopCapabilities();
   const instance = state.instances.find((candidate) => candidate.instanceId === bot.modelSelection.instanceId);
-  const computerMcp = instance?.capabilities?.computerMcp === true;
+  const engineCapabilities = selectedModelCapabilities(state.instances, bot.modelSelection);
+  const computerMcp = engineCapabilities.computerMcp === true;
   const boxAgent = instance?.driverKind === "boxAgent";
   return {
     cloud: bot.cloudBackend === "vps" ? computerMcp && !boxAgent : computerMcp || boxAgent,
     vm: Boolean(instance?.snapshot?.state === "available" && computerMcp && !boxAgent),
     local: localComputerSelectable({ capabilities, providerSupportsLocal: instanceSupportsLocalComputer(state.instances, bot) }),
-    browser: builtInBrowserEnabled(state.config) && browserAvailable(state.config) && instance?.capabilities?.browserMcp === true && !boxAgent,
+    browser: builtInBrowserEnabled(state.config) && browserAvailable(state.config) && engineCapabilities.browserMcp === true && !boxAgent,
   };
 }
 

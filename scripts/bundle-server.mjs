@@ -72,6 +72,11 @@ await build({
   platform: "node",
   target: "node20",
   format: "esm",
+  // AWS credential providers are bundled from CommonJS and require Node
+  // built-ins lazily (SSO, shared profiles, credential_process). The shipped
+  // ESM server has no node_modules; createRequire supplies only the Node
+  // bridge while esbuild still inlines every package dependency.
+  banner: { js: 'import { createRequire as __ombCreateRequire } from "node:module"; const require = __ombCreateRequire(import.meta.url);' },
   outbase: server,
   outdir: join(root, "dist-server"),
   // Written after tsc, replacing its output for these entry points.

@@ -86,6 +86,25 @@ afterEach(() => {
 });
 
 describe("native provider onboarding", () => {
+  it.each([false, true])("sets up Bedrock with a token, region and model policy without a paid test invocation (workspace token: %s)", async (inheritedToken) => {
+    if (inheritedToken) writeFileSync(configPath, JSON.stringify({ bedrock: { apiKey: "synthetic-bedrock-token" } }));
+    const deps = dependencies();
+    deps.inspect.mockResolvedValue({ snapshot: { state: "available", authenticated: true },
+      models: { default: "amazon.nova-lite-v1:0", options: [{ id: "amazon.nova-lite-v1:0", label: "Nova Lite" }] },
+      bedrock: { apiKeyConfigured: true, apiKeySaved: true, accessKeysConfigured: false, accessKeysSaved: false,
+        sessionTokenConfigured: false, resolvedRegion: "us-east-1", regionSource: "setting" },
+    });
+    const ui = prompts({ choices: [3, 0, 0, 0], secrets: [inheritedToken ? "" : "synthetic-bedrock-token"], answers: ["us-east-1"], confirms: [true, false, true] });
+    expect(await runSetup(options, ui.io, deps)).toBe(true);
+    const cfg = loadConfig();
+    const selected = cfg.defaultModelSelection!;
+    expect(selected.model).toBe("amazon.nova-lite-v1:0");
+    expect(cfg.instances![selected.instanceId]).toMatchObject({ driver: "bedrock", config: {
+      auth: "api-key", apiKey: "synthetic-bedrock-token", region: "us-east-1", endpoint: "runtime", usOnly: true, allowAnthropic: false,
+    } });
+    expect(deps.verify).not.toHaveBeenCalled(); expect(deps.models).not.toHaveBeenCalled(); expect(deps.runCli).not.toHaveBeenCalled();
+    expect(ui.lines.join("\n")).not.toContain("synthetic-bedrock-token"); ui.assertConsumed();
+  });
   it.each([{ choice: 0, id: "codex", driver: "codex" }, { choice: 1, id: "claude", driver: "claudeAgent" }])(
     "uses an existing $id login and saves the selected model without starting an auth process",
     async ({ choice, id, driver }) => {
@@ -413,10 +432,10 @@ describe("API onboarding", () => {
     const before = loadConfig();
     const priorId = before.defaultModelSelection!.instanceId;
     const prior = before.instances![priorId]!;
-    // The explicit saved fleet has Codex, Claude, OpenAI-compatible, then
+    // The explicit saved fleet has Codex, Claude, OpenAI-compatible, Bedrock, then
     // this newly added API connection in the existing-connections list.
     const existingIds = Object.entries(before.instances!).filter(([, entry]) =>
-      ["codex", "claudeAgent", "openai-compat"].includes(entry.driver) && entry.enabled !== false).map(([id]) => id);
+      ["codex", "claudeAgent", "openai-compat", "bedrock"].includes(entry.driver) && entry.enabled !== false).map(([id]) => id);
     const chosen = existingIds.indexOf(priorId) + 3;
     const second = prompts({ choices: [chosen, 1], confirms: [true, true] });
     expect(await runSetup(options, second.io, deps)).toBe(true);

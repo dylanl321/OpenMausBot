@@ -4,7 +4,8 @@ import { Ajv, type ValidateFunction } from "ajv";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import formats from "ajv-formats";
 import { stripControlPlaneEnv } from "../config.ts";
-import type { SendTurnInput } from "../contracts.ts";
+import type { McpServerSpec, SendTurnInput } from "../contracts.ts";
+import { RemoteMcpClient } from "../mcp-http.ts";
 import { augmentedPath } from "../env-path.ts";
 import { killCliTree, spawnCli } from "../procs.ts";
 
@@ -12,13 +13,15 @@ export interface ChatToolDefinition {
   type: "function";
   function: { name: string; description: string; parameters: Record<string, unknown> };
 }
-export interface ChatToolResult { text: string; ok: boolean }
+export interface ChatToolImage { mime: "image/png" | "image/jpeg" | "image/gif" | "image/webp"; data: string }
+export interface ChatToolResult { text: string; ok: boolean; images?: ChatToolImage[] }
 /** The transport cannot safely continue this turn. A dispatched operation may
  * already have taken effect, so callers must not retry it through a new round. */
 export class ChatToolSessionError extends Error {}
 export interface ChatToolSession {
   definitions: ChatToolDefinition[];
   validate(name: string, args: unknown): void;
+  approvalScope(name: string): "local-computer" | undefined;
   execute(name: string, args: Record<string, unknown>, signal: AbortSignal): Promise<ChatToolResult>;
   close(): Promise<void>;
 }
@@ -45,6 +48,7 @@ function aborted(): Error { return new Error("MCP operation cancelled"); }
 export function chatMcpEnvironment(serverEnv: Record<string, string>, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...source, PATH: augmentedPath() };
   stripControlPlaneEnv(env);
+  for (const key of ["OMB_BEDROCK_API_KEY", "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]) delete env[key];
   return { ...env, ...serverEnv };
 }
 
@@ -231,17 +235,25 @@ function boundedText(value: string): string {
   return `${bytes.subarray(0, end).toString()}\n[MCP result truncated at 50KB; request less output.]`;
 }
 
-export async function mountChatTools(integrations: SendTurnInput["integrations"], signal: AbortSignal): Promise<ChatToolSession> {
-  const servers: Array<[string, Server]> = [];
+export async function mountChatTools(integrations: SendTurnInput["integrations"], signal: AbortSignal,
+  options: { extended?: boolean; images?: boolean } = {},
+): Promise<ChatToolSession> {
+  const servers: Array<[string, McpServerSpec, ("local-computer" | undefined)?]> = [];
   if (integrations?.agents) servers.push(["agents", integrations.agents]);
   if (integrations?.composio) servers.push(["composio", integrations.composio]);
+  if (options.extended) {
+    if (integrations?.localComputer) servers.push(["computer", integrations.localComputer, integrations.localComputer.scope]);
+    if (integrations?.browser) servers.push(["browser", integrations.browser]);
+    if (integrations?.phone) servers.push(["phone", integrations.phone]);
+  }
   // this client starts its servers and talks over stdio; a remote (url)
   // entry is skipped here and reaches Claude and Codex bots
   for (const [name, server] of Object.entries(integrations?.custom ?? {})) {
-    if ("command" in server) servers.push([name, server]);
+    if ("command" in server || options.extended) servers.push([name, server]);
   }
   if (servers.length > 32) throw new Error("MCP server count exceeds the 32-server limit");
-  const clients: ChatMcpClient[] = [];
+  type Client = Pick<ChatMcpClient, "call" | "close" | "tools">;
+  const clients: Client[] = [];
   let closed = false;
   let closing: Promise<void> | undefined;
   const close = (): Promise<void> => {
@@ -256,20 +268,20 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
   const cancel = () => { void close().catch(() => {}); };
   signal.addEventListener("abort", cancel, { once: true });
   const definitions: ChatToolDefinition[] = [];
-  const registered = new Map<string, { client: ChatMcpClient; name: string; schema: ValidateFunction }>();
+  const registered = new Map<string, { client: Client; name: string; schema: ValidateFunction; scope?: "local-computer" }>();
   try {
     if (signal.aborted) throw aborted();
     // Start independent servers concurrently; consume results in config order
     // so names and collision suffixes remain stable across startup timings.
-    const mounts = await Promise.allSettled(servers.map(async ([name, descriptor]) => {
+    const mounts = await Promise.allSettled(servers.map(async ([name, descriptor, scope]) => {
       if (signal.aborted || closed) throw aborted();
-      const client = new ChatMcpClient(descriptor);
+      const client: Client = "command" in descriptor ? new ChatMcpClient(descriptor) : remoteChatClient(descriptor);
       clients.push(client);
-      return { name, client, tools: await client.tools(signal) };
+      return { name, client, scope, tools: await client.tools(signal) };
     }));
     for (const mount of mounts) {
       if (mount.status === "rejected") throw mount.reason;
-      const { name: server, client, tools } = mount.value;
+      const { name: server, client, scope, tools } = mount.value;
       const originalNames = new Set<string>();
       for (const tool of tools) {
         if (!object(tool) || typeof tool.name !== "string" || !tool.name.trim() || originalNames.has(tool.name)) throw new Error("MCP server advertised an invalid or duplicate tool name");
@@ -281,7 +293,7 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
         const base = `${server}_${tool.name}`.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 64) || "mcp_tool";
         let name = base;
         for (let index = 2; registered.has(name); index += 1) { const suffix = `_${index}`; name = base.slice(0, 64 - suffix.length) + suffix; }
-        registered.set(name, { client, name: tool.name, schema });
+        registered.set(name, { client, name: tool.name, schema, scope });
         definitions.push({ type: "function", function: { name, description: typeof tool.description === "string" ? tool.description : "Configured MCP tool", parameters: tool.inputSchema } });
         if (Buffer.byteLength(JSON.stringify(definitions)) > CATALOG_BYTES) throw new Error("MCP tool catalog exceeds the 1MB limit");
       }
@@ -296,6 +308,7 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
   };
   return {
     definitions, validate, close,
+    approvalScope: (name) => registered.get(name)?.scope,
     async execute(name, args, callSignal) {
       validate(name, args);
       if (callSignal.aborted) { await close(); throw aborted(); }
@@ -305,19 +318,55 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
         if (signal.aborted || callSignal.aborted) throw aborted();
         if (!object(result) || !Array.isArray(result.content) || (result.isError !== undefined && typeof result.isError !== "boolean")) throw new Error("MCP tool returned an invalid result; execution outcome may be uncertain");
         const parts: string[] = [];
+        const images: ChatToolImage[] = [];
         let unsupported = 0;
         for (const item of result.content) {
           if (!object(item) || typeof item.type !== "string" || (item.type === "text" && typeof item.text !== "string")) throw new Error("MCP tool returned invalid content; execution outcome may be uncertain");
           if (item.type === "text") parts.push(item.text as string);
+          else if (options.images && item.type === "image" && typeof item.data === "string" &&
+            typeof item.mimeType === "string" && ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(item.mimeType) &&
+            item.data.length <= 5_000_000 && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(item.data) && images.length < 8) {
+            images.push({ mime: item.mimeType as ChatToolImage["mime"], data: item.data });
+          }
           else unsupported += 1;
         }
         if (result.structuredContent !== undefined) parts.push(JSON.stringify(result.structuredContent));
         if (unsupported) parts.unshift(`[${unsupported} unsupported MCP content item(s) omitted. The operation may have taken effect, but its full result cannot be represented; inspect its state before retrying.]`);
-        return { text: boundedText(parts.join("\n") || "(empty result)"), ok: result.isError !== true && unsupported === 0 };
+        return { text: boundedText(parts.join("\n") || (images.length ? "Image result attached." : "(empty result)")), ok: result.isError !== true && unsupported === 0,
+          ...(images.length ? { images } : {}),
+        };
       } catch (error) {
         await close();
         throw new ChatToolSessionError(error instanceof Error ? error.message : "MCP transport failed; execution outcome may be uncertain");
       }
+    },
+  };
+}
+
+/** Reuse the harness's bounded HTTP/SSE client. A failed call is never
+ * replayed: its operation may already have taken effect. */
+function remoteChatClient(descriptor: Exclude<McpServerSpec, Server>): Pick<ChatMcpClient, "call" | "close" | "tools"> {
+  const client = new RemoteMcpClient(descriptor);
+  return {
+    close: () => client.close(),
+    call: (method, params, signal, timeout) => client.request(method, params, AbortSignal.any([signal, AbortSignal.timeout(timeout)])),
+    async tools(signal) {
+      const bounded = AbortSignal.any([signal, AbortSignal.timeout(STARTUP_MS)]);
+      await client.initialize("OpenMausBot", bounded);
+      const rows: unknown[] = [];
+      const seen = new Set<string>();
+      let cursor: string | undefined;
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const result = await client.request("tools/list", cursor ? { cursor } : {}, bounded);
+        if (!object(result) || !Array.isArray(result.tools)) throw new Error("MCP tools/list returned an invalid result");
+        rows.push(...result.tools);
+        if (rows.length > TOOL_COUNT) throw new Error("MCP tool count exceeds the 128-tool limit");
+        if (result.nextCursor === undefined) return rows;
+        if (typeof result.nextCursor !== "string" || !result.nextCursor || seen.has(result.nextCursor)) throw new Error("MCP tools/list returned an invalid pagination cursor");
+        cursor = result.nextCursor;
+        seen.add(cursor);
+      }
+      throw new Error("MCP tools/list exceeded the pagination limit");
     },
   };
 }

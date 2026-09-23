@@ -1346,6 +1346,23 @@ describe("customMcpServers", () => {
   });
 });
 
+describe("Bedrock configuration scopes", () => {
+  it("inherits workspace defaults without freezing credentials into instance configuration", () => {
+    const cfg: AppConfig = { bedrock: { apiKey: "synthetic-workspace-bedrock-token", region: "us-east-1", allowAnthropic: false }, instances: {
+      primary: { driver: "bedrock", config: { region: "us-west-2" } },
+      malformed: { driver: "bedrock", config: "keep-as-unavailable-shadow" },
+    } };
+    const original = structuredClone(cfg);
+    expect(instanceConfigs(cfg).primary.config).toEqual({ apiKey: "synthetic-workspace-bedrock-token", region: "us-west-2", allowAnthropic: false });
+    expect(instanceConfigs(cfg).malformed.config).toBe("keep-as-unavailable-shadow");
+    expect(persistableInstanceConfigs(cfg).primary.config).toEqual({ region: "us-west-2" });
+    expect(cfg).toEqual(original);
+    saveConfig(cfg);
+    saveConfig({ bedrock: { blockedModels: ["amazon.nova-lite-v1:0"] } });
+    expect(loadConfig().bedrock).toMatchObject({ ...cfg.bedrock, blockedModels: ["amazon.nova-lite-v1:0"] });
+  });
+});
+
 describe("providerReloadKeys", () => {
   it("rebuilds the fleet only for sections a driver reads", () => {
     expect(providerReloadKeys({ claude: { model: "x" }, profile: { name: "me" } })).toEqual(["claude"]);

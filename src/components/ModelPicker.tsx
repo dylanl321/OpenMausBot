@@ -628,7 +628,10 @@ export function ModelPicker({
               <>
                 <div className="shrink-0 px-4 pb-2 pt-3.5">
                   <div className="flex items-center justify-between gap-3">
-                    <div className="truncate text-[14px] font-semibold text-ink">{railInstance.driverKind === "claudeAgent" ? "Claude" : railInstance.displayName}</div>
+                    <div className="min-w-0">
+                      <div className="truncate text-[14px] font-semibold text-ink">{railInstance.driverKind === "claudeAgent" ? "Claude" : railInstance.displayName}</div>
+                      {railInstance.bedrock?.resolvedRegion && <div data-model-region className="mt-0.5 text-[11px] text-ink-secondary">{railInstance.bedrock.resolvedRegion} · {railInstance.bedrock.endpoint === "mantle" ? "Mantle" : "Runtime"}</div>}
+                    </div>
                     <div className="flex shrink-0 items-center gap-1">
                       <button
                         type="button"

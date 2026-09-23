@@ -2,14 +2,16 @@ import type {
   DriverCreateInput,
   ModelCatalog,
   ProviderInstance,
+  ProviderSnapshot,
   RuntimeEvent,
   RuntimeEventListener,
   SendTurnInput,
+  TurnImageInput,
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { redactSecretsInText } from "../redact.ts";
 import { toolDetailPreview } from "../tool-summary.ts";
-import { ChatToolSessionError, mountChatTools, type ChatToolDefinition, type ChatToolSession } from "./chat-mcp-tools.ts";
+import { ChatToolSessionError, mountChatTools, type ChatToolDefinition, type ChatToolSession, type ChatToolImage } from "./chat-mcp-tools.ts";
 import { createChatToolApproval } from "./chat-tool-approval.ts";
 import { ChatProtocolError, ChatReasoningDetails, ChatToolCalls, MAX_CHAT_TOOL_CALLS, object, type ChatToolCall } from "./openai-chat-protocol.ts";
 import { appendNative } from "./native.ts";
@@ -22,14 +24,20 @@ export interface OpenAIChatMessage {
   tool_call_id?: string;
   reasoning_content?: string;
   reasoning_details?: Record<string, unknown>[];
+  /** Internal transport data, never spread into a Chat Completions body. */
+  images?: TurnImageInput[];
+  toolImages?: ChatToolImage[];
+  nativeContent?: unknown[];
 }
 
-interface Usage {
+export interface ChatUsage {
   input: number;
   output: number;
+  cachedInput?: number;
 }
+type Usage = ChatUsage;
 
-interface Completion {
+export interface ChatCompletion {
   text: string;
   reasoning: string;
   usage: Usage | null;
@@ -37,6 +45,29 @@ interface Completion {
   finishReason: string | null;
   protocolReasoning: string;
   protocolReasoningDetails: Record<string, unknown>[];
+  nativeContent?: unknown[];
+}
+type Completion = ChatCompletion;
+
+export interface ChatCompletionRequest {
+  messages: OpenAIChatMessage[];
+  model: string;
+  stream: boolean;
+  signal?: AbortSignal;
+  onDelta?: (delta: string, kind: "assistant_text" | "reasoning_text") => void;
+  tools: ChatToolDefinition[];
+}
+
+/** A provider can share the approval/tool lifecycle while owning its native
+ * protocol and authentication. A null native completion selects the existing
+ * Chat Completions decoder, using request() for its authenticated transport. */
+export interface ChatTransport {
+  snapshot(): Promise<ProviderSnapshot>;
+  validateModel(model: string): void;
+  secrets(): readonly string[];
+  complete(request: ChatCompletionRequest): Promise<ChatCompletion | null>;
+  request(request: ChatCompletionRequest): Promise<Response>;
+  features(model: string): { tools: boolean; images: boolean };
 }
 
 interface CompletionJson {
@@ -92,6 +123,7 @@ interface RuntimeOptions<Config> {
   retryScale?: number;
   /** Explicit text-only mode for endpoints/models that cannot accept tools. */
   tools?: boolean;
+  transport?: ChatTransport;
 }
 
 const usageFrom = (usage: CompletionJson["usage"]): Usage | null =>
@@ -132,6 +164,10 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
     onDelta?: (delta: string, kind: "assistant_text" | "reasoning_text") => void,
     tools: ChatToolDefinition[] = [],
   ): Promise<Completion> => {
+    options.transport?.validateModel(model);
+    const request = { messages, model, stream, signal, onDelta, tools };
+    const native = await options.transport?.complete(request);
+    if (native) return native;
     // Idle timer that is renewed on every received chunk during streaming
     const timeoutController = new AbortController();
     let idleTimer: NodeJS.Timeout | null = null;
@@ -149,7 +185,9 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         ? AbortSignal.any([signal, timeoutController.signal])
         : timeoutController.signal;
 
-      const response = await fetch(`${options.apiUrl}/chat/completions`, {
+      const response = options.transport
+        ? await options.transport.request({ ...request, signal: activeSignal })
+        : await fetch(`${options.apiUrl}/chat/completions`, {
         method: "POST",
         headers: { authorization: `Bearer ${options.apiKey}`, "content-type": "application/json" },
         body: JSON.stringify({
@@ -295,30 +333,34 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       role: message.role,
       content: message.text,
     })),
-    { role: "user", content: turn.text },
+    { role: "user", content: turn.text, ...(options.transport && turn.images?.length ? { images: turn.images } : {}) },
   ];
 
   const sendTurn = async (turn: SendTurnInput) => {
-    if (!options.apiKey) throw new Error(options.missingKeyError);
+    if (!options.transport && !options.apiKey) throw new Error(options.missingKeyError);
     if (active.has(turn.threadId)) throw new Error("a turn is already running on this thread");
 
     const turnId = newId();
     const abort = new AbortController();
     const messages = messagesFor(turn);
     const model = turn.model || options.models().default;
-    const secrets = [options.apiKey];
+    options.transport?.validateModel(model);
+    const secrets = [options.apiKey, ...options.transport?.secrets() ?? []];
     for (const integration of Object.values(turn.integrations ?? {})) {
       const entries = object(integration);
       const specs = entries && "command" in entries ? [entries] : Object.values(entries ?? {}).map(object);
       for (const spec of specs) {
-        for (const [key, value] of Object.entries(object(spec?.env) ?? {})) {
-          if (/key|token|password|secret|authorization/i.test(key) && typeof value === "string" && value) secrets.push(value);
+        for (const [key, value] of Object.entries({ ...object(spec?.env), ...object(spec?.headers) })) {
+          if (/key|token|password|secret|authorization/i.test(key) && typeof value === "string" && value) {
+            secrets.push(value);
+            if (/authorization/i.test(key) && /^(?:Bearer|Basic)\s+\S+$/i.test(value)) secrets.push(value.replace(/^\S+\s+/, ""));
+          }
         }
       }
     }
     const safeText = (text: string) => {
       let safe = text;
-      for (const secret of secrets) if (secret) safe = safe.split(secret).join("[redacted]");
+      for (const secret of [...secrets, ...options.transport?.secrets() ?? []]) if (secret) safe = safe.split(secret).join("[redacted]");
       return redactSecretsInText(safe);
     };
     const preview = (value: unknown) => toolDetailPreview(JSON.parse(JSON.stringify(value, (_key, part) =>
@@ -332,10 +374,12 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       open: (ask) => emit({
         ...base(turn.threadId, turnId), type: "request.opened", requestType: "permission",
         requestId: ask.id, tool: ask.tool, summary: ask.summary, allowSession: false,
+        ...(ask.scope ? { approvalScope: ask.scope, requiresExplicitApproval: true } : {}),
       }),
       resolved: (ask, allowed, source) => emit({
         ...base(turn.threadId, turnId), type: "request.resolved", requestId: ask.id,
         behavior: allowed ? "allow" : "deny", source,
+        ...(ask.scope ? { approvalScope: ask.scope } : {}),
       }),
     });
     let resolveDone!: () => void;
@@ -355,7 +399,10 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       const denials: string[] = [];
       const seenCalls = new Set<string>();
       try {
-        tools = await mountChatTools(options.tools === false ? undefined : turn.integrations, abort.signal);
+        const features = options.transport?.features(model);
+        if (turn.images?.length && features?.images === false) throw new ChatProtocolError("This model does not support image input. Choose a vision model or remove the images.");
+        tools = await mountChatTools(options.tools === false || features?.tools === false ? undefined : turn.integrations, abort.signal,
+          options.transport ? { extended: true, images: features?.images === true } : undefined);
         for (let round = 0; round < 16; round++) {
           abort.signal.throwIfAborted();
           native("out", options.nativeLog.outgoing(turn, messages, model));
@@ -368,11 +415,12 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
               let combined = pending[streamKind] + text;
               // Mask complete matches before holding a suffix: otherwise a key
               // such as "abab" could be split at its own repeated prefix.
-              for (const secret of secrets) if (secret) combined = combined.split(secret).join("[redacted]");
+              const currentSecrets = [...secrets, ...options.transport?.secrets() ?? []];
+              for (const secret of currentSecrets) if (secret) combined = combined.split(secret).join("[redacted]");
               let hold = 0;
               // A configured credential can straddle chunks. Hold any suffix
               // that could be its prefix until the next chunk disambiguates it.
-              if (!flush) for (const secret of secrets) {
+              if (!flush) for (const secret of currentSecrets) {
                 for (let length = Math.min(secret.length - 1, combined.length); length > hold; length--) {
                   if (combined.endsWith(secret.slice(0, length))) { hold = length; break; }
                 }
@@ -405,6 +453,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
           if (completion.usage) {
             usage.input += completion.usage.input;
             usage.output += completion.usage.output;
+            if (completion.usage.cachedInput !== undefined) usage.cachedInput = (usage.cachedInput ?? 0) + completion.usage.cachedInput;
             hasUsage = true;
             emit({ ...base(turn.threadId, turnId), type: "thread.token-usage.updated", ...usage });
           }
@@ -434,10 +483,11 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
           messages.push({ role: "assistant", content: completion.text || null, tool_calls: completion.toolCalls,
             ...(completion.protocolReasoning ? { reasoning_content: completion.protocolReasoning } : {}),
             ...(completion.protocolReasoningDetails.length ? { reasoning_details: completion.protocolReasoningDetails } : {}),
+            ...(completion.nativeContent ? { nativeContent: completion.nativeContent } : {}),
           });
           for (const call of completion.toolCalls) {
             abort.signal.throwIfAborted();
-            let result: { text: string; ok: boolean };
+            let result: { text: string; ok: boolean; images?: ChatToolImage[] };
             let started = false;
             let fatal: Error | undefined;
             try {
@@ -452,8 +502,11 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
               // so it is honoured here: without it every single tool call on
               // an OpenAI-compatible engine stops for a card, and a Chief's
               // delegated Full access cannot help either.
-              const allowed = turn.approvalMode === "full"
-                || await approval.ask(call.function.name, inputPreview ?? "This tool has no arguments.");
+              const scope = tools.approvalScope(call.function.name);
+              // Full access never grants authority over the user's host
+              // desktop. Preserve the harness's explicit local scope gate.
+              const allowed = (turn.approvalMode === "full" && scope !== "local-computer")
+                || await approval.ask(call.function.name, inputPreview ?? "This tool has no arguments.", scope);
               abort.signal.throwIfAborted();
               emit({ ...base(turn.threadId, turnId), type: "item.started", itemType: "tool", itemId: call.id,
                 title: call.function.name, ...(inputPreview ? { input: inputPreview } : {}),
@@ -476,7 +529,9 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             const output = preview({ ok: result.ok, result: text });
             emit({ ...base(turn.threadId, turnId), type: "item.completed", itemType: "tool", itemId: call.id, ok: result.ok, output });
             if (!result.ok) toolFailed = true;
-            messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: result.ok, result: text }) });
+            messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: result.ok, result: text }),
+              ...(result.images?.length ? { toolImages: result.images } : {}),
+            });
             abort.signal.throwIfAborted();
             if (fatal) throw fatal;
           }
@@ -519,12 +574,15 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       return options.models();
     },
     ...(options.refreshModels ? { refreshModels: options.refreshModels } : {}),
-    snapshot: async () => options.apiKey
+    snapshot: options.transport?.snapshot ?? (async () => options.apiKey
       ? { state: "available", authenticated: true, version: null, ...(options.billing ? { billing: options.billing } : {}) }
-      : { state: "unavailable", reason: options.unavailableReason },
+      : { state: "unavailable", reason: options.unavailableReason }),
     adapter: {
       provider: options.driverKind,
-      capabilities: { sessionModelSwitch: "in-session", customMcp: options.tools !== false, agentsMcp: options.tools !== false, composioMcp: options.tools !== false },
+      capabilities: { sessionModelSwitch: "in-session", customMcp: options.tools !== false, agentsMcp: options.tools !== false, composioMcp: options.tools !== false,
+        ...(options.transport ? { images: true, nativeImageInput: true, computerMcp: options.tools !== false,
+          localComputerMcp: options.tools !== false, browserMcp: options.tools !== false, phoneMcp: options.tools !== false } : {}),
+      },
       sendTurn,
       interruptTurn: async (threadId, turnId) => {
         const turn = active.get(threadId);

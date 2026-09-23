@@ -15,6 +15,7 @@ import { t } from "@/lib/i18n";
 import { EngineSetup, EngineUpdateNotice, EngineWarningNotice } from "./EngineSetup";
 import { AddClaudeAccount, ClaudeAccountSettings } from "./ClaudeAccountSettings";
 import { CodexAccountSettings } from "./CodexAccountSettings";
+import { BedrockSettings } from "./BedrockSettings";
 
 interface ProbeResult {
   ok: boolean;
@@ -255,6 +256,13 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
     {!engineReady(instance) && <p className="mt-2 text-[12px] text-ink-secondary">{t("organization.engineUnavailable")}</p>}
   </EngineCard>;
 
+  if (instance.driverKind === "bedrock") return <EngineCard instance={instance}>
+    <ProviderIconPicker instance={instance} />
+    <BedrockSettings instance={instance} className="mt-3" />
+    {instance.snapshot.state === "unavailable" && instance.snapshot.reason && <p className="mt-3 text-[12px] text-ink-secondary">{instance.snapshot.reason}</p>}
+    {instance.snapshot.warning && <EngineWarningNotice warning={instance.snapshot.warning} className="mt-3" />}
+  </EngineCard>;
+
   return (
     <EngineCard instance={instance}>
       <ProviderIconPicker instance={instance} />
@@ -342,7 +350,7 @@ export function EnginesSettings() {
   // every KNOWN-driver instance has cliDefault; unknown-driver shadows have
   // neither unless an override was set. Including them keeps a Reset-able row
   // (and a Set CLI… path) for engines the running build doesn't recognize.
-  const rows = state.instances.filter((i) => i.readOnly || i.cli !== undefined || i.cliDefault !== undefined || i.snapshot.state === "unavailable");
+  const rows = state.instances.filter((i) => i.driverKind === "bedrock" || i.readOnly || i.cli !== undefined || i.cliDefault !== undefined || i.snapshot.state === "unavailable");
 
   return (
     <div className="flex min-w-0 flex-col gap-6 pb-2">

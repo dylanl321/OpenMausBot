@@ -1,12 +1,11 @@
 import type { Bot, InstanceInfo } from "@/state/store";
+import { selectedModelCapabilities } from "./model-capabilities";
 
 export function instanceSupportsLocalComputer(
   instances: InstanceInfo[],
   bot: Pick<Bot, "modelSelection">,
 ): boolean {
-  const capabilities = instances.find(
-    (instance) => instance.instanceId === bot.modelSelection.instanceId,
-  )?.capabilities;
+  const capabilities = selectedModelCapabilities(instances, bot.modelSelection);
   return capabilities?.localComputerMcp === true || capabilities?.computerMcp === true;
 }
 

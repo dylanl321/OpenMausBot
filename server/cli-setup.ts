@@ -16,8 +16,11 @@ import { ProviderRegistry } from "./harness/registry.ts";
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { defaultSetupIo, SetupCancelled, type SetupIo } from "./cli-prompts.ts";
 import { API_ENDPOINTS, fetchSetupModels, normalizeApiUrl, verifySetupCompletion } from "./cli-api-setup.ts";
+import { decodeBedrockConfig } from "./bedrock-config.ts";
+import { describeBedrockSettings } from "./drivers/bedrock.ts";
+import { bedrockAccessError, bedrockModelError, bedrockRoutingError, type BedrockConfig, type BedrockSettings } from "../shared/bedrock.ts";
 
-type Inspection = { snapshot: ProviderSnapshot; models: ModelCatalog };
+type Inspection = { snapshot: ProviderSnapshot; models: ModelCatalog; bedrock?: BedrockSettings };
 interface SetupDependencies {
   inspect(id: string, entry: InstanceConfig): Promise<Inspection>;
   runCli(cli: string, args: string[], environment?: Record<string, string>): Promise<void>;
@@ -32,6 +35,11 @@ async function inspect(id: string, entry: InstanceConfig): Promise<Inspection> {
     const provider = registry.get(id);
     if (!provider) throw new Error("This provider configuration could not be loaded. Check it in app Settings.");
     const snapshot = await provider.snapshot();
+    if (entry.driver === "bedrock" && snapshot.state === "available") {
+      try { await provider.refreshModels?.(); }
+      catch { /* Return the explicit discovery warning and allow manual IDs. */ }
+      return { snapshot: await provider.snapshot(), models: provider.models, bedrock: describeBedrockSettings(provider, entry.config) };
+    }
     return { snapshot, models: provider.models };
   } finally {
     await registry.disposeAll();
@@ -127,6 +135,46 @@ const NATIVE = [
   { id: "claude", driver: "claudeAgent", label: "Claude Code — sign in with your account", cli: "claude", pkg: "@anthropic-ai/claude-code" },
 ] as const;
 
+async function connectBedrock(id: string, prior: InstanceConfig | undefined, io: SetupIo, deps: SetupDependencies, defaults?: BedrockConfig) {
+  const config: BedrockConfig = decodeBedrockConfig({ ...defaults, ...decodeBedrockConfig(prior?.config) });
+  io.log("Connect Amazon Bedrock. Tokens are preferred in automatic mode; credentials stay on this server.");
+  const auth = await io.choose("Bedrock authentication", ["Bedrock token / API key", "AWS profile (including SSO)", "AWS access keys", "Automatic / AWS workload role"], 0);
+  config.auth = (["api-key", "profile", "access-keys", "auto"] as const)[auth];
+  if (auth === 0) {
+    const token = (await io.secret("Bedrock token (hidden; Enter keeps saved token or AWS_BEARER_TOKEN_BEDROCK): ")).trim();
+    if (token) config.apiKey = token;
+  } else if (auth === 1) {
+    config.profile = (await io.ask("AWS profile (Enter uses AWS_PROFILE / default): ")).trim();
+  } else if (auth === 2) {
+    const accessKeyId = (await io.secret("AWS access key ID (hidden; Enter uses saved keys / environment): ")).trim();
+    const secretAccessKey = (await io.secret("AWS secret access key (hidden): ")).trim();
+    const sessionToken = (await io.secret("AWS session token for temporary credentials (hidden, optional): ")).trim();
+    if (accessKeyId || secretAccessKey) {
+      if (!accessKeyId || !secretAccessKey) throw new Error("Enter both AWS keys together.");
+      Object.assign(config, { accessKeyId, secretAccessKey, sessionToken });
+    }
+  }
+  config.region = (await io.ask("AWS region (Enter follows environment / profile; default us-east-1): ")).trim();
+  config.endpoint = await io.choose("Bedrock endpoint", ["Runtime — Converse and regional inference profiles", "Mantle — its own regional catalog"], config.endpoint === "mantle" ? 1 : 0) === 1 ? "mantle" : "runtime";
+  config.api = "auto";
+  config.usOnly = await io.confirm("Restrict models and inference to the US? Global profiles will be excluded.", config.usOnly === true);
+  config.allowAnthropic = await io.confirm("Allow Anthropic and Claude models?", config.allowAnthropic !== false);
+  const entry: InstanceConfig = { ...prior, driver: "bedrock", displayName: prior?.displayName ?? "Amazon Bedrock", enabled: true, config: decodeBedrockConfig(config) };
+  io.log("Loading this region’s model catalog. No model is invoked by this check.");
+  const state = await deps.inspect(id, entry);
+  if (state.snapshot.state !== "available") throw new Error(state.snapshot.reason ?? "Bedrock credentials are unavailable.");
+  if (state.bedrock?.resolvedRegion) io.log(`AWS region: ${state.bedrock.resolvedRegion} (${state.bedrock.regionSource}).`);
+  if (state.snapshot.warning) io.log(state.snapshot.warning.message);
+  const model = state.models.options.length ? await chooseModel(io, state.models) : (await io.ask("No catalog models found. Enter an exact conversational model ID or ARN: ")).trim();
+  const error = bedrockModelError(model) ?? bedrockAccessError(model, config)
+    ?? bedrockRoutingError(model, config, state.bedrock?.resolvedRegion ?? config.region ?? "");
+  if (error) throw new Error(error);
+  entry.config = { ...config, model };
+  io.log("Inference permissions and profile destinations are checked when you send a message. Per-model access can be managed in Settings → Engines.");
+  if (config.apiKey || config.accessKeyId) io.log("Saved credentials are stored in your private config.json (plaintext, owner-only permissions on Unix).");
+  return { entry, model };
+}
+
 async function connectNative(
   choice: typeof NATIVE[number], id: string, entry: InstanceConfig, io: SetupIo, deps: SetupDependencies,
 ): Promise<ModelCatalog> {
@@ -175,7 +223,7 @@ export async function runSetup(
     const cfg = loadConfig();
     const runtime = instanceConfigs(cfg);
     const existing = Object.entries(runtime).filter(([id, entry]) =>
-      !!cfg.instances?.[id] && ["codex", "claudeAgent", "openai-compat"].includes(entry.driver) && entry.enabled !== false);
+      !!cfg.instances?.[id] && ["codex", "claudeAgent", "openai-compat", "bedrock"].includes(entry.driver) && entry.enabled !== false);
     io.log("\nWelcome to OpenMausBot\n");
     io.log("Let's connect your AI. Choose a provider, then a model.");
     io.log("Existing bots and conversations stay untouched. Ctrl-C cancels.");
@@ -185,6 +233,7 @@ export async function runSetup(
       ...NATIVE.map((n) => n.label),
       "API key — OpenAI, OpenRouter, Groq or a compatible service (chat only)",
       ...existing.map(([id, entry]) => `Use existing: ${entry.displayName ?? id}${id === cfg.defaultModelSelection?.instanceId ? " — current" : ""}`),
+      "Amazon Bedrock — token, AWS profile or access keys",
     ];
     let pick: number | undefined;
 
@@ -208,6 +257,9 @@ export async function runSetup(
             ...models,
             default: saved?.instanceId === id ? saved.model : models.default,
           });
+        } else if (pick === providerOptions.length - 1 || prior?.[1].driver === "bedrock") {
+          id = prior?.[0] ?? `bedrock-${randomUUID().slice(0, 8)}`;
+          ({ entry, model } = await connectBedrock(id, prior ? cfg.instances?.[id] : undefined, io, deps, cfg.bedrock));
         } else {
           io.log("Connect an API key");
           io.log("API usage is billed separately from ChatGPT/Claude subscriptions.");

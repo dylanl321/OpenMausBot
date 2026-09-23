@@ -33,6 +33,7 @@ import { effectivePlace, isComputerPlace, placeLabelKey } from "@/lib/place";
 import type { CloudBackend } from "../../shared/wire";
 import { ApiKeyRow } from "./ApiKeys";
 import { cn } from "@/lib/cn";
+import { selectedModelCapabilities } from "@/lib/model-capabilities";
 import { useCaptionChrome } from "@/components/DesktopCapabilities";
 import { usePageVisible } from "@/lib/page-visible";
 import { CloudScreenPreview } from "./CloudScreenPreview";
@@ -381,14 +382,15 @@ export function ComputerPanel({
   const selectedInstance = state.instances.find(
     (instance) => instance.instanceId === bot.modelSelection.instanceId,
   );
+  const engineCapabilities = selectedModelCapabilities(state.instances, bot.modelSelection);
   // "Works on: Browser" needs the same things as the browser switch minus
   // the switch itself — picking it turns the switch on. The box-native
   // Computer engine runs inside the box, so it has no browser-only mode.
   const browserSelectable =
     builtInBrowserEnabled(state.config) &&
     browserAvailableHere &&
-    selectedInstance?.capabilities?.browserMcp === true &&
-    selectedInstance.driverKind !== "boxAgent";
+    engineCapabilities.browserMcp === true &&
+    selectedInstance?.driverKind !== "boxAgent";
   const browserDisabledReason = !browserAvailableHere
     ? browserUnavailableReason(state.config)
     : !builtInBrowserEnabled(state.config)
@@ -444,10 +446,10 @@ export function ComputerPanel({
   }, [bot.id, bot.computer]);
   const vmSupported = Boolean(
     selectedInstance?.snapshot.state === "available" &&
-      selectedInstance.capabilities?.computerMcp &&
+      engineCapabilities.computerMcp &&
       selectedInstance.driverKind !== "boxAgent",
   );
-  const computerToolSupported = selectedInstance?.capabilities?.computerMcp === true;
+  const computerToolSupported = engineCapabilities.computerMcp === true;
   const vpsSupported = Boolean(computerToolSupported && selectedInstance?.driverKind !== "boxAgent");
   const cloudSupported = cloudBackend === "vps"
     ? vpsSupported

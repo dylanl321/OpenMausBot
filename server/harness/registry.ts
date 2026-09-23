@@ -5,6 +5,7 @@
 // compatible — do not remove it); dispose tears an instance down without
 // touching its siblings.
 import { findCliCandidates } from "../env-path.ts";
+import { capabilitiesForModel } from "../../shared/model-capabilities.ts";
 import { installNpmEngine, npmAvailable, serverInstallFor } from "../engine-install.ts";
 import type {
   AnyProviderDriver,
@@ -57,6 +58,7 @@ function cliOfRaw(raw: unknown): string | undefined {
 
 export class ProviderRegistry {
   private byId = new Map<InstanceId, RegistryEntry>();
+  private modelInstances = new WeakMap<ProviderInstance, Map<string, ProviderInstance>>();
   /** decoded per-instance `cli` overrides, for describe() — drivers spawn
    * from their own config; this map only reports what was configured */
   private cliByInstance = new Map<InstanceId, string>();
@@ -123,8 +125,23 @@ export class ProviderRegistry {
     }
   }
 
-  get(instanceId: InstanceId): ProviderInstance | null {
-    return this.byId.get(instanceId)?.live ?? null;
+  get(instanceId: InstanceId, model?: string): ProviderInstance | null {
+    const instance = this.byId.get(instanceId)?.live;
+    if (!instance) return null;
+    const option = model ? instance.models.options.find((option) => option.id === model) : undefined;
+    if (!option?.capabilities) return instance;
+    // Turns compare instance identity across async readiness checks. Keep a
+    // stable view for a model/capability pair until the base instance changes.
+    let views = this.modelInstances.get(instance);
+    if (!views) { views = new Map(); this.modelInstances.set(instance, views); }
+    const key = `${model}:${JSON.stringify(option.capabilities)}`;
+    const cached = views.get(key);
+    if (cached) return cached;
+    const view = { ...instance, get models() { return instance.models; }, adapter: { ...instance.adapter,
+      capabilities: capabilitiesForModel(instance.adapter.capabilities, option),
+    } };
+    views.set(key, view);
+    return view;
   }
 
   /** The configured executable for instance-scoped maintenance actions.

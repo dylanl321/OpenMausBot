@@ -426,6 +426,8 @@ export interface ModelCatalog {
      * the model-facing rebuild (server/context-rebuild.ts). Unknown falls
      * back to a pattern table over the model id, then a conservative default. */
     contextWindow?: number;
+    /** Model-specific limits override the driver's transport capabilities. */
+    capabilities?: import("../shared/model-capabilities.ts").ModelCapabilities;
     /** Discovery hints; the native session revalidates these before each turn. */
     variants?: ModelVariantOption[];
   }>;

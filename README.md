@@ -82,6 +82,12 @@ already have:
 A model picker with a provider rail — Claude and Codex models side by side, defaults marked, unavailable
 providers dimmed with the reason. Switch a bot's model mid-conversation.
 
+[Amazon Bedrock](docs/bedrock.md) is also a cloud engine, with AWS tokens,
+profiles or access keys, regional Runtime/Mantle catalogs, model access
+controls and an optional US-only inference policy. Configure it in
+**Settings → Engines**; conversational models can use the app's approved
+agent tools when the model supports them.
+
 <img src="docs/screenshots/model-picker.png" alt="Model picker with provider rail" width="100%">
 
 </td>
@@ -284,9 +290,10 @@ pnpm dev           # app → http://127.0.0.1:5199
 pnpm dev:desktop   # Electron shell; keep the two commands above running
 ```
 
-Requirements: **macOS, Windows, or Ubuntu 24.04 x64**, **Node 24+**, **pnpm**, and at least one agent CLI — [`claude`](https://claude.com/claude-code),
-[`codex`](https://github.com/openai/codex), or [`grok`](https://x.ai/cli) — installed and logged in. They appear
-in the model picker automatically.
+Requirements: **macOS, Windows, or Ubuntu 24.04 x64**, **Node 24+**, **pnpm**, and an AI connection.
+Use an agent CLI — [`claude`](https://claude.com/claude-code), [`codex`](https://github.com/openai/codex),
+or [`grok`](https://x.ai/cli) — installed and logged in, or configure an API engine such as
+[Amazon Bedrock](docs/bedrock.md). Available connections appear in the model picker.
 
 Package the desktop application:
 

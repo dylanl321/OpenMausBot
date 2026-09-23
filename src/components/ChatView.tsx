@@ -74,6 +74,7 @@ import { SpeakButton } from "./SpeakButton";
 import { CallButton, CallOverlay } from "./CallView";
 import { effectivePlace, toolPlace, type EffectivePlace } from "@/lib/place";
 import { cn } from "@/lib/cn";
+import { selectedModelCapabilities } from "@/lib/model-capabilities";
 import { activeLocale, t } from "@/lib/i18n";
 import { COMPACT_BUBBLE } from "@/lib/compact-chip";
 import { useFocusMessage } from "@/lib/focus-message";
@@ -904,9 +905,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   // now — plus a run with something to keep.
   const recordedRun = useMemo(() => runSteps(messages), [messages]);
   const recordedRunCounts = runSummary(recordedRun);
-  const engineSupportsAgents = Boolean(
-    state.instances.find((instance) => instance.instanceId === bot.modelSelection.instanceId)?.capabilities?.agentsMcp,
-  );
+  const engineSupportsAgents = selectedModelCapabilities(state.instances, bot.modelSelection).agentsMcp === true;
   const canSaveRun =
     skillAuthoringEnabled(state.config) && engineSupportsAgents && recordedRunCounts.passed > 0 && recordedRunCounts.running === 0 && !bot.busy;
   // A dismissal is pinned to the run's last step, per thread: the card comes
