@@ -107,6 +107,14 @@ it.each(["openaiCompat", "bedrock"] as const)("keeps the selected %s model for d
       routineThread = (await api("GET", "/api/routines")).runs.find((entry: any) => entry.id === run.id)?.threadId ?? "";
       return routineThread;
     }, { timeout: 15_000 }).not.toBe("");
+    // `wait` treats an idle thread as settled. The run publishes its thread
+    // before the engine is marked busy, so a wait here can return settled
+    // with only the user prompt and miss the computer-approval card.
+    await expect.poll(async () => {
+      const botState = (await api("GET", "/api/bots?messages=0")).bots.find((item: any) => item.id === bot.id);
+      const task = botState?.tasks?.find((entry: any) => entry.threadId === routineThread);
+      return Boolean(task?.busy || task?.waitingForTeammates || task?.activity === "waiting-on-you");
+    }, { timeout: 15_000 }).toBe(true);
     const destination = ["--bot", bot.id, "--task", routineThread];
     const waiting = await control(["wait", ...destination, "--timeout", "20"]);
     expect(waiting.status, JSON.stringify(waiting)).toBe("needs-user");

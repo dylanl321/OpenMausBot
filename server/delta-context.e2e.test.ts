@@ -797,6 +797,13 @@ it("does not hand the model a queued follow-up that a restart recovered with an 
   expect((await f.send("RECOVERED_FOLLOWUP deploy it", other)).queued).toBe(true);
   f.open(f.gate("hold"));
   await expect.poll(() => f.launches().length, { timeout: 15_000 }).toBe(3);
+  // The follow-up is on a never-opening gate. SIGKILL the server only after
+  // that launch has reserved its plan slot; otherwise the next turn reuses
+  // the gate and `wait` hangs.
+  await expect.poll(
+    () => jsonl(join(f.dataDir, "room-plan.json.started.jsonl")).filter((row: any) => row.botId === f.chief.id).length,
+    { timeout: 15_000 },
+  ).toBe(3);
   await f.restart(() => {}, "SIGKILL");
   await expect.poll(async () => (await f.messages(other)).some((m: any) => m.kind === "activity" && m.tool?.name?.includes("Review the result")), { timeout: 20_000 }).toBe(true);
   expect((await f.messages(other)).filter((m: any) => m.role === "user" && m.text?.includes("RECOVERED_FOLLOWUP"))).toHaveLength(1);
