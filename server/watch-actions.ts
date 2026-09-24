@@ -108,9 +108,10 @@ export function applyWatchToWork(input: {
 }
 
 export function criteriaFromItem(item: SourceChange["item"]): string[] {
-  const fromDetails = typeof item.details?.criteria === "string"
-    ? item.details.criteria.split("\n")
-    : Array.isArray(item.details?.criteria) ? (item.details?.criteria as unknown[]).map(String) : [];
+  const rawCriteria = item.details?.criteria;
+  const fromDetails = typeof rawCriteria === "string"
+    ? rawCriteria.split("\n")
+    : Array.isArray(rawCriteria) ? rawCriteria.map(String) : [];
   const description = typeof item.details?.description === "string" ? item.details.description : "";
   const bullets = [...fromDetails, ...description.split("\n")]
     .map(line => line.replace(/^[-*]\s*/, "").trim())
