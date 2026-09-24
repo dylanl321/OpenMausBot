@@ -1,0 +1,138 @@
+{
+  "issues": [
+    {
+      "id": "10000",
+      "self": "https://acme.atlassian.net/rest/api/3/issue/10000",
+      "key": "PAY-1",
+      "fields": {
+        "summary": "Sample story",
+        "status": {
+          "name": "To Do",
+          "statusCategory": { "id": 2, "key": "new", "name": "To Do", "colorName": "blue-gray" }
+        },
+        "issuetype": { "name": "Story" },
+        "priority": { "name": "Medium" },
+        "project": { "key": "PAY", "name": "Payments" },
+        "updated": "2026-09-20T09:00:00.000+0000",
+        "comment": { "comments": [] }
+      }
+    },
+    {
+      "id": "10001",
+      "self": "https://acme.atlassian.net/rest/api/3/issue/10001",
+      "key": "PAY-123",
+      "fields": {
+        "summary": "Refund failures",
+        "status": {
+          "name": "In Progress",
+          "statusCategory": { "id": 4, "key": "indeterminate", "name": "In Progress", "colorName": "yellow" }
+        },
+        "assignee": { "displayName": "Ada", "accountId": "qm:ada" },
+        "issuetype": { "name": "Story" },
+        "priority": { "name": "High" },
+        "project": { "key": "PAY", "name": "Payments" },
+        "updated": "2026-09-23T14:22:00.000+0000",
+        "comment": {
+          "comments": [
+            {
+              "id": "10001",
+              "created": "2026-09-23T14:20:00.000+0000",
+              "updated": "2026-09-23T14:20:00.000+0000",
+              "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [{ "type": "text", "text": "Started the refund fix" }]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "10002",
+      "self": "https://acme.atlassian.net/rest/api/3/issue/10002",
+      "key": "PAY-140",
+      "fields": {
+        "summary": "Export receipts",
+        "status": {
+          "name": "Done",
+          "statusCategory": { "id": 3, "key": "done", "name": "Done", "colorName": "green" }
+        },
+        "issuetype": { "name": "Task" },
+        "priority": { "name": "Low" },
+        "project": { "key": "PAY", "name": "Payments" },
+        "updated": "2026-09-22T18:00:00.000+0000",
+        "comment": { "comments": [] }
+      }
+    },
+    {
+      "id": "10003",
+      "self": "https://acme.atlassian.net/rest/api/3/issue/10003",
+      "key": "PAY-201",
+      "fields": {
+        "summary": "Review refund copy",
+        "status": {
+          "name": "In Review",
+          "statusCategory": { "id": 4, "key": "indeterminate", "name": "In Progress", "colorName": "yellow" }
+        },
+        "issuetype": { "name": "Story" },
+        "project": { "key": "PAY", "name": "Payments" },
+        "updated": "2026-09-23T11:00:00.000+0000",
+        "comment": { "comments": [] }
+      }
+    },
+    {
+      "id": "10004",
+      "self": "https://acme.atlassian.net/rest/api/3/issue/10004",
+      "key": "PAY-202",
+      "fields": {
+        "summary": "QA the export",
+        "status": {
+          "name": "Ready for QA",
+          "statusCategory": { "id": 4, "key": "indeterminate", "name": "In Progress", "colorName": "yellow" }
+        },
+        "issuetype": { "name": "Task" },
+        "project": { "key": "PAY", "name": "Payments" },
+        "updated": "2026-09-23T12:00:00.000+0000",
+        "comment": { "comments": [] }
+      }
+    },
+    {
+      "id": "10005",
+      "self": "https://acme.atlassian.net/rest/api/3/issue/10005",
+      "key": "PAY-203",
+      "fields": {
+        "summary": "Waiting on ledger access",
+        "status": {
+          "name": "Blocked",
+          "statusCategory": { "id": 4, "key": "indeterminate", "name": "In Progress", "colorName": "yellow" }
+        },
+        "issuetype": { "name": "Bug" },
+        "project": { "key": "PAY", "name": "Payments" },
+        "updated": "2026-09-23T13:00:00.000+0000",
+        "comment": { "comments": [] }
+      }
+    },
+    {
+      "id": "10006",
+      "self": "https://acme.atlassian.net/rest/api/3/issue/10006",
+      "key": "PAY-204",
+      "fields": {
+        "summary": "Won't ship this quarter",
+        "status": {
+          "name": "Cancelled",
+          "statusCategory": { "id": 3, "key": "done", "name": "Done", "colorName": "green" }
+        },
+        "issuetype": { "name": "Story" },
+        "project": { "key": "PAY", "name": "Payments" },
+        "updated": "2026-09-21T08:00:00.000+0000",
+        "comment": { "comments": [] }
+      }
+    }
+  ]
+}

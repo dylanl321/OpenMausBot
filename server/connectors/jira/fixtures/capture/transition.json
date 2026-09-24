@@ -1,0 +1,7 @@
+{
+  "title": "jira_transition_issue",
+  "server": "mcp-atlassian",
+  "input": "{\"issueKey\":\"PAY-123\",\"transition\":\"In Review\"}",
+  "output": "Transitioned PAY-123 to In Review",
+  "ok": true
+}

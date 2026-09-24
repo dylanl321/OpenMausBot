@@ -44,8 +44,9 @@ export interface CaptureRule {
   on: "completed";
   requireOk?: boolean;
   produce: { kind: LinkKind };
+  eventKind?: "output" | "comment" | "state_change";
   extract: (call: CaptureCall) => { externalId: string; url?: string; title?: string; parentRef?: string; details?: Record<string, string | number | boolean> } | null;
-  event: (item: { externalId?: string; title: string; url?: string }) => string;
+  event: (item: { externalId?: string; title: string; url?: string; details?: Record<string, string | number | boolean> }) => string;
 }
 
 export interface Connector {
@@ -86,8 +87,10 @@ export function observedLink(input: {
   connectionId?: string;
   parentId?: string;
   details?: LinkedItem["details"];
+  state?: LinkedItem["state"];
   role?: LinkedItem["role"];
   provenance?: Provenance;
+  syncedAt?: number;
   at: number;
 }): LinkedItem {
   return {
@@ -103,5 +106,7 @@ export function observedLink(input: {
     ...(input.connectionId ? { connectionId: input.connectionId } : {}),
     ...(input.parentId ? { parentId: input.parentId } : {}),
     ...(input.details ? { details: input.details } : {}),
+    ...(input.state ? { state: input.state } : {}),
+    ...(input.syncedAt ? { syncedAt: input.syncedAt } : {}),
   };
 }

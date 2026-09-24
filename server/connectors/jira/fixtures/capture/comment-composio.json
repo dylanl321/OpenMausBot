@@ -1,0 +1,7 @@
+{
+  "title": "JIRA_ADD_COMMENT",
+  "server": "composio",
+  "input": "{\"issue_key\":\"PAY-123\",\"body\":\"Looks right\"}",
+  "output": "Successfully added comment to issue PAY-123. Comment ID: 10001",
+  "ok": true
+}

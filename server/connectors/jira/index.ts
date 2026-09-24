@@ -1,0 +1,498 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
+import type { LinkKind, StatusCategory, SyncedItem } from "../../../shared/work-links.ts";
+import type { CaptureCall, CaptureRule, ConnectionContext, Connector } from "../types.ts";
+
+const ISSUE_KEY = /\b([A-Z][A-Z0-9_]+-\d+)\b/i;
+const COMMENT_REF = /^([A-Z][A-Z0-9_]+-\d+):(\d+)$/i;
+const COMMENT_ID = /comment(?:\s*id)?[:\s#]+(\d+)|\bid[:\s#]+(\d+)/i;
+const PREVIEW_CUT = "[… preview shortened]";
+const ISSUE_FIELDS = ["summary", "status", "assignee", "issuetype", "priority", "updated", "project"] as const;
+const COMMENT_FIELDS = [...ISSUE_FIELDS, "comment"] as const;
+const FETCH_BATCH = 100;
+
+const STATUS_DEFAULTS: Record<string, StatusCategory> = {
+  "in review": "in_review",
+  review: "in_review",
+  "ready for review": "in_review",
+  blocked: "blocked",
+  "on hold": "blocked",
+  impediment: "blocked",
+  cancelled: "cancelled",
+  canceled: "cancelled",
+  "won't do": "cancelled",
+  obsolete: "cancelled",
+};
+
+export const JIRA_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2 14 8 8 14 2 8z"/></svg>`;
+
+interface JiraStatus {
+  name?: string;
+  statusCategory?: { key?: string; name?: string };
+}
+
+interface JiraComment {
+  id?: string;
+  created?: string;
+  updated?: string;
+  body?: unknown;
+}
+
+interface JiraIssue {
+  key?: string;
+  fields?: {
+    summary?: string;
+    status?: JiraStatus;
+    assignee?: { displayName?: string };
+    issuetype?: { name?: string };
+    priority?: { name?: string };
+    project?: { key?: string };
+    updated?: string;
+    comment?: { comments?: JiraComment[] };
+  };
+}
+
+function editionOf(ctx: ConnectionContext): "cloud" | "datacenter" {
+  return ctx.settings.edition === "datacenter" ? "datacenter" : "cloud";
+}
+
+function siteUrl(ctx: ConnectionContext): string | null {
+  const raw = String(ctx.settings.site ?? "").trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    if (url.username || url.password) return null;
+    return `${url.origin}${url.pathname.replace(/\/$/, "")}`;
+  } catch {
+    return null;
+  }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function namesFrom(setting: string | number | boolean | undefined): Set<string> {
+  if (typeof setting !== "string" || !setting.trim()) return new Set();
+  return new Set(setting.split(",").map(name => name.trim().toLowerCase()).filter(Boolean));
+}
+
+function authHeaders(ctx: ConnectionContext): { ok: true; headers: Record<string, string> } | { ok: false; error: string } {
+  if (editionOf(ctx) === "datacenter") {
+    const token = ctx.secret("token");
+    if (!token) return { ok: false, error: "Personal access token is required." };
+    return { ok: true, headers: { authorization: `Bearer ${token}`, accept: "application/json" } };
+  }
+  const email = ctx.secret("email");
+  const apiToken = ctx.secret("apiToken");
+  if (!email || !apiToken) return { ok: false, error: "Email and API token are required." };
+  return {
+    ok: true,
+    headers: {
+      authorization: `Basic ${Buffer.from(`${email}:${apiToken}`).toString("base64")}`,
+      accept: "application/json",
+      "content-type": "application/json",
+    },
+  };
+}
+
+function apiError(status: number): string {
+  if (status === 401 || status === 403) return "Jira rejected the credentials.";
+  if (status === 429) return "Jira rate limited the request.";
+  return `Jira returned ${status}.`;
+}
+
+async function readJson(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+function adfText(node: unknown): string {
+  if (typeof node === "string") return node;
+  if (!node || typeof node !== "object") return "";
+  const record = node as { text?: unknown; content?: unknown[] };
+  const parts = [
+    typeof record.text === "string" ? record.text : "",
+    ...(Array.isArray(record.content) ? record.content.map(adfText) : []),
+  ];
+  return parts.filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+}
+
+function issueKeyOf(text: string | undefined): string | null {
+  const match = ISSUE_KEY.exec(text ?? "");
+  return match ? match[1].toUpperCase() : null;
+}
+
+function issueKeyFrom(call: CaptureCall): string | null {
+  const output = call.output ?? "";
+  if (output.includes(PREVIEW_CUT) && !ISSUE_KEY.test(output.split(PREVIEW_CUT)[0] ?? "")) return null;
+  return issueKeyOf(call.output) ?? issueKeyOf(call.summary) ?? issueKeyOf(call.input);
+}
+
+function commentIdFrom(call: CaptureCall): string | undefined {
+  const match = COMMENT_ID.exec(`${call.output ?? ""}\n${call.input ?? ""}`);
+  return match?.[1] ?? match?.[2];
+}
+
+function browseUrl(ctx: ConnectionContext, key: string, commentId?: string): string | undefined {
+  const site = siteUrl(ctx);
+  if (!site) return undefined;
+  return commentId ? `${site}/browse/${key}?focusedCommentId=${commentId}` : `${site}/browse/${key}`;
+}
+
+function mapStatus(status: JiraStatus | undefined, ctx: ConnectionContext): StatusCategory {
+  const label = (status?.name ?? "").trim();
+  const lower = label.toLowerCase();
+  if (namesFrom(ctx.settings.inReview).has(lower)) return "in_review";
+  if (namesFrom(ctx.settings.blocked).has(lower)) return "blocked";
+  const mapped = STATUS_DEFAULTS[lower];
+  if (mapped) return mapped;
+  const category = status?.statusCategory?.key;
+  if (category === "new") return "todo";
+  if (category === "indeterminate") return "in_progress";
+  if (category === "done") return "done";
+  return "unknown";
+}
+
+function detailsOf(issue: JiraIssue): SyncedItem["details"] {
+  const fields = issue.fields ?? {};
+  const details: Record<string, string> = {};
+  if (fields.issuetype?.name) details.type = fields.issuetype.name;
+  if (fields.priority?.name) details.priority = fields.priority.name;
+  if (fields.assignee?.displayName) details.assignee = fields.assignee.displayName;
+  if (fields.project?.key) details.project = fields.project.key;
+  return Object.keys(details).length ? details : undefined;
+}
+
+function when(value: string | undefined): number {
+  const parsed = Date.parse(value ?? "");
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function syncedIssue(issue: JiraIssue, ctx: ConnectionContext): SyncedItem | null {
+  const key = issue.key?.toUpperCase();
+  if (!key) return null;
+  const status = issue.fields?.status;
+  const label = status?.name?.trim() || "Unknown";
+  return {
+    kind: "work_item",
+    externalId: key,
+    title: (issue.fields?.summary ?? key).slice(0, 300) || key,
+    url: browseUrl(ctx, key),
+    state: { label: label.slice(0, 80), category: mapStatus(status, ctx) },
+    connectorId: "jira",
+    connectionId: ctx.connectionId,
+    details: detailsOf(issue),
+    updatedAt: when(issue.fields?.updated),
+    syncedAt: Date.now(),
+  };
+}
+
+function syncedComment(issue: JiraIssue, commentId: string, ctx: ConnectionContext, externalId: string): SyncedItem {
+  const key = issue.key?.toUpperCase() ?? externalId;
+  const comment = issue.fields?.comment?.comments?.find(entry => String(entry.id) === commentId);
+  const title = adfText(comment?.body).slice(0, 80) || `Comment on ${key}`;
+  return {
+    kind: "comment",
+    externalId,
+    title,
+    url: browseUrl(ctx, key, commentId),
+    connectorId: "jira",
+    connectionId: ctx.connectionId,
+    details: { issue: key },
+    updatedAt: when(comment?.updated ?? comment?.created),
+    syncedAt: Date.now(),
+  };
+}
+
+function stub(ref: { kind: LinkKind; externalId: string }, ctx: ConnectionContext): SyncedItem {
+  return {
+    kind: ref.kind,
+    externalId: ref.externalId,
+    title: ref.externalId,
+    connectorId: "jira",
+    connectionId: ctx.connectionId,
+    updatedAt: Date.now(),
+  };
+}
+
+function commentParts(externalId: string): { key: string; id: string } | null {
+  const match = COMMENT_REF.exec(externalId.trim());
+  return match ? { key: match[1].toUpperCase(), id: match[2] } : null;
+}
+
+async function jiraRequest(ctx: ConnectionContext, path: string, init?: RequestInit): Promise<{ ok: true; status: number; body: unknown } | { ok: false; error: string }> {
+  const site = siteUrl(ctx);
+  if (!site) return { ok: false, error: "Site URL is required." };
+  const auth = authHeaders(ctx);
+  if (!auth.ok) return auth;
+  const response = await ctx.fetch(`${site}${path}`, {
+    ...init,
+    headers: { ...auth.headers, ...init?.headers },
+  });
+  if (!response.ok) return { ok: false, error: apiError(response.status) };
+  return { ok: true, status: response.status, body: await readJson(response) };
+}
+
+async function loadIssues(ctx: ConnectionContext, keys: string[], withComments: boolean): Promise<JiraIssue[]> {
+  const unique = [...new Set(keys.map(key => key.toUpperCase()))];
+  const found: JiraIssue[] = [];
+  const fields = withComments ? [...COMMENT_FIELDS] : [...ISSUE_FIELDS];
+  for (let index = 0; index < unique.length; index += FETCH_BATCH) {
+    const batch = unique.slice(index, index + FETCH_BATCH);
+    const page = editionOf(ctx) === "datacenter"
+      ? (await searchDataCenter(ctx, `key in (${batch.join(",")})`, undefined, fields)).issues
+      : await bulkFetchCloud(ctx, batch, fields);
+    found.push(...page);
+  }
+  return found;
+}
+
+async function bulkFetchCloud(ctx: ConnectionContext, keys: string[], fields: string[]): Promise<JiraIssue[]> {
+  const result = await jiraRequest(ctx, "/rest/api/3/issue/bulkfetch", {
+    method: "POST",
+    body: JSON.stringify({ issueIdsOrKeys: keys, fields }),
+  });
+  if (!result.ok) throw new Error(result.error);
+  const issues = (result.body as { issues?: JiraIssue[] } | null)?.issues;
+  return Array.isArray(issues) ? issues : [];
+}
+
+async function searchDataCenter(ctx: ConnectionContext, jql: string, startAt: string | undefined, fields: string[]): Promise<{ issues: JiraIssue[]; cursor?: string }> {
+  const params = new URLSearchParams({ jql, maxResults: "50", fields: fields.join(",") });
+  if (startAt) params.set("startAt", startAt);
+  const result = await jiraRequest(ctx, `/rest/api/2/search?${params}`);
+  if (!result.ok) throw new Error(result.error);
+  const payload = result.body as { issues?: JiraIssue[]; startAt?: number; maxResults?: number; total?: number } | null;
+  const issues = Array.isArray(payload?.issues) ? payload.issues : [];
+  const offset = Number(payload?.startAt ?? startAt ?? 0) || 0;
+  const next = offset + issues.length;
+  const total = Number(payload?.total);
+  return { issues, ...(Number.isFinite(total) && next < total ? { cursor: String(next) } : {}) };
+}
+
+function parseUrlRef(input: string, ctx: ConnectionContext): { kind: LinkKind; externalId: string } | null {
+  let url: URL;
+  try { url = new URL(input); } catch { return null; }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  const site = siteUrl(ctx);
+  if (site) {
+    try {
+      if (url.host !== new URL(site).host) return null;
+    } catch {
+      return null;
+    }
+  }
+  const selected = url.searchParams.get("selectedIssue");
+  const browse = /\/(?:browse|issues)\/([A-Z][A-Z0-9_]+-\d+)/i.exec(url.pathname);
+  const key = (selected || browse?.[1] || "").toUpperCase();
+  if (!key || !ISSUE_KEY.test(key)) return null;
+  const commentId = url.searchParams.get("focusedCommentId");
+  if (commentId && /^\d+$/.test(commentId)) return { kind: "comment", externalId: `${key}:${commentId}` };
+  return { kind: "work_item", externalId: key };
+}
+
+export function jiraWebhookSignature(secret: string, raw: string): string {
+  return `sha256=${createHmac("sha256", secret).update(raw, "utf8").digest("hex")}`;
+}
+
+export function verifyJiraWebhook(secret: string, header: string | null, raw: string): boolean {
+  if (!header) return false;
+  const expected = Buffer.from(jiraWebhookSignature(secret, raw));
+  const actual = Buffer.from(header.trim());
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+function webhookRefs(body: unknown): { kind: LinkKind; externalId: string }[] {
+  if (!body || typeof body !== "object") return [];
+  const record = body as { issue?: { key?: unknown }; comment?: { id?: unknown } };
+  const key = typeof record.issue?.key === "string" ? record.issue.key.toUpperCase() : null;
+  if (!key || !ISSUE_KEY.test(key)) return [];
+  const refs: { kind: LinkKind; externalId: string }[] = [{ kind: "work_item", externalId: key }];
+  const commentId = record.comment?.id;
+  if (commentId !== undefined && /^\d+$/.test(String(commentId))) {
+    refs.push({ kind: "comment", externalId: `${key}:${commentId}` });
+  }
+  return refs;
+}
+
+function captureIssue(call: CaptureCall, title?: string, details?: Record<string, string>): ReturnType<CaptureRule["extract"]> {
+  const key = issueKeyFrom(call);
+  if (!key) return null;
+  return { externalId: key, title: title ?? key, details };
+}
+
+const captureRules: CaptureRule[] = [
+  {
+    match: { tool: /jira[_-]?(?:add|create)[_-]?.*comment|jira[_-]?comment[_-]?(?:add|create)|JIRA_ADD_COMMENT/i },
+    on: "completed",
+    produce: { kind: "comment" },
+    eventKind: "comment",
+    extract: call => {
+      const key = issueKeyFrom(call);
+      if (!key) return null;
+      const commentId = commentIdFrom(call);
+      return {
+        externalId: commentId ? `${key}:${commentId}` : key,
+        title: `Comment on ${key}`,
+        parentRef: key,
+        details: { issue: key },
+      };
+    },
+    event: item => `commented on ${String(item.details?.issue ?? item.externalId ?? item.title).split(":")[0]}`,
+  },
+  {
+    match: { tool: /jira.*transition|JIRA_TRANSITION/i },
+    on: "completed",
+    produce: { kind: "work_item" },
+    eventKind: "state_change",
+    extract: call => {
+      const key = issueKeyFrom(call);
+      if (!key) return null;
+      const to = /(?:to|status)[:\s]+([A-Za-z][A-Za-z /-]{1,40})/.exec(`${call.output ?? ""} ${call.input ?? ""}`);
+      return { externalId: key, title: key, ...(to ? { details: { status: to[1].trim() } } : {}) };
+    },
+    event: item => `transitioned ${item.externalId ?? item.title}`,
+  },
+  {
+    match: { tool: /jira.*assign|JIRA_ASSIGN/i },
+    on: "completed",
+    produce: { kind: "work_item" },
+    extract: call => captureIssue(call),
+    event: item => `assigned ${item.externalId ?? item.title}`,
+  },
+  {
+    match: { tool: /jira[_-]?create[_-]?(?:issue|ticket)|JIRA_CREATE_ISSUE\b/i },
+    on: "completed",
+    produce: { kind: "work_item" },
+    extract: call => captureIssue(call),
+    event: item => `opened ${item.externalId ?? item.title}`,
+  },
+];
+
+export const jiraConnector: Connector = {
+  manifest: {
+    id: "jira",
+    name: "Jira",
+    icon: JIRA_ICON,
+    kinds: ["work_item", "comment"],
+    settings: [
+      { key: "site", label: "Site URL", type: "string", help: "https://your-site.atlassian.net or your Data Center base URL" },
+      { key: "edition", label: "Edition", type: "enum", enum: ["cloud", "datacenter"], help: "Cloud uses an email and API token. Data Center uses a personal access token." },
+      { key: "inReview", label: "In-review statuses", type: "string", help: "Comma-separated Jira status names treated as in review" },
+      { key: "blocked", label: "Blocked statuses", type: "string", help: "Comma-separated Jira status names treated as blocked" },
+    ],
+    secrets: [
+      { key: "email", label: "Email", help: "Atlassian account email for Jira Cloud" },
+      { key: "apiToken", label: "API token", help: "Atlassian API token for Jira Cloud" },
+      { key: "token", label: "Personal access token", help: "Jira Data Center personal access token" },
+      { key: "webhookSecret", label: "Webhook secret", help: "Optional. Used to verify signed Jira webhook deliveries." },
+    ],
+    capabilities: { webhooks: true, query: true, poll: true },
+    statusDefaults: {
+      "In Review": "in_review",
+      Review: "in_review",
+      "Ready for Review": "in_review",
+      Blocked: "blocked",
+      "On Hold": "blocked",
+      Impediment: "blocked",
+      Cancelled: "cancelled",
+      Canceled: "cancelled",
+      "Won't Do": "cancelled",
+      Obsolete: "cancelled",
+    },
+  },
+  async test(ctx) {
+    const path = editionOf(ctx) === "datacenter" ? "/rest/api/2/myself" : "/rest/api/3/myself";
+    const result = await jiraRequest(ctx, path);
+    if (!result.ok) return result;
+    const site = siteUrl(ctx);
+    ctx.log("Jira credentials were accepted.");
+    return { ok: true, account: site ? new URL(site).host : "jira" };
+  },
+  parseRef(input, ctx) {
+    const text = input.trim();
+    if (/^https?:\/\//i.test(text)) return parseUrlRef(text, ctx);
+    const comment = COMMENT_REF.exec(text) ?? /^([A-Z][A-Z0-9_]+-\d+)#comment-(\d+)$/i.exec(text);
+    if (comment) return { kind: "comment", externalId: `${comment[1].toUpperCase()}:${comment[2]}` };
+    const key = issueKeyOf(text);
+    return key && text.toUpperCase() === key ? { kind: "work_item", externalId: key } : null;
+  },
+  urlPatterns(ctx) {
+    const site = siteUrl(ctx);
+    const base = site ? escapeRegExp(site) : "https?://[^\\s/]+(?:/jira)?";
+    const key = "[A-Z][A-Z0-9_]+-\\d+";
+    return [
+      new RegExp(`^${base}/(?:browse|issues)/${key}`, "i"),
+      new RegExp(`^${base}/[^\\s]*[?&](?:selectedIssue|focusedCommentId)=`, "i"),
+    ];
+  },
+  async fetch(ctx, refs) {
+    const comments = refs.flatMap(ref => {
+      if (ref.kind !== "comment") return [];
+      const parts = commentParts(ref.externalId);
+      return parts ? [{ ref, ...parts }] : [];
+    });
+    const keys = [
+      ...refs.filter(ref => ref.kind === "work_item" && ISSUE_KEY.test(ref.externalId)).map(ref => ref.externalId.toUpperCase()),
+      ...comments.map(comment => comment.key),
+    ];
+    const issues = keys.length ? await loadIssues(ctx, keys, comments.length > 0) : [];
+    if (issues.length) ctx.log(`Fetched ${issues.length} Jira issue(s).`);
+    const byKey = new Map(issues.flatMap(issue => issue.key ? [[issue.key.toUpperCase(), issue] as const] : []));
+    return refs.map(ref => {
+      if (ref.kind === "comment") {
+        const parts = commentParts(ref.externalId);
+        const issue = parts ? byKey.get(parts.key) : undefined;
+        if (issue && parts) return syncedComment(issue, parts.id, ctx, ref.externalId);
+      }
+      if (ref.kind === "work_item") {
+        const issue = byKey.get(ref.externalId.toUpperCase());
+        const synced = issue ? syncedIssue(issue, ctx) : null;
+        if (synced) return synced;
+      }
+      return stub(ref, ctx);
+    });
+  },
+  async query(ctx, query, cursor) {
+    const jql = query.trim();
+    if (!jql) return { items: [] };
+    ctx.log("Queried Jira with JQL.");
+    if (editionOf(ctx) === "datacenter") {
+      const page = await searchDataCenter(ctx, jql, cursor, [...ISSUE_FIELDS]);
+      return { items: page.issues.flatMap(issue => syncedIssue(issue, ctx) ?? []), ...(page.cursor ? { cursor: page.cursor } : {}) };
+    }
+    const result = await jiraRequest(ctx, "/rest/api/3/search/jql", {
+      method: "POST",
+      body: JSON.stringify({
+        jql,
+        maxResults: 50,
+        fields: [...ISSUE_FIELDS],
+        ...(cursor ? { nextPageToken: cursor } : {}),
+      }),
+    });
+    if (!result.ok) throw new Error(result.error);
+    const payload = result.body as { issues?: JiraIssue[]; nextPageToken?: string } | null;
+    const items = (payload?.issues ?? []).flatMap(issue => syncedIssue(issue, ctx) ?? []);
+    return { items, ...(payload?.nextPageToken ? { cursor: payload.nextPageToken } : {}) };
+  },
+  async webhook(ctx, headers, body) {
+    const secret = ctx.secret("webhookSecret");
+    const raw = typeof body === "string" ? body : JSON.stringify(body);
+    if (secret && !verifyJiraWebhook(secret, headers.get("x-hub-signature"), raw)) {
+      ctx.log("Ignored a Jira webhook with a bad signature.");
+      return [];
+    }
+    let parsed: unknown = body;
+    if (typeof body === "string") {
+      try { parsed = JSON.parse(body); } catch { return []; }
+    }
+    const refs = webhookRefs(parsed);
+    if (refs.length) ctx.log(`Jira webhook named ${refs.length} item(s).`);
+    return refs;
+  },
+  capture: captureRules,
+};

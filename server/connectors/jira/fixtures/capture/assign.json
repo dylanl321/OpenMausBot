@@ -1,0 +1,7 @@
+{
+  "title": "JIRA_ASSIGN_ISSUE",
+  "server": "composio",
+  "input": "{\"issue_key\":\"PAY-123\",\"account_id\":\"qm:ada\"}",
+  "output": "Assigned PAY-123 to Ada",
+  "ok": true
+}

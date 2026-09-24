@@ -100,14 +100,20 @@ export class WorkCapture {
   }
 
   private record(item: WorkRecord, actor: TaskEvent["actor"], at: number, rule: CaptureRule, extracted: NonNullable<ReturnType<CaptureRule["extract"]>>, connectorId?: string) {
+    const parentRef = extracted.parentRef;
+    const parent = parentRef
+      ? item.links?.find(link => link.kind === "work_item" && link.externalId?.toUpperCase() === parentRef.toUpperCase())
+      : undefined;
     const id = rule.produce.kind === "link" && extracted.url ? urlLinkId(extracted.url) : linkId(undefined, rule.produce.kind, extracted.externalId);
     const link = this.hooks.items.upsertLink(item, observedLink({
       id, kind: rule.produce.kind, title: extracted.title ?? extracted.externalId, externalId: extracted.externalId,
       url: extracted.url, details: extracted.details, connectorId, at,
+      ...(parent ? { parentId: parent.id } : {}),
     }));
+    const kind = rule.eventKind ?? (rule.produce.kind === "comment" ? "comment" : "output");
     const output = this.hooks.events.append({
       id: randomUUID(), workItemId: item.id, revision: item.revision, at, actor,
-      kind: "output", summary: line(rule.event(link)) || link.title, linkId: link.id, state: "complete", provenance: "observed",
+      kind, summary: line(rule.event(link)) || link.title, linkId: link.id, state: "complete", provenance: "observed",
     });
     this.hooks.publish("work.link", item, { link });
     this.hooks.publish("work.event", item, { event: output });

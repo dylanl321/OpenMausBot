@@ -19,7 +19,7 @@ interface WorkCoordinationHooks {
   publish(item: WorkRecord): void;
   isUnattended(source: WorkSource): boolean;
   markUnattended(botId: string, threadId: string): void;
-  sourceLink?(scope: string, identity: string): LinkedItem | null;
+  sourceLink?(scope: string, identity: string): LinkedItem | null | Promise<LinkedItem | null>;
   resolveRef?(scope: string, ref: string): LinkedItem | null;
   resolveEvidence?(item: WorkRecord, id: string): Provenance | undefined;
   recentEvents?(workItemId: string): TaskEvent[];
@@ -71,7 +71,7 @@ export class WorkCoordination {
     return { groupId: item.groupId, threadId: item.threadId, botId: item.coordinatorBotId };
   }
 
-  ensure(raw: unknown, source: WorkSource, requestIdentity: string, userInitiated = false) {
+  async ensure(raw: unknown, source: WorkSource, requestIdentity: string, userInitiated = false) {
     const input = ensureWorkItemSchema.parse(raw);
     const problem = userInitiated ? this.hooks.validate(source) : this.hooks.creationProblem(source);
     if (problem) throw new Error(problem);
@@ -109,7 +109,7 @@ export class WorkCoordination {
       groupId: group.id, threadId, coordinatorBotId: bot.id });
     const item = result.item;
     if (result.created) {
-      const sourceLink = this.hooks.sourceLink?.(item.scope, item.identity);
+      const sourceLink = await this.hooks.sourceLink?.(item.scope, item.identity);
       if (sourceLink && !item.links?.some(link => link.id === sourceLink.id)) this.items.upsertLink(item, sourceLink);
     }
     this.items.subscribe(item, { ...source, messageId: this.store.messagesFor(source.threadId).findLast(message => message.role === "user")?.id });

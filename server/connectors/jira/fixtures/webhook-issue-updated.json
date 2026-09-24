@@ -1,0 +1,20 @@
+{
+  "timestamp": 1758633720000,
+  "webhookEvent": "jira:issue_updated",
+  "issue_event_type_name": "issue_commented",
+  "issue": {
+    "id": "10001",
+    "key": "PAY-123",
+    "fields": {
+      "summary": "Refund failures",
+      "status": {
+        "name": "In Progress",
+        "statusCategory": { "key": "indeterminate" }
+      }
+    }
+  },
+  "comment": {
+    "id": "10001",
+    "body": "Started the refund fix"
+  }
+}

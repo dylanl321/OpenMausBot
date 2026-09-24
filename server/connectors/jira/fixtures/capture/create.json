@@ -1,0 +1,7 @@
+{
+  "title": "jira_create_issue",
+  "server": "mcp-atlassian",
+  "input": "{\"project\":\"PAY\",\"summary\":\"Export receipts\"}",
+  "output": "Created issue PAY-140",
+  "ok": true
+}

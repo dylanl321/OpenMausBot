@@ -1,0 +1,6 @@
+{
+  "title": "jira_add_comment",
+  "input": "{\"issueKey\":\"PAY-123\",\"comment\":\"[… preview shortened]\"}",
+  "output": "Comment added to [… preview shortened]",
+  "ok": true
+}
