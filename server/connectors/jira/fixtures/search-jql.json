@@ -1,0 +1,36 @@
+{
+  "isLast": false,
+  "nextPageToken": "page-2",
+  "issues": [
+    {
+      "id": "10001",
+      "key": "PAY-123",
+      "fields": {
+        "summary": "Refund failures",
+        "status": {
+          "name": "In Progress",
+          "statusCategory": { "key": "indeterminate", "name": "In Progress" }
+        },
+        "assignee": { "displayName": "Ada" },
+        "issuetype": { "name": "Story" },
+        "priority": { "name": "High" },
+        "project": { "key": "PAY" },
+        "updated": "2026-09-23T14:22:00.000+0000"
+      }
+    },
+    {
+      "id": "10002",
+      "key": "PAY-140",
+      "fields": {
+        "summary": "Export receipts",
+        "status": {
+          "name": "Done",
+          "statusCategory": { "key": "done", "name": "Done" }
+        },
+        "issuetype": { "name": "Task" },
+        "project": { "key": "PAY" },
+        "updated": "2026-09-22T18:00:00.000+0000"
+      }
+    }
+  ]
+}
