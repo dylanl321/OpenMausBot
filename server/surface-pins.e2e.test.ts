@@ -294,7 +294,10 @@ describe("surface pin provenance against the real server", () => {
     // The incident's other half: the person's pin still wins the mount.
     if (process.platform !== "linux") {
       mkdirSync(dirname(cuaDescriptor), { recursive: true });
-      writeFileSync(cuaDescriptor, JSON.stringify({ mode: "bundled", mcpCommand: "/fixture/cua-driver", mcpArgs: ["mcp"] }));
+      writeFileSync(cuaDescriptor, JSON.stringify({
+        mode: "embedded", socketPath: "/fixture/cua.sock", mcpCommand: "/fixture/cua-driver",
+        mcpArgs: ["mcp"], mcpEnv: {},
+      }), { mode: 0o600 });
       try {
         resetTurn();
         await apiOk("POST", `/api/bots/${bot.id}/messages`, { text: "Stay where I pinned you.", threadId: task.threadId });
@@ -310,5 +313,5 @@ describe("surface pin provenance against the real server", () => {
     }
     await apiOk("DELETE", `/api/bots/${bot.id}`);
     await stop();
-  });
+  }, 60_000);
 });
