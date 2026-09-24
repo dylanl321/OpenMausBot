@@ -29,6 +29,18 @@ it("rejects an unexpected MCP exit without waiting for a pending call to time ou
   async run => { await expect(run()).rejects.toThrow("Fixture MCP exited unexpectedly: 7"); },
 ));
 
+it("does not reuse a plan slot reserved by a turn that started but never finished", () => withMcp(`
+  require("node:readline").createInterface({ input: process.stdin }).on("line", line => {
+    const request = JSON.parse(line);
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} }) + "\\n");
+  });
+`, async (run, dir) => {
+  const plan = join(dir, "plan.json");
+  writeFileSync(plan, JSON.stringify({ fixture: { turns: [{ reply: "first" }, { reply: "second" }] } }));
+  writeFileSync(`${plan}.started.jsonl`, `${JSON.stringify({ botId: "fixture", turnIndex: 0 })}\n`);
+  await expect(run()).resolves.toBe("second");
+}));
+
 it("reaps the MCP process even if it ignores graceful shutdown", () => withMcp(`
   require("node:fs").writeFileSync(require("node:path").join(process.env.FIXTURE_HOME, "pid"), String(process.pid));
   process.on("SIGTERM", () => {});

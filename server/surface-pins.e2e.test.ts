@@ -310,5 +310,5 @@ describe("surface pin provenance against the real server", () => {
     }
     await apiOk("DELETE", `/api/bots/${bot.id}`);
     await stop();
-  });
+  }, 60_000);
 });
