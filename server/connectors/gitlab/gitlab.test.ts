@@ -249,6 +249,24 @@ describe("gitlab connector", () => {
     expect(issueCreate?.extract(captureCall("issue-create-mcp"))).toMatchObject({ externalId: "acme/payments#140", title: "Refund failures" });
     expect(glabIssue?.extract(captureCall("issue-create-glab"))).toMatchObject({ externalId: "acme/payments#140" });
     expect(create.extract(captureCall("truncated"))).toBeNull();
+    const issueRules = gitlabConnector.capture.filter(rule => rule.produce.kind === "work_item");
+    for (const rule of issueRules) {
+      if (rule.match.command) {
+        expect(rule.match.command.test("glab issue create --repo acme/payments")).toBe(true);
+        continue;
+      }
+      if (rule.match.server) {
+        expect(rule.match.server.test("gitlab")).toBe(true);
+        expect(rule.match.server.test("jira")).toBe(false);
+        expect(rule.match.tool?.test("create_issue")).toBe(true);
+        expect(rule.match.tool?.test("JIRA_CREATE_ISSUE")).toBe(false);
+      } else {
+        expect(rule.match.tool?.test("JIRA_CREATE_ISSUE")).toBe(false);
+        expect(rule.match.tool?.test("create_issue")).toBe(false);
+        expect(rule.match.tool?.test("GITLAB_CREATE_ISSUE")).toBe(true);
+        expect(rule.match.tool?.test("mcp__gitlab__create_issue")).toBe(true);
+      }
+    }
   });
 
   it("attaches live merge-request and pipeline state when a task identity resolves", async () => {

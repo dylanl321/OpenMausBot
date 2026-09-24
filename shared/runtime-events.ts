@@ -97,6 +97,8 @@ export type RuntimeEvent = RuntimeEventBase &
         summary?: string;
         /** Bounded, redacted display preview; never raw tool arguments. */
         input?: string;
+        /** MCP / toolkit server name when the driver knows it. Used by capture match.server. */
+        server?: string;
       }
     | { type: "item.updated"; itemType: "tool" | "reasoning"; tokens?: number | null }
     | { type: "item.completed"; itemType: "tool"; ok: boolean; output?: string }

@@ -195,6 +195,10 @@ describe("plane connector", () => {
     });
     expect(update?.extract(captureCall("update"))).toMatchObject({ externalId: "PAY-123" });
     expect(create.extract(captureCall("truncated"))).toBeNull();
+    const updates = planeConnector.capture.filter(rule => rule.eventKind === "state_change");
+    expect(updates.some(rule => rule.match.tool?.test("update_work_item") && !rule.match.server)).toBe(false);
+    expect(updates.some(rule => rule.match.tool?.test("workitem") && !rule.match.server)).toBe(true);
+    expect(updates.some(rule => rule.match.server?.test("plane") && rule.match.tool?.test("update_work_item"))).toBe(true);
   });
 
   it("attaches live Plane status when a task identity resolves", async () => {
@@ -240,6 +244,10 @@ describe("plane connector", () => {
       capture.handle(tool({ type: "item.completed", threadId: "worker", itemType: "tool", itemId: "plane-1", ok: true, output: preview.output, createdAt: "30" }));
       expect(item.links?.some(link => link.kind === "comment" && link.externalId === "PAY-123:f3e29f26-708d-40f0-9209-7e0de44abc49" && link.parentId === "plane-acme:work_item:PAY-123")).toBe(true);
       expect(events.read(item.id).some(event => event.kind === "comment" && event.summary.includes("PAY-123"))).toBe(true);
+      const updated = captureCall("update");
+      capture.handle(tool({ type: "item.started", threadId: "worker", itemType: "tool", itemId: "plane-2", title: updated.title, server: updated.server, input: updated.input, createdAt: "40" }));
+      capture.handle(tool({ type: "item.completed", threadId: "worker", itemType: "tool", itemId: "plane-2", ok: true, output: updated.output, createdAt: "50" }));
+      expect(events.read(item.id).some(event => event.kind === "state_change" && event.summary.includes("PAY-123"))).toBe(true);
     } finally { await removeTempDir(directory); }
   });
 

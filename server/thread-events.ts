@@ -215,7 +215,7 @@ function isRuntimeEvent(value: unknown): value is RuntimeEvent {
         (value.outcome === "acquired" || value.outcome === "gave_up" || value.outcome === "stopped")
       );
     case "item.started":
-      return (value.itemType === "tool" || value.itemType === "reasoning") && stringOrMissing(value.title);
+      return (value.itemType === "tool" || value.itemType === "reasoning") && stringOrMissing(value.title) && stringOrMissing(value.server);
     case "item.updated":
       return (value.itemType === "tool" || value.itemType === "reasoning") && numberOrNullOrMissing(value.tokens);
     case "item.completed":

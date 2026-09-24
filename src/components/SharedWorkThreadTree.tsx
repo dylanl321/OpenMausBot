@@ -48,7 +48,7 @@ export function SharedWorkThreadTree({ item, compact = false, query = "" }: { it
           {changeRequest && <>
             <span aria-hidden="true">·</span>
             <KindIcon kind="change_request" size={10} className="shrink-0" />
-            <span data-task-cr={changeRequest.id} className="min-w-0 truncate">{changeRequest.externalId ? `!${changeRequest.externalId}` : changeRequest.title}</span>
+            <span data-task-cr={changeRequest.id} className="min-w-0 truncate">{changeRequest.externalId ?? changeRequest.title}</span>
           </>}
           {counts.criteriaTotal > 0 && <>
             <span aria-hidden="true">·</span>

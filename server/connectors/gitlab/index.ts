@@ -1142,7 +1142,14 @@ const captureRules: CaptureRule[] = [
     event: item => `updated ${item.externalId ?? item.title}`,
   },
   {
-    match: { tool: /create[_-]?issue(?![_\s-]?(?:note|comment))|(?:gitlab|glab)[_-].*[_-]issue[_-]?create|GITLAB_CREATE_ISSUE\b|\bissue_create\b/i },
+    match: { tool: /(?:gitlab|glab)[_-].*[_-]issue[_-]?create|GITLAB_CREATE_ISSUE\b|(?:gitlab|glab).*create[_-]?issue/i },
+    on: "completed",
+    produce: { kind: "work_item" },
+    extract: call => extractIssue(call),
+    event: item => `opened ${item.externalId ?? item.title}`,
+  },
+  {
+    match: { server: /\bgitlab\b/i, tool: /^(?:create[_-]?issue|issue_create)\b(?![_\s-]?(?:note|comment))/i },
     on: "completed",
     produce: { kind: "work_item" },
     extract: call => extractIssue(call),

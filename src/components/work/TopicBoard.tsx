@@ -212,7 +212,7 @@ function TaskBoardCard({ item, connectors, bots, onOpen }: {
         {changeRequest && <>
           <span aria-hidden="true">·</span>
           <KindIcon kind="change_request" size={10} />
-          <span className="min-w-0 truncate">{changeRequest.externalId ? `!${changeRequest.externalId}` : changeRequest.title}</span>
+          <span className="min-w-0 truncate">{changeRequest.externalId ?? changeRequest.title}</span>
         </>}
         {counts.criteriaTotal > 0 && <>
           <span aria-hidden="true">·</span>
