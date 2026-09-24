@@ -519,6 +519,13 @@ import { json, onJsonBody, parsedBodyOf, readBody } from "./harness/http.ts";
 import { ROUTES, dispatchRoutes } from "./routes/table.ts";
 import { createHostedSlackRoutes } from "./routes/hosted-slack.ts";
 import { createBedrockRoutes } from "./routes/bedrock.ts";
+import { createTaskConnectionRoutes } from "./routes/task-connections.ts";
+import { createWorkEventRoutes } from "./routes/work-events.ts";
+import { WorkCapture } from "./connectors/capture.ts";
+import { linkId, observedLink } from "./connectors/types.ts";
+import { connectorById } from "./connectors/registry.ts";
+import { connectionContext, parseStoredConnections, resolveIdentityLink } from "./task-connections.ts";
+import { WorkEvents } from "./work-events.ts";
 import { describeBedrockSettings } from "./drivers/bedrock.ts";
 import { mergeBedrockConfig, publicBedrockSettings } from "./bedrock-config.ts";
 import { bedrockAccessError, bedrockArnRegion, bedrockModelError, bedrockRoutingError } from "../shared/bedrock.ts";
@@ -3559,6 +3566,9 @@ function outstandingAssignmentsPrompt(threadId: string): string {
   return ` Assignments you already sent are still outstanding, and nothing in this conversation cancelled them: ${JSON.stringify(listed)}. Do not send them again, do not poll or wait for them, and do not tell the user they were lost. Each result returns to this conversation on its own and resumes you then. Answer the message above with that work still in flight.`;
 }
 
+const workEvents = new WorkEvents(join(DATA_DIR, "work-events"));
+const taskConnectionList = () => parseStoredConnections(cfg.taskConnections);
+
 const workCoordination: WorkCoordination = new WorkCoordination(join(DATA_DIR, "work-items.json"), store, {
   handoffs: () => roomHandoffs,
   validate: sharedWorkProblem,
@@ -3566,6 +3576,33 @@ const workCoordination: WorkCoordination = new WorkCoordination(join(DATA_DIR, "
     (peerReviewRequired(store.bot(source.botId)!, source.threadId) ? "Peer approval is required; ask the user to create the shared task or change the existing peer permission setting." : undefined),
   isUnattended: source => isUnattended(source.botId, source.threadId),
   markUnattended,
+  sourceLink: (scope, identity) => {
+    const resolved = resolveIdentityLink(taskConnectionList(), scope, identity);
+    if (!resolved) return null;
+    return observedLink({
+      id: linkId(resolved.connection.id, resolved.kind, resolved.externalId),
+      kind: resolved.kind, title: resolved.externalId, externalId: resolved.externalId,
+      connectorId: resolved.connection.connectorId, connectionId: resolved.connection.id,
+      role: "source", provenance: "claimed", at: Date.now(),
+    });
+  },
+  resolveRef: (scope, ref) => {
+    for (const connection of taskConnectionList()) {
+      if (!connection.enabled || (connection.sections.length && !connection.sections.includes(scope))) continue;
+      const connector = connectorById(connection.connectorId);
+      const parsed = connector?.parseRef(ref, connectionContext(connection));
+      if (!parsed) continue;
+      return observedLink({
+        id: linkId(connection.id, parsed.kind, parsed.externalId),
+        kind: parsed.kind, title: parsed.externalId, externalId: parsed.externalId,
+        connectorId: connection.connectorId, connectionId: connection.id,
+        role: "reference", provenance: "claimed", at: Date.now(),
+      });
+    }
+    return null;
+  },
+  resolveEvidence: (item, id) => workEvents.read(item.id).find(event => event.id === id)?.provenance,
+  recentEvents: id => workEvents.recent(id),
   publish: item => {
     const group = store.group(item.groupId);
     if (group) broadcast({ kind: "group", group: publicGroupState(group) });
@@ -3580,6 +3617,15 @@ const workCoordination: WorkCoordination = new WorkCoordination(join(DATA_DIR, "
       if (bot) broadcast({ kind: "bot", bot: wireBot(bot) });
     }
   },
+});
+
+const workCapture = new WorkCapture({
+  items: workCoordination.items,
+  events: workEvents,
+  publish: (kind, item, payload) => broadcast({
+    kind, ...payload,
+    workItem: { groupId: item.groupId, threadId: item.threadId, coordinatorBotId: item.coordinatorBotId },
+  }),
 });
 
 const roomHandoffs: RoomHandoffs = new RoomHandoffs(join(DATA_DIR, "room-handoffs.json"), {
@@ -5624,6 +5670,7 @@ async function localVmInventoryPayload() {
 }
 
 bus.subscribe((event: RuntimeEvent) => {
+  try { workCapture.handle(event); } catch (error) { console.error(JSON.stringify({ event: "work.capture.failed", message: error instanceof Error ? error.message : String(error) })); }
   if (shouldIgnoreProviderEvent(event)) return;
   const localVmTarget = localVmThreadTargets.get(event.threadId);
   if (localVmTarget) {
@@ -12391,6 +12438,18 @@ const workspaceBackupRoutes = createWorkspaceBackupRoutes({
 // Route modules (server/routes/README.md). `workspaceAccess` is assigned at
 // boot, after this line, so the dependency reads it per request.
 ROUTES.push(createHostedSlackRoutes({ bot: (id) => store.bot(id), hostedReady: () => Boolean(workspaceAccess) && entitled("admin") }));
+ROUTES.push(createTaskConnectionRoutes({
+  load: taskConnectionList,
+  save: (connections) => {
+    saveConfig({ taskConnections: connections });
+    cfg.taskConnections = connections;
+  },
+}));
+ROUTES.push(createWorkEventRoutes({
+  item: id => workCoordination.items.records.get(id),
+  events: id => workEvents.read(id),
+  canSee: (auth, item) => workItemVisible(item, visibleTo(viewerFor(auth))),
+}));
 ROUTES.push(createBedrockRoutes({
   entry: (id) => providerConfigs()[id],
   instance: (id) => registry.get(id),
@@ -12909,7 +12968,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           throw Object.assign(new Error("the internal turn capability has expired"), { status: 401 });
         }
       };
-      if (path === "/api/internal/work-items" || path === "/api/internal/work-items/ensure" || path === "/api/internal/work-items/update") {
+      if (path === "/api/internal/work-items" || path === "/api/internal/work-items/ensure" || path === "/api/internal/work-items/update" || path === "/api/internal/work-items/link") {
         const sourceRoom = store.groupByThread(internalCapability.threadId);
         const workSource = { botId: internalSender.id, threadId: internalCapability.threadId, groupId: sourceRoom?.id };
         if (sourceRoom && !internalCapability.roomCoordination) return json(res, 409, { error: "Finish together already owns this room run; it cannot start a competing shared task." });
@@ -12918,7 +12977,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           const current = workCoordination.items.forThread(workSource.threadId);
           const item = requestedId ? workCoordination.items.records.get(requestedId) : current;
           if (requestedId && (!item || !workCoordination.accessible(item, workSource))) return json(res, 404, { error: "No accessible shared task" });
-          return json(res, 200, { current: item ? workCoordination.view(item, workSource) : null,
+          return json(res, 200, { current: item ? { ...workCoordination.view(item, workSource), events: workCoordination.eventsFor(item) } : null,
             items: [...workCoordination.items.records.values()].filter(candidate => workCoordination.accessible(candidate, workSource)).slice(-50)
               .map(candidate => ({ id: candidate.id, groupId: candidate.groupId, threadId: candidate.threadId, title: candidate.title, status: candidate.status, revision: candidate.revision })) });
         }
@@ -12939,6 +12998,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           const { workItemId, ...body } = await readInternalBody();
           if (typeof workItemId !== "string") return json(res, 400, { error: "workItemId is required" });
           return json(res, 200, { workItem: workCoordination.update(workItemId, body, workSource) });
+        }
+        if (method === "POST" && path === "/api/internal/work-items/link") {
+          const body = await readInternalBody();
+          const workItemId = typeof body.workItemId === "string" ? body.workItemId : workCoordination.items.forThread(workSource.threadId)?.id;
+          if (!workItemId) return json(res, 400, { error: "workItemId is required" });
+          return json(res, 200, { link: workCoordination.linkItem(workItemId, body, workSource) });
         }
         return json(res, 405, { error: "Unsupported shared task operation" });
       }
@@ -15538,7 +15603,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if ((body.format === "backup" ? store.bots.length : memberIds.length) === 0) return json(res, 400, { error: "Create a bot before exporting your team" });
       try {
         if (body.format === "backup") {
-          return json(res, 200, createTeamBackup(store, routines!.listRoutines(), name, workCoordination.items));
+          const exportedItems = [...workCoordination.items.records.values()].filter(item => store.groupTaskByThread(item.groupId, item.threadId));
+          return json(res, 200, createTeamBackup(store, routines!.listRoutines(), name, workCoordination.items, {
+            events: workEvents.exportPortable(exportedItems.map(item => item.id)),
+            connections: taskConnectionList().map(({ secrets, ...connection }) => ({ ...connection, secretKeys: Object.keys(secrets).sort() })),
+          }));
         }
         if (body.format === "package") {
           const selectedBots = store.bots.filter((bot) => !bot.hidden);
@@ -15681,7 +15750,20 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (body?.format === "openmaus.backup") {
         if (importMode !== "add") return json(res, 400, { error: "Import backups alongside your existing bots; project mode is only for templates" });
         try {
-          const imported = importTeamBackup(store, routines!, body, await defaultSelection(), { visibility: importVisibility, workItems: workCoordination.items });
+          const imported = importTeamBackup(store, routines!, body, await defaultSelection(), {
+            visibility: importVisibility, workItems: workCoordination.items,
+            importEvents: (workItemId, events) => workEvents.importEvents(workItemId, events as Parameters<WorkEvents["importEvents"]>[1]),
+          });
+          if (imported.taskConnections.length) {
+            const current = taskConnectionList();
+            const additions = imported.taskConnections.filter(connection => !current.some(existing => existing.id === connection.id))
+              .map(connection => ({ ...connection, secrets: {} }));
+            if (additions.length) {
+              const next = [...current, ...additions];
+              saveConfig({ taskConnections: next });
+              cfg.taskConnections = next;
+            }
+          }
           const bots = imported.bots.map((bot) => publicBot(bot));
           const groups = imported.groups.map((group) => ({ ...publicGroupState(group), ...messagePage(group.threadId, undefined) }));
           for (const bot of bots) broadcast({ kind: "bot", bot });

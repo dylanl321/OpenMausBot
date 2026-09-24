@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { currentStepSchema, linkedItemSchema, workCriterionSchema, type LinkedItem, type WorkCriterion } from "./work-links.ts";
 
 export type WorkItemStatus = "active" | "blocked" | "needs-input" | "completed" | "cancelled";
 export type WorkAssignmentStatus = "queued" | "running" | "waiting" | "completed" | "failed" | "cancelled";
@@ -19,6 +20,7 @@ export interface WorkAssignment {
   status: WorkAssignmentStatus;
   result: string;
   requestId?: string;
+  currentStep?: { summary: string; since: number; itemId?: string };
 }
 
 export interface WorkItem {
@@ -36,6 +38,9 @@ export interface WorkItem {
   artifacts: WorkArtifact[];
   evidence: string[];
   assignments: WorkAssignment[];
+  /** Additive. Absent on records written before task connectors. */
+  links?: LinkedItem[];
+  criteria?: WorkCriterion[];
   createdAt: number;
   updatedAt: number;
 }
@@ -52,6 +57,9 @@ export const workItemSchema = z.object({
   assignments: z.array(z.object({
     id: key, botId: key, threadId: key, revision: z.number().int().positive(), attempts: z.number().int().min(1).max(3), message: text,
     status: z.enum(["queued", "running", "waiting", "completed", "failed", "cancelled"]), result: z.string().max(12_000), requestId: key.optional(),
+    currentStep: currentStepSchema.optional(),
   })).max(1000),
+  links: z.array(linkedItemSchema).max(100).optional(),
+  criteria: z.array(workCriterionSchema).max(20).optional(),
   createdAt: z.number(), updatedAt: z.number(),
 });

@@ -472,11 +472,13 @@ const appConfigSchema = z.object({
    * file on a schema error, and one bad server entry must degrade to a
    * skipped entry (customMcpServers), never to a vanished config. */
   mcpServers: z.record(z.string(), z.unknown()).optional(),
+  /** Task connector accounts. Loosely typed so one bad entry cannot reject the file. */
+  taskConnections: z.array(z.unknown()).optional(),
 });
 const storedAppConfigSchema = appConfigSchema.extend({
   browserProfiles: storedBrowserProfilesSchema.optional(),
 });
-const appConfigPatchSchema = appConfigSchema.omit({ instances: true, mcpServers: true, cliStartup: true, customDomain: true })
+const appConfigPatchSchema = appConfigSchema.omit({ instances: true, mcpServers: true, taskConnections: true, cliStartup: true, customDomain: true })
   .extend({ threads: threadsPatchSchema.optional(), newBots: newBotsPatchSchema.optional() });
 const jsonObjectSchema = z.record(z.string(), z.json());
 
@@ -495,6 +497,7 @@ export interface AppConfig {
     phone?: "ios" | "android";
   };
   mcpServers?: Record<string, unknown>;
+  taskConnections?: unknown[];
   language?: string;
   xai?: { key?: string; url?: string };
   mistral?: { key?: string };
@@ -1076,6 +1079,9 @@ export function saveConfig(
   // saveConfig remains the single atomic persistence boundary.
   if (checkedPatch.mcpServers !== undefined) {
     disk.mcpServers = jsonObjectSchema.parse(checkedPatch.mcpServers);
+  }
+  if (checkedPatch.taskConnections !== undefined) {
+    disk.taskConnections = JSON.parse(JSON.stringify(z.array(z.unknown()).parse(checkedPatch.taskConnections)));
   }
   // the whole list is the unit of change: an add or a delete arrives as the
   // new list, never as a per-item merge

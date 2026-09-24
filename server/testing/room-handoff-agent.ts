@@ -13,7 +13,8 @@ type AgentsIntegration = { command: string; args: string[]; env: Record<string, 
  * `progressAfterGate` text once the gate opens. */
 export async function runRoomHandoffAgent(argv: string[], planPath: string, prompt?: unknown,
   launch?: { integration: AgentsIntegration; system: string; evidence?: Record<string, unknown> },
-  progress?: (text: string) => void): Promise<string> {
+  progress?: (text: string) => void,
+  shell?: (call: { command: string; output: string; ok?: boolean }) => void): Promise<string> {
   const arg = (flag: string) => argv[argv.indexOf(flag) + 1];
   const integration = launch?.integration ?? Object.values(JSON.parse(readFileSync(arg("--mcp-config"), "utf8")).mcpServers as Record<string, AgentsIntegration>)
     .find(s => s.env?.OMB_BOT_ID);
@@ -128,6 +129,7 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
       if (plan.delayMs) await new Promise(resolve => { delayTimer = setTimeout(resolve, plan.delayMs); });
       if (plan.fail && !resumed) throw new Error("Scripted addressed agent failure");
       if (plan.failResumed && resumed) throw new Error("Scripted failure of a resumed turn");
+      if (plan.shell?.command) shell?.({ command: String(plan.shell.command), output: String(plan.shell.output ?? ""), ok: plan.shell.ok !== false });
       return basePlan.turns ? plan.reply : resumed ? plan.resumeReply ?? `Summary from ${botId}` : plan.reply ?? `Result from ${botId}`;
     })()]);
   } finally {

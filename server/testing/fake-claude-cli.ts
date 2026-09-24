@@ -368,7 +368,12 @@ const playTurn = (prompt: JsonValue) => {
 
   if (process.env.FAKE_CLAUDE_ROOM_PLAN) {
     const progress = (text: string) => out({ type: "assistant", message: { content: [{ type: "text", text }] } });
-    void runRoomHandoffAgent(argv, process.env.FAKE_CLAUDE_ROOM_PLAN, prompt, undefined, progress).then(text => {
+    const emitShell = (call: { command: string; output: string; ok?: boolean }) => {
+      const id = `tu-shell-${process.pid}`;
+      out({ type: "assistant", message: { content: [{ type: "tool_use", id, name: "Bash", input: { command: call.command } }] } });
+      out({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, is_error: call.ok === false, content: call.output }] } });
+    };
+    void runRoomHandoffAgent(argv, process.env.FAKE_CLAUDE_ROOM_PLAN, prompt, undefined, progress, emitShell).then(text => {
       const contextTokens = Number(process.env.FAKE_CLAUDE_CONTEXT_TOKENS);
       const usage = Number.isSafeInteger(contextTokens) && contextTokens > 0 ? { input_tokens: contextTokens, output_tokens: 5 } : undefined;
       out({ type: "assistant", message: { content: [{ type: "text", text }], ...(usage ? { usage } : {}) } });

@@ -16,6 +16,44 @@ const input = { scope: "Engineering", identity: "jira:account-a:PAY-123", groupI
 const finish = (items: WorkItems, item: WorkRecord) => items.update(item, { expectedRevision: item.revision,
   status: "completed", detail: "Refund fixed and verified", evidence: ["thread:test-output"], completedCriteria: item.acceptanceCriteria }, "chief");
 
+describe("task connector fields", () => {
+  it("migrates artifacts and criteria without promoting string evidence to ids", () => fixture((_items, file) => {
+    const legacy = { ...input, id: "task-1", revision: 1, status: "completed", detail: "Done", decisions: ["Ship it"],
+      artifacts: [{ ref: "https://example.test/mr/1", label: "MR 1" }], evidence: ["thread:test-output"], assignments: [],
+      createdAt: 1, updatedAt: 1, inputHash: "abc", executions: 0, runStartedAt: 1, sources: [] };
+    writeFileSync(file, JSON.stringify([legacy]));
+    const loaded = new WorkItems(file);
+    const item = loaded.records.get("task-1")!;
+    expect(item.criteria).toEqual([{ id: "c1", text: "Refund test passes", state: "pending", evidence: [] }]);
+    expect(item.links?.[0]).toMatchObject({ kind: "link", role: "reference", provenance: "claimed", title: "MR 1", url: "https://example.test/mr/1" });
+    expect(item.evidence).toEqual(["thread:test-output"]);
+    expect(publicWorkItem(item).acceptanceCriteria).toEqual(["Refund test passes"]);
+    expect(publicWorkItem(item).artifacts[0]).toMatchObject({ ref: "https://example.test/mr/1", label: "MR 1" });
+  }));
+});
+
+describe("criterion evidence", () => {
+  it("stores claimed evidence as needs-input and accepts observed evidence", () => fixture(items => {
+    const { item } = items.ensure(input);
+    const { assignment } = items.claim(item, { botId: "engineer", threadId: "worker", message: "Fix refunds" });
+    assignment.status = "completed";
+    const claimed = items.upsertLink(item, { id: "claimed-1", kind: "link", role: "output", title: "Notes", url: "https://example.test/notes", provenance: "claimed", updatedAt: 1 });
+    const resolve = (id: string) => item.links?.find(link => link.id === id)?.provenance;
+    items.update(item, { expectedRevision: 1, status: "completed", detail: "I wrote it down", criteria: [{ index: 0, state: "checked", evidence: [claimed.id] }] }, "chief", resolve);
+    expect(item.status).toBe("needs-input");
+    expect(item.detail).toMatch(/Observed evidence/);
+  }));
+
+  it("keeps the legacy completed_criteria call working", () => fixture(items => {
+    const { item } = items.ensure(input);
+    const { assignment } = items.claim(item, { botId: "engineer", threadId: "worker", message: "Fix refunds" });
+    assignment.status = "completed";
+    finish(items, item);
+    expect(item.status).toBe("completed");
+    expect(item.criteria?.[0].state).toBe("checked");
+  }));
+});
+
 describe("shared work identity", () => {
   it("reuses an unchanged deliverable across triggers and does not use titles as identity", () => fixture(items => {
     const first = items.ensure(input);
