@@ -30,9 +30,12 @@ const discussions = readJson("discussions.json");
 const issueDiscussions = readJson("issue-discussions.json");
 const webhookMr = readJson("webhook-merge-request.json");
 const webhookPipeline = readJson("webhook-pipeline.json");
+const webhookPipelineFailed = readJson("webhook-pipeline-failed.json");
 const webhookNote = readJson("webhook-note.json");
 const webhookIssue = readJson("webhook-issue.json");
 const webhookIssueNote = readJson("webhook-issue-note.json");
+const events = readJson("events.json");
+const pipelines = readJson("pipelines.json");
 
 function jsonResponse(body: unknown, status = 200, headers?: Record<string, string>): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -71,8 +74,10 @@ function fixtureFetch(input: Parameters<typeof fetch>[0], init?: RequestInit): P
     return Promise.resolve(jsonResponse([mergeRequests["482"], mergeRequests["484"]], 200, { "x-next-page": "2" }));
   }
   if (url.includes("/repository/commits/")) return Promise.resolve(jsonResponse(commit));
+  if (url.includes("/events")) return Promise.resolve(jsonResponse(events));
   if (/\/pipelines\/\d+\/jobs/.test(url)) return Promise.resolve(jsonResponse(jobs));
   if (/\/pipelines\/\d+/.test(url)) return Promise.resolve(jsonResponse(pipeline));
+  if (url.includes("/pipelines")) return Promise.resolve(jsonResponse(pipelines));
   return Promise.resolve(new Response("not found", { status: 404 }));
 }
 
@@ -115,7 +120,14 @@ describe("gitlab connector contract", () => {
     { ref: "acme/payments#pipeline:9001", url: "https://gitlab.com/acme/payments/-/pipelines/9001" },
     { ref: "acme/payments!482:note:10001", url: "https://gitlab.com/acme/payments/-/merge_requests/482#note_10001" },
     { ref: "acme/payments#140:note:10003", url: "https://gitlab.com/acme/payments/-/issues/140#note_10003" },
-  ], captureCall("mr-create-mcp"));
+  ], captureCall("mr-create-mcp"), {
+    scope: { project: "acme/payments" },
+    cursor: "2026-09-23T00:00:00.000Z",
+    webhook: {
+      headers: new Headers({ "x-gitlab-token": "webhook-secret" }),
+      body: webhookMr,
+    },
+  });
 });
 
 describe("gitlab connector", () => {
@@ -298,12 +310,41 @@ describe("gitlab connector", () => {
     } finally { await removeTempDir(directory); }
   });
 
+  it("maps project events and failed pipelines, sharing webhook ids", async () => {
+    const first = await gitlabConnector.changes!(ctx(), { project: "acme/payments" }, "2026-09-23T00:00:00.000Z");
+    expect(first.changes.map(change => change.id)).toEqual([
+      "acme/payments#140@open",
+      "acme/payments!482@open",
+      "acme/payments!482@comment:10001",
+      "acme/payments@3f2a1c9d0e1f2345678901234567890abcdef12",
+      "acme/payments#pipeline:9001@failed",
+    ]);
+    expect(first.changes.find(change => change.type === "build.failed")).toMatchObject({
+      fields: { mr: "acme/payments!482" },
+      item: { kind: "build", externalId: "acme/payments#pipeline:9001" },
+    });
+    const again = await gitlabConnector.changes!(ctx(), { project: "acme/payments" }, "2026-09-23T00:00:00.000Z");
+    expect(again.changes.map(change => change.id)).toEqual(first.changes.map(change => change.id));
+    const later = await gitlabConnector.changes!(ctx(), { project: "acme/payments" }, first.cursor);
+    expect(later.changes).toEqual([]);
+    const headers = new Headers({ "x-gitlab-token": "webhook-secret" });
+    const opened = await gitlabConnector.webhookChanges!(ctx(), headers, webhookMr);
+    expect(opened.map(change => change.id)).toEqual(["acme/payments!482@open"]);
+    const failed = await gitlabConnector.webhookChanges!(ctx(), headers, webhookPipelineFailed);
+    expect(failed[0]).toMatchObject({
+      id: "acme/payments#pipeline:9001@failed",
+      type: "build.failed",
+      fields: { mr: "acme/payments!482" },
+    });
+  });
+
   it("keeps tokens out of connector logs", async () => {
     const logs: string[] = [];
     const recording = ctx({ log: message => logs.push(message) });
     expect(await gitlabConnector.test(recording)).toMatchObject({ ok: true, account: "acme/payments" });
     await gitlabConnector.fetch(recording, [{ kind: "change_request", externalId: "acme/payments!482" }]);
     await gitlabConnector.query!(recording, "acme/payments");
+    await gitlabConnector.changes!(recording, { project: "acme/payments" }, "2026-09-23T00:00:00.000Z");
     const text = logs.join("\n");
     expect(text).not.toContain(TOKEN);
     expect(text).not.toContain("webhook-secret");

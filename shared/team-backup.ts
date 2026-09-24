@@ -124,6 +124,12 @@ const backupSchema = z.object({
       z.object({ type: z.literal("notify"), botId: key.optional(), threadId: key.optional() }),
       z.object({ type: z.literal("run_routine"), routineName: name }),
       z.object({ type: z.literal("task_update") }),
+      z.object({
+        type: z.literal("ensure_task"),
+        topic: z.string().trim().min(1).max(100).optional(),
+        coordinatorBotId: key.optional(),
+        criteriaFrom: z.literal("item").optional(),
+      }),
     ]),
     limits: z.object({
       maxActionsPerDay: z.number().int().min(1).max(1_000).optional(),

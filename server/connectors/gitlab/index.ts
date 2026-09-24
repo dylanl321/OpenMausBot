@@ -1,6 +1,13 @@
 import { timingSafeEqual } from "node:crypto";
 import type { LinkKind, StatusCategory, SyncedItem } from "../../../shared/work-links.ts";
-import type { CaptureCall, CaptureRule, ConnectionContext, Connector } from "../types.ts";
+import type { SourceChange } from "../../../shared/watches.ts";
+import {
+  connectionActor,
+  encodeChangeCursor,
+  parseChangeCursor,
+  rememberSnapshot,
+} from "../change-cursor.ts";
+import type { CaptureCall, CaptureRule, ConnectionContext, Connector, WatchScope } from "../types.ts";
 
 const PREVIEW_CUT = "[… preview shortened]";
 const PROJECT = "((?:[\\w.-]+/)+[\\w.-]+)";
@@ -30,6 +37,8 @@ export const GITLAB_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0
 
 interface GitlabUser {
   username?: string;
+  name?: string;
+  bot?: boolean;
 }
 
 interface GitlabProject {
@@ -447,9 +456,15 @@ function stageStatus(jobs: GitlabJob[]): Record<string, string> {
   return stages;
 }
 
-function syncedPipeline(pipeline: GitlabPipeline, ctx: ConnectionContext, project: string, jobs: GitlabJob[]): SyncedItem {
+function mrIidFromPipelineRef(ref: string | undefined): string | undefined {
+  const match = /refs\/merge-requests\/(\d+)/i.exec(ref ?? "");
+  return match?.[1];
+}
+
+function syncedPipeline(pipeline: GitlabPipeline, ctx: ConnectionContext, project: string, jobs: GitlabJob[] = []): SyncedItem {
   const id = String(pipeline.id ?? "");
   const status = pipeline.status ?? "unknown";
+  const mrIid = mrIidFromPipelineRef(pipeline.ref);
   return {
     kind: "build",
     externalId: pipelineId(project, id),
@@ -461,6 +476,7 @@ function syncedPipeline(pipeline: GitlabPipeline, ctx: ConnectionContext, projec
     details: {
       ...(pipeline.ref ? { ref: pipeline.ref } : {}),
       ...(pipeline.sha ? { sha: pipeline.sha.slice(0, 40) } : {}),
+      ...(mrIid ? { mr: mrId(project, mrIid) } : {}),
       ...stageStatus(jobs),
     },
     updatedAt: when(pipeline.updated_at),
@@ -584,6 +600,285 @@ function webhookRefs(body: unknown): { kind: LinkKind; externalId: string }[] {
       { kind: "change_request", externalId: mrId(project, String(iid)) },
       { kind: "comment", externalId: noteId(project, String(iid), String(note)) },
     ];
+  }
+  return [];
+}
+
+interface GitlabEvent {
+  id?: number;
+  action_name?: string;
+  target_type?: string | null;
+  target_iid?: number;
+  target_title?: string;
+  created_at?: string;
+  author?: { username?: string; name?: string; bot?: boolean };
+  note?: { id?: number; noteable_type?: string; noteable_iid?: number };
+  push_data?: { commit_to?: string; ref?: string; action?: string };
+}
+
+interface GitlabAccount {
+  accountId?: string;
+  username?: string;
+  email?: string;
+  displayName?: string;
+  bot?: boolean;
+}
+
+function gitlabAction(raw: string | undefined): string {
+  const value = (raw ?? "").toLowerCase();
+  if (value === "opened" || value === "open") return "open";
+  if (value === "accepted" || value === "merged" || value === "merge") return "merge";
+  if (value === "closed" || value === "close") return "close";
+  if (value === "reopened" || value === "reopen") return "reopen";
+  if (value === "updated" || value === "update") return "update";
+  if (value.startsWith("commented")) return "comment";
+  if (value.startsWith("pushed")) return "push";
+  if (value === "approved") return "review";
+  return value;
+}
+
+function gitlabActor(author: { username?: string; name?: string; bot?: boolean } | undefined, account?: GitlabAccount) {
+  return connectionActor({
+    name: author?.name ?? author?.username,
+    username: author?.username,
+    bot: author?.bot,
+    account,
+  });
+}
+
+function changeFromItem(
+  item: SyncedItem,
+  ctx: ConnectionContext,
+  type: SourceChange["type"],
+  id: string,
+  at: number,
+  actor: { name: string; isBot: boolean },
+  extra: Record<string, string | number | boolean | string[]> = {},
+  before?: SourceChange["before"],
+): SourceChange {
+  return {
+    id,
+    type,
+    connectionId: ctx.connectionId,
+    item,
+    ...(before ? { before } : {}),
+    actor,
+    fields: {
+      ...(item.details?.assignee ? { assignee: String(item.details.assignee) } : {}),
+      ...(typeof item.details?.labels === "string" ? { labels: String(item.details.labels).split(",") } : {}),
+      ...(item.details?.mr ? { mr: String(item.details.mr) } : {}),
+      ...(item.state?.category ? { "state.category": item.state.category } : {}),
+      ...extra,
+    },
+    at,
+  };
+}
+
+function eventToChanges(
+  event: GitlabEvent,
+  ctx: ConnectionContext,
+  project: string,
+  account?: GitlabAccount,
+): SourceChange[] {
+  const action = gitlabAction(event.action_name);
+  const at = when(event.created_at);
+  const actor = gitlabActor(event.author, account);
+  const iid = event.target_iid != null ? String(event.target_iid) : "";
+  const title = (event.target_title ?? "").slice(0, 300);
+  if (event.target_type === "Issue" && iid) {
+    const item = {
+      kind: "work_item" as const,
+      externalId: issueId(project, iid),
+      title: title || `#${iid}`,
+      url: `${siteUrl(ctx)}/${project}/-/issues/${iid}`,
+      connectorId: "gitlab",
+      connectionId: ctx.connectionId,
+      updatedAt: at,
+    };
+    const type = action === "open" ? "item.created" : action === "close" ? "item.state_changed" : "item.updated";
+    return [changeFromItem(item, ctx, type, `${item.externalId}@${action || "update"}`, at, actor)];
+  }
+  if (event.target_type === "MergeRequest" && iid) {
+    const item = {
+      kind: "change_request" as const,
+      externalId: mrId(project, iid),
+      title: title || `!${iid}`,
+      url: `${siteUrl(ctx)}/${project}/-/merge_requests/${iid}`,
+      connectorId: "gitlab",
+      connectionId: ctx.connectionId,
+      updatedAt: at,
+    };
+    const type = action === "open" ? "change_request.opened"
+      : action === "merge" ? "change_request.merged"
+      : action === "close" ? "change_request.closed"
+      : action === "review" ? "review.submitted"
+      : "change_request.updated";
+    return [changeFromItem(item, ctx, type, `${item.externalId}@${action || "update"}`, at, actor)];
+  }
+  if (action === "comment" && event.note) {
+    const noteIdValue = event.note.id != null ? String(event.note.id) : "";
+    const noteIid = event.note.noteable_iid != null ? String(event.note.noteable_iid) : iid;
+    if (!noteIid || !noteIdValue) return [];
+    const onIssue = event.note.noteable_type === "Issue";
+    const parent = onIssue ? issueId(project, noteIid) : mrId(project, noteIid);
+    const externalId = onIssue ? `${parent}:note:${noteIdValue}` : noteId(project, noteIid, noteIdValue);
+    return [changeFromItem({
+      kind: "comment",
+      externalId,
+      title: title || `Comment on ${onIssue ? `#${noteIid}` : `!${noteIid}`}`,
+      connectorId: "gitlab",
+      connectionId: ctx.connectionId,
+      details: onIssue ? { issue: parent } : { mr: parent },
+      updatedAt: at,
+    }, ctx, "comment.added", externalId.includes(":note:") ? `${parent}@comment:${noteIdValue}` : `${externalId}`, at, actor, onIssue ? { issue: parent } : { mr: parent })];
+  }
+  if (action === "push" && event.push_data?.commit_to) {
+    const sha = event.push_data.commit_to;
+    return [changeFromItem({
+      kind: "commit",
+      externalId: commitId(project, sha),
+      title: (event.push_data.ref ?? sha).slice(0, 300),
+      connectorId: "gitlab",
+      connectionId: ctx.connectionId,
+      updatedAt: at,
+    }, ctx, "commit.pushed", `${project}@${sha.toLowerCase()}`, at, actor, event.push_data.ref ? { branch: event.push_data.ref } : {})];
+  }
+  return [];
+}
+
+function pipelineChangeType(status: string): SourceChange["type"] {
+  if (status === "failed") return "build.failed";
+  if (status === "success") return "build.succeeded";
+  return "change_request.updated";
+}
+
+function pipelineChange(
+  pipeline: GitlabPipeline,
+  ctx: ConnectionContext,
+  project: string,
+  account?: GitlabAccount,
+  mrExternalId?: string,
+): SourceChange | null {
+  if (pipeline.id == null) return null;
+  const item = syncedPipeline(pipeline, ctx, project);
+  if (mrExternalId && !item.details?.mr) item.details = { ...item.details, mr: mrExternalId };
+  const status = (pipeline.status ?? "unknown").toLowerCase();
+  return changeFromItem(
+    item,
+    ctx,
+    pipelineChangeType(status),
+    `${item.externalId}@${status}`,
+    when(pipeline.updated_at),
+    gitlabActor(undefined, account),
+    item.details?.mr ? { mr: String(item.details.mr) } : {},
+  );
+}
+
+async function loadGitlabUser(ctx: ConnectionContext): Promise<GitlabAccount | undefined> {
+  const result = await gitlabRequest(ctx, "/user");
+  if (!result.ok || !result.body || typeof result.body !== "object") return undefined;
+  const user = result.body as GitlabUser;
+  return { username: user.username, displayName: user.name, bot: user.bot === true };
+}
+
+function isoDate(ms: number): string {
+  return new Date(ms || Date.now()).toISOString().slice(0, 10);
+}
+
+async function listProjectEvents(ctx: ConnectionContext, project: string, since: number): Promise<GitlabEvent[]> {
+  const params = new URLSearchParams({ per_page: "50", sort: "asc" });
+  if (since) params.set("after", isoDate(Math.max(0, since - 86_400_000)));
+  const result = await gitlabRequest(ctx, `/projects/${projectPath(project)}/events?${params}`);
+  if (!result.ok) throw new Error(result.error);
+  return Array.isArray(result.body) ? result.body as GitlabEvent[] : [];
+}
+
+async function listProjectPipelines(ctx: ConnectionContext, project: string, since: number): Promise<GitlabPipeline[]> {
+  const params = new URLSearchParams({ per_page: "50", order_by: "updated_at", sort: "asc" });
+  if (since) params.set("updated_after", new Date(since).toISOString());
+  const result = await gitlabRequest(ctx, `/projects/${projectPath(project)}/pipelines?${params}`);
+  if (!result.ok) throw new Error(result.error);
+  return Array.isArray(result.body) ? result.body as GitlabPipeline[] : [];
+}
+
+function webhookChangesFrom(body: unknown, ctx: ConnectionContext, account?: GitlabAccount): SourceChange[] {
+  if (!body || typeof body !== "object") return [];
+  const record = body as Record<string, unknown>;
+  const project = webhookProject(record);
+  if (!project) return [];
+  const kind = typeof record.object_kind === "string" ? record.object_kind : "";
+  const attrs = (record.object_attributes ?? {}) as Record<string, unknown>;
+  const user = record.user as { username?: string; name?: string; bot?: boolean } | undefined;
+  if (kind === "merge_request") {
+    const iid = attrs.iid;
+    if (typeof iid !== "number" && typeof iid !== "string") return [];
+    const action = gitlabAction(typeof attrs.action === "string" ? attrs.action : undefined);
+    const at = when(typeof attrs.updated_at === "string" ? attrs.updated_at : typeof attrs.created_at === "string" ? attrs.created_at : undefined);
+    const item = {
+      kind: "change_request" as const,
+      externalId: mrId(project, String(iid)),
+      title: (typeof attrs.title === "string" ? attrs.title : `!${iid}`).slice(0, 300),
+      url: typeof attrs.url === "string" ? attrs.url : `${siteUrl(ctx)}/${project}/-/merge_requests/${iid}`,
+      connectorId: "gitlab",
+      connectionId: ctx.connectionId,
+      updatedAt: at,
+    };
+    const type = action === "open" ? "change_request.opened"
+      : action === "merge" ? "change_request.merged"
+      : action === "close" ? "change_request.closed"
+      : "change_request.updated";
+    return [changeFromItem(item, ctx, type, `${item.externalId}@${action || "update"}`, at, gitlabActor(user, account))];
+  }
+  if (kind === "pipeline") {
+    const id = attrs.id;
+    if (typeof id !== "number" && typeof id !== "string") return [];
+    const mr = record.merge_request as { iid?: unknown } | undefined;
+    const mrIdValue = typeof mr?.iid === "number" || typeof mr?.iid === "string" ? mrId(project, String(mr.iid)) : undefined;
+    const pipeline: GitlabPipeline = {
+      id: Number(id),
+      status: typeof attrs.status === "string" ? attrs.status : undefined,
+      ref: typeof attrs.ref === "string" ? attrs.ref : undefined,
+      sha: typeof attrs.sha === "string" ? attrs.sha : undefined,
+      web_url: typeof attrs.url === "string" ? attrs.url : undefined,
+      updated_at: typeof attrs.updated_at === "string" ? attrs.updated_at : typeof attrs.finished_at === "string" ? attrs.finished_at : undefined,
+    };
+    const change = pipelineChange(pipeline, ctx, project, account, mrIdValue);
+    return change ? [change] : [];
+  }
+  if (kind === "issue") {
+    const iid = attrs.iid;
+    if (typeof iid !== "number" && typeof iid !== "string") return [];
+    const action = gitlabAction(typeof attrs.action === "string" ? attrs.action : undefined);
+    const at = when(typeof attrs.updated_at === "string" ? attrs.updated_at : typeof attrs.created_at === "string" ? attrs.created_at : undefined);
+    const item = {
+      kind: "work_item" as const,
+      externalId: issueId(project, String(iid)),
+      title: (typeof attrs.title === "string" ? attrs.title : `#${iid}`).slice(0, 300),
+      url: typeof attrs.url === "string" ? attrs.url : `${siteUrl(ctx)}/${project}/-/issues/${iid}`,
+      connectorId: "gitlab",
+      connectionId: ctx.connectionId,
+      updatedAt: at,
+    };
+    const type = action === "open" ? "item.created" : action === "close" ? "item.state_changed" : "item.updated";
+    return [changeFromItem(item, ctx, type, `${item.externalId}@${action || "update"}`, at, gitlabActor(user, account))];
+  }
+  if (kind === "note") {
+    const note = attrs.id;
+    const onIssue = attrs.noteable_type === "Issue";
+    const target = onIssue ? record.issue as { iid?: unknown; title?: unknown } | undefined : record.merge_request as { iid?: unknown; title?: unknown } | undefined;
+    const iid = target?.iid;
+    if ((typeof iid !== "number" && typeof iid !== "string") || (typeof note !== "number" && typeof note !== "string")) return [];
+    const parent = onIssue ? issueId(project, String(iid)) : mrId(project, String(iid));
+    const at = when(typeof attrs.updated_at === "string" ? attrs.updated_at : typeof attrs.created_at === "string" ? attrs.created_at : undefined);
+    return [changeFromItem({
+      kind: "comment",
+      externalId: onIssue ? `${parent}:note:${note}` : noteId(project, String(iid), String(note)),
+      title: (typeof attrs.note === "string" ? attrs.note : `Comment on ${onIssue ? `#${iid}` : `!${iid}`}`).slice(0, 80),
+      connectorId: "gitlab",
+      connectionId: ctx.connectionId,
+      details: onIssue ? { issue: parent } : { mr: parent },
+      updatedAt: at,
+    }, ctx, "comment.added", `${parent}@comment:${note}`, at, gitlabActor(user, account), onIssue ? { issue: parent } : { mr: parent })];
   }
   return [];
 }
@@ -907,6 +1202,17 @@ export const gitlabConnector: Connector = {
       resolved: "done",
       open: "in_review",
     },
+    watch: {
+      scopes: [
+        { key: "project", label: "Project", type: "string", help: "group/project. Defaults to the connection project." },
+        { key: "query", label: "Search", type: "string", help: "Optional text filter applied to event titles" },
+      ],
+      events: [
+        "item.created", "item.updated", "item.state_changed", "comment.added",
+        "change_request.opened", "change_request.updated", "change_request.merged", "change_request.closed",
+        "review.submitted", "commit.pushed", "build.failed", "build.succeeded",
+      ],
+    },
   },
   async test(ctx) {
     const project = defaultProject(ctx);
@@ -1061,6 +1367,49 @@ export const gitlabConnector: Connector = {
     const refs = webhookRefs(parsed);
     if (refs.length) ctx.log(`GitLab webhook named ${refs.length} item(s).`);
     return refs;
+  },
+  async changes(ctx, scope: WatchScope, cursor: string | null) {
+    const project = typeof scope.project === "string" && PROJECT_PATH.test(scope.project)
+      ? scope.project : defaultProject(ctx);
+    if (!project) return { changes: [], cursor: cursor ?? "" };
+    const parsed = parseChangeCursor(cursor);
+    const account = await loadGitlabUser(ctx);
+    const [events, pipelines] = await Promise.all([
+      listProjectEvents(ctx, project, parsed.since),
+      listProjectPipelines(ctx, project, parsed.since),
+    ]);
+    const needle = typeof scope.query === "string" ? scope.query.trim().toLowerCase() : "";
+    const seen = new Map(parsed.seen);
+    const raw = [
+      ...events.flatMap(event => eventToChanges(event, ctx, project, account)),
+      ...pipelines.flatMap(pipeline => {
+        const change = pipelineChange(pipeline, ctx, project, account);
+        return change ? [change] : [];
+      }),
+    ].filter(change => change.at > parsed.since && (!needle || change.item.title.toLowerCase().includes(needle) || String(change.item.externalId ?? "").toLowerCase().includes(needle)));
+    raw.sort((left, right) => left.at - right.at);
+    for (const change of raw) rememberSnapshot(seen, change.item);
+    const latest = Math.max(parsed.since, ...raw.map(change => change.at));
+    if (raw.length) ctx.log(`GitLab changes named ${raw.length} item(s).`);
+    return {
+      changes: raw,
+      cursor: encodeChangeCursor(latest || Date.now(), seen, raw.flatMap(change => change.item.externalId ? [change.item.externalId] : [])),
+    };
+  },
+  async webhookChanges(ctx, headers, body) {
+    const secret = ctx.secret("webhookSecret");
+    if (secret && !verifyGitlabWebhook(secret, headers.get("x-gitlab-token"))) {
+      ctx.log("Ignored a GitLab webhook with a bad token.");
+      return [];
+    }
+    let parsed: unknown = body;
+    if (typeof body === "string") {
+      try { parsed = JSON.parse(body); } catch { return []; }
+    }
+    const account = await loadGitlabUser(ctx);
+    const changes = webhookChangesFrom(parsed, ctx, account);
+    if (changes.length) ctx.log(`GitLab webhook changes named ${changes.length} item(s).`);
+    return changes;
   },
   capture: captureRules,
 };
