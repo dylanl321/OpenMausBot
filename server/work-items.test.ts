@@ -78,6 +78,13 @@ describe("shared work identity", () => {
     expect(item.rootId).toBeUndefined();
   }));
 
+  it("keeps a user's needs-input answer when the task is reopened", () => fixture(items => {
+    const { item } = items.ensure(input);
+    items.update(item, { expectedRevision: 1, status: "needs-input", detail: "Which merchant account?" }, "chief");
+    items.update(item, { expectedRevision: 1, reopen: true, detail: "Use merchant-9" });
+    expect(item).toMatchObject({ status: "active", revision: 2, detail: "Use merchant-9" });
+  }));
+
   it("does not mutate running requirements or accept stale final results", () => fixture(items => {
     const { item } = items.ensure(input);
     expect(() => items.ensure({ ...input, input: "new" })).toThrow("still working");

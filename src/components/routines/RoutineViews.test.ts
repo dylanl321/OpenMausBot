@@ -57,6 +57,16 @@ describe("routine list", () => {
     expect(markup).not.toContain("Latest: Completed");
   });
 
+  it("suggests converting a polling check without crowding ordinary routines", () => {
+    const polling = list({
+      routines: [{ ...routine, name: "Jira sweep", prompt: "Check Jira every 15 minutes for new bot-ready stories" }],
+      onConvertToWatch: vi.fn(),
+    });
+    expect(polling).toContain("Convert to watch");
+    expect(polling).toContain("data-convert-to-watch");
+    expect(list()).not.toContain("Convert to watch");
+  });
+
   it("never advertises a stale next timestamp for a paused routine", () => {
     expect(routineNextLabel({ ...routine, enabled: false })).toBe("Paused");
     expect(list({ routines: [{ ...routine, enabled: false }] })).not.toContain("Next Jan");

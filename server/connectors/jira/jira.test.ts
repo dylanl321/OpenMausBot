@@ -22,8 +22,11 @@ const EMAIL = "bot@example.test";
 const myself = readJson("myself.json");
 const bulk = readJson("bulkfetch.json") as { issues: Array<{ key: string }> };
 const searchJql = readJson("search-jql.json");
+const searchChanges = readJson("search-jql-changes.json");
 const dcSearch = readJson("dc-search.json");
 const webhookBody = readJson("webhook-issue-updated.json");
+const webhookCreated = readJson("webhook-issue-created.json");
+const webhookTransition = readJson("webhook-issue-transition.json");
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -40,8 +43,19 @@ function fixtureFetch(input: Parameters<typeof fetch>[0], init?: RequestInit): P
     const keys = new Set((JSON.parse(String(init?.body ?? "{}")).issueIdsOrKeys ?? []).map((key: string) => String(key).toUpperCase()));
     return Promise.resolve(jsonResponse({ issues: bulk.issues.filter(issue => keys.has(issue.key)) }));
   }
-  if (url.includes("/search/jql") && method === "POST") return Promise.resolve(jsonResponse(searchJql));
-  if (url.includes("/rest/api/2/search") && method === "GET") return Promise.resolve(jsonResponse(dcSearch));
+  if (url.includes("/search/jql") && method === "POST") {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { jql?: string; expand?: string };
+    if (String(body.expand ?? "").includes("changelog") || String(body.jql ?? "").includes("updated >")) {
+      return Promise.resolve(jsonResponse(searchChanges));
+    }
+    return Promise.resolve(jsonResponse(searchJql));
+  }
+  if (url.includes("/rest/api/2/search") && method === "GET") {
+    if (url.includes("expand=changelog") || url.includes("updated+%3E") || url.includes("updated >")) {
+      return Promise.resolve(jsonResponse(searchChanges));
+    }
+    return Promise.resolve(jsonResponse(dcSearch));
+  }
   return Promise.resolve(new Response("not found", { status: 404 }));
 }
 
@@ -79,7 +93,14 @@ describe("jira connector contract", () => {
     { ref: "PAY-123", url: "https://acme.atlassian.net/browse/PAY-123" },
     { ref: "PAY-123", url: "https://acme.atlassian.net/jira/software/projects/PAY/boards/1?selectedIssue=PAY-123" },
     { ref: "PAY-123:10001", url: "https://acme.atlassian.net/browse/PAY-123?focusedCommentId=10001" },
-  ]);
+  ], { title: "fake.issue", output: "Created PAY-1", ok: true }, {
+    scope: { query: "project = PAY AND labels = bot-ready" },
+    cursor: "2026-09-23T00:00:00.000Z",
+    webhook: {
+      headers: new Headers({ "x-hub-signature": jiraWebhookSignature("webhook-secret", JSON.stringify(webhookCreated)) }),
+      body: webhookCreated,
+    },
+  });
 });
 
 describe("jira connector", () => {
@@ -205,6 +226,40 @@ describe("jira connector", () => {
       expect(item.links?.some(link => link.kind === "comment" && link.externalId === "PAY-123:10001" && link.parentId === "jira-acme:work_item:PAY-123")).toBe(true);
       expect(events.read(item.id).some(event => event.kind === "comment" && event.summary.includes("PAY-123"))).toBe(true);
     } finally { await removeTempDir(directory); }
+  });
+
+  it("emits changelog diffs and shares webhook ids with the poll feed", async () => {
+    const first = await jiraConnector.changes!(ctx(), { query: "project = PAY AND labels = bot-ready" }, "2026-09-23T00:00:00.000Z");
+    expect(first.changes.map(change => change.id)).toEqual([
+      "PAY-140@created",
+      "PAY-123@changelog:10100:status",
+    ]);
+    expect(first.changes[0]).toMatchObject({
+      type: "item.created",
+      item: { externalId: "PAY-140", state: { category: "todo" } },
+      fields: { labels: ["bot-ready", "payments"] },
+      actor: { isBot: false },
+    });
+    expect(first.changes[1]).toMatchObject({
+      type: "item.state_changed",
+      before: { state: "todo", stateLabel: "To Do" },
+      actor: { name: "Payments bot", isBot: true },
+    });
+    const again = await jiraConnector.changes!(ctx(), { query: "project = PAY AND labels = bot-ready" }, "2026-09-23T00:00:00.000Z");
+    expect(again.changes.map(change => change.id)).toEqual(first.changes.map(change => change.id));
+    const later = await jiraConnector.changes!(ctx(), { query: "project = PAY" }, first.cursor);
+    expect(later.changes).toEqual([]);
+    const createdHeaders = new Headers({ "x-hub-signature": jiraWebhookSignature("webhook-secret", JSON.stringify(webhookCreated)) });
+    const hooked = await jiraConnector.webhookChanges!(ctx(), createdHeaders, webhookCreated);
+    expect(hooked.map(change => change.id)).toEqual(["PAY-140@created"]);
+    const botHeaders = new Headers({ "x-hub-signature": jiraWebhookSignature("webhook-secret", JSON.stringify(webhookTransition)) });
+    const botWrite = await jiraConnector.webhookChanges!(ctx(), botHeaders, webhookTransition);
+    expect(botWrite.map(change => change.id)).toEqual(["PAY-123@changelog:10100:status"]);
+    expect(botWrite[0]).toMatchObject({
+      id: "PAY-123@changelog:10100:status",
+      type: "item.state_changed",
+      actor: { isBot: true },
+    });
   });
 
   it("keeps tokens and basic credentials out of connector logs", async () => {

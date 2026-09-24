@@ -1,0 +1,7 @@
+{
+  "title": "workitem",
+  "server": "plane",
+  "input": "{\"action\":\"create\",\"project_id\":\"4af68566-94a4-4eb3-94aa-50dc9427067b\",\"name\":\"Export receipts\"}",
+  "output": "{\"id\":\"550e8400-e29b-41d4-a716-446655440140\",\"name\":\"Export receipts\",\"sequence_id\":140,\"workitem_identifier\":\"PAY-140\"}",
+  "ok": true
+}

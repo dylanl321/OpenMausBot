@@ -1,4 +1,4 @@
-import { describe } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ConnectionContext } from "./types.ts";
 import { fakeConnector } from "../testing/fake-connector.ts";
 import { connectorContract } from "./contract-suite.ts";
@@ -23,5 +23,16 @@ describe("fake connector contract", () => {
     { ref: "document:doc-1", url: "https://fake.example/document/doc-1" },
     { ref: "link:ref-1", url: "https://fake.example/link/ref-1" },
     { ref: "change_request:482", url: "https://fake.example/change_request/482" },
-  ]);
+  ], { title: "fake.issue", output: "Created PAY-1", ok: true }, {
+    cursor: "1970-01-01T00:00:00.000Z",
+    webhook: { body: { id: "PAY-8@created", externalId: "PAY-8" } },
+  });
+});
+
+describe("fake connector query", () => {
+  it("lists untracked extras and accepts a bare issue key", async () => {
+    expect(fakeConnector.parseRef("PAY-2", ctx)).toEqual({ kind: "work_item", externalId: "PAY-2" });
+    const result = await fakeConnector.query!(ctx, "untracked");
+    expect(result.items.map(item => item.externalId)).toContain("PAY-2");
+  });
 });

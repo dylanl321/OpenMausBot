@@ -5,8 +5,9 @@ import type { Routine, RoutineRun } from "@/lib/routines";
 import { scheduleLabel } from "@/lib/schedule-label";
 import { latestRoutineRun, routineDateTime, routineNextLabel, routineRunLabel, routineRunTone, routineScheduleState } from "@/lib/routine-display";
 import type { Bot } from "@/state/store";
+import { ConvertToWatchHint } from "../watches/ConvertToWatchHint";
 
-export function RoutineList({ routines, runs, bots, loading, error, onOpen, onLogs }: {
+export function RoutineList({ routines, runs, bots, loading, error, onOpen, onLogs, onConvertToWatch }: {
   routines: Routine[];
   runs: RoutineRun[];
   bots?: Bot[];
@@ -14,6 +15,7 @@ export function RoutineList({ routines, runs, bots, loading, error, onOpen, onLo
   error?: boolean;
   onOpen: (routine: Routine) => void;
   onLogs: (routine: Routine) => void;
+  onConvertToWatch?: (routine: Routine) => void;
 }) {
   const sorted = [...routines].sort((a, b) => Number(b.enabled) - Number(a.enabled) || (a.nextRunAt ?? Infinity) - (b.nextRunAt ?? Infinity) || a.name.localeCompare(b.name));
   return <div className="space-y-3" aria-label={t("routines.list")}>
@@ -44,6 +46,7 @@ export function RoutineList({ routines, runs, bots, loading, error, onOpen, onLo
           {t("routines.skippedRuns", { count: routine.skippedRuns })}
           {routine.lastSkippedAt != null && <> · {t("routines.lastSkipped", { date: routineDateTime(routine.lastSkippedAt) })}</>}
         </p>}
+        {onConvertToWatch && <ConvertToWatchHint routine={routine} onConvert={onConvertToWatch} />}
       </article>;
     })}
   </div>;

@@ -1,16 +1,32 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { LinkKind, StatusCategory, SyncedItem } from "../../../shared/work-links.ts";
-import type { CaptureCall, CaptureRule, ConnectionContext, Connector } from "../types.ts";
+import type { SourceChange } from "../../../shared/watches.ts";
+import {
+  beforeFromSnapshot,
+  connectionActor,
+  encodeChangeCursor,
+  parseChangeCursor,
+  rememberSnapshot,
+  type SeenSnapshot,
+} from "../change-cursor.ts";
+import type { CaptureCall, CaptureRule, ConnectionContext, Connector, WatchScope } from "../types.ts";
 
 const ISSUE_KEY = /\b([A-Z][A-Z0-9_]+-\d+)\b/i;
 const COMMENT_REF = /^([A-Z][A-Z0-9_]+-\d+):(\d+)$/i;
 const COMMENT_ID = /comment(?:\s*id)?[:\s#]+(\d+)|\bid[:\s#]+(\d+)/i;
 const PREVIEW_CUT = "[… preview shortened]";
-const ISSUE_FIELDS = ["summary", "status", "assignee", "issuetype", "priority", "updated", "project"] as const;
+const ISSUE_FIELDS = ["summary", "status", "assignee", "issuetype", "priority", "updated", "project", "labels", "created"] as const;
+const CHANGE_FIELDS = [...ISSUE_FIELDS, "description", "comment"] as const;
 const COMMENT_FIELDS = [...ISSUE_FIELDS, "comment"] as const;
 const FETCH_BATCH = 100;
 
 const STATUS_DEFAULTS: Record<string, StatusCategory> = {
+  "to do": "todo",
+  todo: "todo",
+  backlog: "todo",
+  "in progress": "in_progress",
+  "in-progress": "in_progress",
+  done: "done",
   "in review": "in_review",
   review: "in_review",
   "ready for review": "in_review",
@@ -37,18 +53,44 @@ interface JiraComment {
   body?: unknown;
 }
 
+interface JiraPerson {
+  displayName?: string;
+  accountId?: string;
+  emailAddress?: string;
+  accountType?: string;
+}
+
+interface JiraChangelogItem {
+  field?: string;
+  fromString?: string | null;
+  toString?: string | null;
+}
+
+interface JiraHistory {
+  id?: string;
+  created?: string;
+  author?: JiraPerson;
+  items?: JiraChangelogItem[];
+}
+
 interface JiraIssue {
   key?: string;
   fields?: {
     summary?: string;
     status?: JiraStatus;
-    assignee?: { displayName?: string };
+    assignee?: JiraPerson;
+    creator?: JiraPerson;
+    reporter?: JiraPerson;
     issuetype?: { name?: string };
     priority?: { name?: string };
     project?: { key?: string };
+    labels?: string[];
+    created?: string;
     updated?: string;
+    description?: unknown;
     comment?: { comments?: JiraComment[] };
   };
+  changelog?: { histories?: JiraHistory[] };
 }
 
 function editionOf(ctx: ConnectionContext): "cloud" | "datacenter" {
@@ -164,6 +206,9 @@ function detailsOf(issue: JiraIssue): SyncedItem["details"] {
   if (fields.priority?.name) details.priority = fields.priority.name;
   if (fields.assignee?.displayName) details.assignee = fields.assignee.displayName;
   if (fields.project?.key) details.project = fields.project.key;
+  if (fields.labels?.length) details.labels = fields.labels.join(",");
+  const description = adfText(fields.description).slice(0, 2_000);
+  if (description) details.description = description;
   return Object.keys(details).length ? details : undefined;
 }
 
@@ -325,6 +370,228 @@ function captureIssue(call: CaptureCall, title?: string, details?: Record<string
   return { externalId: key, title: title ?? key, details };
 }
 
+interface JiraAccount {
+  accountId?: string;
+  username?: string;
+  email?: string;
+  displayName?: string;
+  bot?: boolean;
+}
+
+function jqlDate(ms: number): string {
+  const date = new Date(ms);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
+}
+
+function watchJql(scope: WatchScope, since: number): string {
+  const query = typeof scope.query === "string" && scope.query.trim() ? `(${scope.query.trim()})` : "updated is not EMPTY";
+  if (!since) return `${query} ORDER BY updated ASC`;
+  return `${query} AND updated > "${jqlDate(since)}" ORDER BY updated ASC`;
+}
+
+function splitLabels(value: string | null | undefined): string[] {
+  return (value ?? "").split(/[\s,]+/).map(entry => entry.trim()).filter(Boolean);
+}
+
+function actorOf(person: JiraPerson | undefined, account?: JiraAccount) {
+  return connectionActor({
+    name: person?.displayName,
+    accountId: person?.accountId,
+    email: person?.emailAddress,
+    accountType: person?.accountType,
+    account,
+  });
+}
+
+function changeFields(item: SyncedItem, extra: Record<string, string | number | boolean | string[]> = {}): SourceChange["fields"] {
+  return {
+    ...(item.details?.project ? { project: String(item.details.project) } : {}),
+    ...(item.details?.priority ? { priority: String(item.details.priority) } : {}),
+    ...(item.details?.assignee ? { assignee: String(item.details.assignee) } : {}),
+    ...(item.details?.labels ? { labels: String(item.details.labels).split(",") } : {}),
+    ...(item.state?.category ? { "state.category": item.state.category } : {}),
+    ...(item.state?.label ? { "state.label": item.state.label } : {}),
+    ...extra,
+  };
+}
+
+function issueChange(
+  item: SyncedItem,
+  ctx: ConnectionContext,
+  type: SourceChange["type"],
+  id: string,
+  at: number,
+  actor: { name: string; isBot: boolean },
+  before?: SourceChange["before"],
+  extra: Record<string, string | number | boolean | string[]> = {},
+): SourceChange {
+  return {
+    id,
+    type,
+    connectionId: ctx.connectionId,
+    item,
+    ...(before ? { before } : {}),
+    actor,
+    fields: changeFields(item, extra),
+    at,
+  };
+}
+
+function changesFromIssue(
+  issue: JiraIssue,
+  item: SyncedItem,
+  ctx: ConnectionContext,
+  since: number,
+  seen: SeenSnapshot | undefined,
+  account?: JiraAccount,
+): SourceChange[] {
+  const key = item.externalId;
+  if (!key) return [];
+  const created = when(issue.fields?.created);
+  const updated = when(issue.fields?.updated);
+  const out: SourceChange[] = [];
+  const fallbackBefore = beforeFromSnapshot(seen);
+  if (issue.fields?.created && created > since) {
+    out.push(issueChange(item, ctx, "item.created", `${key}@created`, created, actorOf(issue.fields?.creator ?? issue.fields?.reporter, account), fallbackBefore));
+  }
+  for (const history of issue.changelog?.histories ?? []) {
+    const at = when(history.created);
+    if (at <= since) continue;
+    const actor = actorOf(history.author, account);
+    const hid = history.id ?? String(at);
+    const items = history.items ?? [];
+    const status = items.find(entry => entry.field === "status");
+    const assignee = items.find(entry => entry.field === "assignee");
+    const labels = items.find(entry => entry.field === "labels");
+    if (status) {
+      out.push(issueChange(item, ctx, "item.state_changed", `${key}@changelog:${hid}:status`, at, actor, {
+        state: mapStatus({ name: status.fromString ?? undefined }, ctx),
+        stateLabel: status.fromString ?? undefined,
+      }));
+    }
+    if (assignee) {
+      out.push(issueChange(item, ctx, "item.assigned", `${key}@changelog:${hid}:assignee`, at, actor, {
+        assignee: assignee.fromString ?? undefined,
+      }, { assignee: assignee.toString ?? item.details?.assignee ?? "" }));
+    }
+    if (labels) {
+      out.push(issueChange(item, ctx, "item.labeled", `${key}@changelog:${hid}:labels`, at, actor, {
+        labels: splitLabels(labels.fromString),
+      }, { labels: splitLabels(labels.toString) }));
+    }
+    if (!status && !assignee && !labels && items.length) {
+      out.push(issueChange(item, ctx, "item.updated", `${key}@changelog:${hid}:updated`, at, actor, fallbackBefore));
+    }
+  }
+  for (const comment of issue.fields?.comment?.comments ?? []) {
+    const at = when(comment.created);
+    if (at <= since || !comment.id) continue;
+    out.push({
+      id: `${key}@comment:${comment.id}`,
+      type: "comment.added",
+      connectionId: ctx.connectionId,
+      item: syncedComment(issue, comment.id, ctx, `${key}:${comment.id}`),
+      actor: actorOf(issue.fields?.assignee, account),
+      fields: changeFields(item, { issue: key }),
+      at,
+    });
+  }
+  if (!out.length && updated > since) {
+    out.push(issueChange(item, ctx, "item.updated", `${key}@updated:${issue.fields?.updated ?? updated}`, updated, actorOf(issue.fields?.assignee, account), fallbackBefore));
+  }
+  return out;
+}
+
+function webhookRecord(body: unknown): Record<string, unknown> | null {
+  if (!body) return null;
+  if (typeof body === "string") {
+    try {
+      const parsed = JSON.parse(body) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+    } catch {
+      return null;
+    }
+  }
+  return typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : null;
+}
+
+async function loadMyself(ctx: ConnectionContext): Promise<JiraAccount | undefined> {
+  const path = editionOf(ctx) === "datacenter" ? "/rest/api/2/myself" : "/rest/api/3/myself";
+  const result = await jiraRequest(ctx, path);
+  if (!result.ok || !result.body || typeof result.body !== "object") return undefined;
+  const me = result.body as JiraPerson & { accountType?: string };
+  return {
+    accountId: me.accountId,
+    email: me.emailAddress,
+    displayName: me.displayName,
+    bot: me.accountType === "app",
+  };
+}
+
+async function searchChanges(ctx: ConnectionContext, jql: string, cursor?: string): Promise<JiraIssue[]> {
+  if (editionOf(ctx) === "datacenter") {
+    const params = new URLSearchParams({
+      jql,
+      maxResults: "50",
+      fields: CHANGE_FIELDS.join(","),
+      expand: "changelog",
+    });
+    if (cursor) params.set("startAt", cursor);
+    const result = await jiraRequest(ctx, `/rest/api/2/search?${params}`);
+    if (!result.ok) throw new Error(result.error);
+    const issues = (result.body as { issues?: JiraIssue[] } | null)?.issues;
+    return Array.isArray(issues) ? issues : [];
+  }
+  const result = await jiraRequest(ctx, "/rest/api/3/search/jql", {
+    method: "POST",
+    body: JSON.stringify({
+      jql,
+      maxResults: 50,
+      fields: [...CHANGE_FIELDS],
+      expand: "changelog",
+      ...(cursor ? { nextPageToken: cursor } : {}),
+    }),
+  });
+  if (!result.ok) throw new Error(result.error);
+  const issues = (result.body as { issues?: JiraIssue[] } | null)?.issues;
+  return Array.isArray(issues) ? issues : [];
+}
+
+function webhookChangesFrom(body: unknown, ctx: ConnectionContext, account?: JiraAccount): SourceChange[] {
+  const record = webhookRecord(body);
+  if (!record) return [];
+  const issue = record.issue as JiraIssue | undefined;
+  const item = issue ? syncedIssue(issue, ctx) : null;
+  if (!issue || !item?.externalId) return [];
+  const event = typeof record.webhookEvent === "string" ? record.webhookEvent : "";
+  const user = record.user as JiraPerson | undefined;
+  const actor = actorOf(user ?? issue.fields?.assignee, account);
+  const changelog = record.changelog as { id?: string; items?: JiraChangelogItem[] } | undefined;
+  const comment = record.comment as JiraComment | undefined;
+  if (event === "jira:issue_created" || event.endsWith("issue_created")) {
+    return [issueChange(item, ctx, "item.created", `${item.externalId}@created`, when(issue.fields?.created ?? issue.fields?.updated), actor)];
+  }
+  if (comment?.id && (event.includes("comment") || record.issue_event_type_name === "issue_commented")) {
+    return [{
+      id: `${item.externalId}@comment:${comment.id}`,
+      type: "comment.added",
+      connectionId: ctx.connectionId,
+      item: syncedComment(issue, String(comment.id), ctx, `${item.externalId}:${comment.id}`),
+      actor,
+      fields: changeFields(item, { issue: item.externalId }),
+      at: when(comment.created ?? issue.fields?.updated),
+    }];
+  }
+  if (changelog?.id && changelog.items?.length) {
+    return changesFromIssue({
+      ...issue,
+      changelog: { histories: [{ id: changelog.id, created: typeof record.timestamp === "number" ? new Date(record.timestamp).toISOString() : issue.fields?.updated, author: user, items: changelog.items }] },
+    }, item, ctx, 0, undefined, account);
+  }
+  return [issueChange(item, ctx, "item.updated", `${item.externalId}@updated:${issue.fields?.updated ?? Date.now()}`, when(issue.fields?.updated), actor)];
+}
+
 const captureRules: CaptureRule[] = [
   {
     match: { tool: /jira[_-]?(?:add|create)[_-]?.*comment|jira[_-]?comment[_-]?(?:add|create)|JIRA_ADD_COMMENT/i },
@@ -403,6 +670,13 @@ export const jiraConnector: Connector = {
       Canceled: "cancelled",
       "Won't Do": "cancelled",
       Obsolete: "cancelled",
+    },
+    watch: {
+      scopes: [
+        { key: "query", label: "JQL", type: "string", help: "Jira Query Language scope, e.g. project = PAY AND labels = bot-ready" },
+        { key: "project", label: "Project", type: "string", help: "Optional project key used when JQL is empty" },
+      ],
+      events: ["item.created", "item.updated", "item.state_changed", "item.assigned", "item.labeled", "comment.added"],
     },
   },
   async test(ctx) {
@@ -493,6 +767,43 @@ export const jiraConnector: Connector = {
     const refs = webhookRefs(parsed);
     if (refs.length) ctx.log(`Jira webhook named ${refs.length} item(s).`);
     return refs;
+  },
+  async changes(ctx, scope: WatchScope, cursor: string | null) {
+    const parsed = parseChangeCursor(cursor);
+    const project = typeof scope.project === "string" && /^[A-Z][A-Z0-9_]+$/i.test(scope.project)
+      ? `project = ${scope.project.toUpperCase()}` : "";
+    const scoped: WatchScope = {
+      ...scope,
+      query: typeof scope.query === "string" && scope.query.trim() ? scope.query : project,
+    };
+    const account = await loadMyself(ctx);
+    const issues = await searchChanges(ctx, watchJql(scoped, parsed.since));
+    const seen = new Map(parsed.seen);
+    const changes = issues.flatMap(issue => {
+      const item = syncedIssue(issue, ctx);
+      if (!item || when(issue.fields?.updated) <= parsed.since) return [];
+      const emitted = changesFromIssue(issue, item, ctx, parsed.since, seen.get(item.externalId!), account);
+      rememberSnapshot(seen, item);
+      return emitted;
+    }).sort((left, right) => left.at - right.at);
+    const latest = Math.max(parsed.since, ...issues.map(issue => when(issue.fields?.updated)));
+    if (changes.length) ctx.log(`Jira changes named ${changes.length} item(s).`);
+    return {
+      changes,
+      cursor: encodeChangeCursor(latest || Date.now(), seen, issues.flatMap(issue => issue.key ? [issue.key.toUpperCase()] : [])),
+    };
+  },
+  async webhookChanges(ctx, headers, body) {
+    const secret = ctx.secret("webhookSecret");
+    const raw = typeof body === "string" ? body : JSON.stringify(body);
+    if (secret && !verifyJiraWebhook(secret, headers.get("x-hub-signature"), raw)) {
+      ctx.log("Ignored a Jira webhook with a bad signature.");
+      return [];
+    }
+    const account = await loadMyself(ctx);
+    const changes = webhookChangesFrom(body, ctx, account);
+    if (changes.length) ctx.log(`Jira webhook changes named ${changes.length} item(s).`);
+    return changes;
   },
   capture: captureRules,
 };

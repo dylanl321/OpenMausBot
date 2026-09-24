@@ -8,12 +8,40 @@ import {
   type TaskEvent,
   type WorkCriterion,
 } from "../../../shared/work-links";
+import type { SourceChangeType } from "../../../shared/watches";
+
+export interface SettingField {
+  key: string;
+  label: string;
+  type: "string" | "number" | "boolean" | "enum";
+  enum?: string[];
+  help?: string;
+}
+
+export interface TaskConnectionListing {
+  id: string;
+  connectorId: string;
+  label: string;
+  settings: Record<string, string | number | boolean>;
+  sections: string[];
+  enabled: boolean;
+  secretKeys?: string[];
+}
+
+export interface TaskConnectorSecret {
+  key: string;
+  label: string;
+  help?: string;
+}
 
 export interface TaskConnectorManifest {
   id: string;
   name: string;
   icon?: string;
   kinds?: LinkKind[];
+  settings?: SettingField[];
+  secrets?: TaskConnectorSecret[];
+  watch?: { scopes: SettingField[]; events: SourceChangeType[] };
 }
 
 export const EVENT_FILTERS = ["all", "output", "state_change", "comment", "decision", "handoff", "criterion", "lifecycle"] as const;

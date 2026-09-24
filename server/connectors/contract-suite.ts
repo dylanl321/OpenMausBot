@@ -1,11 +1,13 @@
 import { expect, it } from "vitest";
-import type { CaptureCall, ConnectionContext, Connector } from "./types.ts";
+import { cursorMovesForward } from "./change-cursor.ts";
+import type { CaptureCall, ConnectionContext, Connector, WatchScope } from "./types.ts";
 
 export function connectorContract(
   connector: Connector,
   ctx: ConnectionContext,
   samples: { ref: string; url: string }[],
   capture: CaptureCall = { title: "fake.issue", output: "Created PAY-1", ok: true },
+  changes?: { scope?: WatchScope; cursor?: string | null; webhook?: { headers?: Headers; body: unknown } },
 ) {
   it(`${connector.manifest.id} publishes a manifest the settings screen can render`, () => {
     expect(connector.manifest.id).toMatch(/^[a-z][a-z0-9-]*$/);
@@ -18,6 +20,10 @@ export function connectorContract(
     const declared = new Set(connector.manifest.secrets.map(secret => secret.key));
     expect(() => ctx.secret("not-declared")).toThrow(/not declared/);
     for (const key of declared) expect(() => ctx.secret(key)).not.toThrow();
+    if (connector.changes) {
+      expect(connector.manifest.watch?.scopes.length).toBeGreaterThan(0);
+      expect(connector.manifest.watch?.events.length).toBeGreaterThan(0);
+    }
   });
 
   it(`${connector.manifest.id} round-trips parseRef and urlPatterns`, () => {
@@ -53,4 +59,33 @@ export function connectorContract(
     expect(result.ok).toBe(true);
     expect(fetches.length).toBeGreaterThan(0);
   });
+
+  if (connector.changes) {
+    it(`${connector.manifest.id} change feed is idempotent and cursors only move forward`, async () => {
+      const scope = changes?.scope ?? {};
+      const cursor = changes?.cursor ?? "1970-01-01T00:00:00.000Z";
+      const first = await connector.changes!(ctx, scope, cursor);
+      expect(cursorMovesForward(cursor ?? "", first.cursor)).toBe(true);
+      const again = await connector.changes!(ctx, scope, cursor);
+      expect(again.changes.map(change => change.id)).toEqual(first.changes.map(change => change.id));
+      expect(cursorMovesForward(first.cursor, again.cursor)).toBe(true);
+      const later = await connector.changes!(ctx, scope, first.cursor);
+      const firstIds = new Set(first.changes.map(change => change.id));
+      expect(later.changes.every(change => !firstIds.has(change.id))).toBe(true);
+      expect(cursorMovesForward(first.cursor, later.cursor)).toBe(true);
+    });
+  }
+
+  if (connector.changes && connector.webhookChanges && changes?.webhook) {
+    it(`${connector.manifest.id} webhook and poll produce the same SourceChange.id`, async () => {
+      const scope = changes.scope ?? {};
+      const cursor = changes.cursor ?? "1970-01-01T00:00:00.000Z";
+      const polled = await connector.changes!(ctx, scope, cursor);
+      const headers = changes.webhook!.headers ?? new Headers();
+      const hooked = await connector.webhookChanges!(ctx, headers, changes.webhook!.body);
+      expect(hooked.length).toBeGreaterThan(0);
+      const pollIds = new Set(polled.changes.map(change => change.id));
+      expect(hooked.some(change => pollIds.has(change.id))).toBe(true);
+    });
+  }
 }

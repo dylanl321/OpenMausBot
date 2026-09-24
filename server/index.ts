@@ -376,6 +376,10 @@ import { RepeatDetector, callKey } from "./repeat-detector.ts";
 import { redactSecretsInText } from "./redact.ts";
 import * as vps from "./vps-computer.ts";
 import { RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
+import { WatchManager } from "./watches.ts";
+import { summarizeChanges } from "../shared/watches.ts";
+import type { SourceChange, Watch, WatchInput } from "../shared/watches.ts";
+import { applyWatchToWork, ensureTasksFromChanges } from "./watch-actions.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
 import { BrowserRuntime } from "./browser-runtime.ts";
@@ -520,12 +524,14 @@ import { ROUTES, dispatchRoutes } from "./routes/table.ts";
 import { createHostedSlackRoutes } from "./routes/hosted-slack.ts";
 import { createBedrockRoutes } from "./routes/bedrock.ts";
 import { createTaskConnectionRoutes } from "./routes/task-connections.ts";
+import { createGroupTaskBoardRoutes } from "./routes/group-task-board.ts";
+import { createWorkItemAnswerRoutes } from "./routes/work-item-answer.ts";
 import { createWorkEventRoutes } from "./routes/work-events.ts";
 import { createWorkItemLinkRoutes } from "./routes/work-item-links.ts";
 import { WorkCapture } from "./connectors/capture.ts";
 import { linkId, observedLink } from "./connectors/types.ts";
 import { connectorById } from "./connectors/registry.ts";
-import { connectionContext, parseStoredConnections, sourceLinkedItem } from "./task-connections.ts";
+import { connectionContext, parseStoredConnections, queryConnection, sourceLinkedItem } from "./task-connections.ts";
 import { WorkEvents } from "./work-events.ts";
 import { describeBedrockSettings } from "./drivers/bedrock.ts";
 import { mergeBedrockConfig, publicBedrockSettings } from "./bedrock-config.ts";
@@ -3796,6 +3802,7 @@ function publicGroupState(group: GroupRecord): WireGroup {
   try { usage = groupUsageReader.forThread(group.threadId); } catch { /* accounting must not block chat */ }
   return {
     ...group,
+    taskBoard: group.taskBoard ?? null,
     usage: usage ?? null,
     busyThreadId: [...roomHandoffs.nodes.values()].find(node => node.groupId === group.id && node.status === "running" && node.botId === group.busyBotId)?.threadId,
     tasks: group.tasks?.map(task => {
@@ -5021,6 +5028,7 @@ function isInternalTurn(threadId: string): boolean {
 // such a turn finds in its thread may be hours old and its author gone.
 const personAskAt = new Map<string, number>();
 let routines: RoutineManager | null = null;
+let watches: WatchManager | null = null;
 let calendarCalls: CalendarCallManager | null = null;
 const localVmOwnerBusy = (botId: string) => store.bot(botId)?.busy === true;
 const localVmLeases = new LocalVmLeasePool(30 * 60_000);
@@ -8637,6 +8645,11 @@ _loadPending();
 
 routines = new RoutineManager({
   emit: broadcast,
+  onScheduleTick: (now) => watches?.checkDue(now),
+  watchHasUnconsumedMatches: (watchId, consumerId) => watches?.hasUnconsumedMatches(watchId, consumerId) ?? false,
+  watchConsumeMatches: (watchId, consumerId) => watches?.consumeMatches(watchId, consumerId),
+  onWatchUnchanged: (watchId) => watches?.recordUnchanged(watchId),
+  nextDueWatch: () => watches?.nextDueAt(),
   hasPendingDelegations: (threadId) => pendingThreads().includes(threadId) ||
     [...delegationWatch.values()].some((watch) => watch.sourceThreadId === threadId) ||
     pendingDelegationWakes.has(threadId) || [...workCoordination.items.records.values()].some(item => item.sources.some(source => source.threadId === threadId)),
@@ -9341,6 +9354,40 @@ function resolveAndSendProfile(
 // Webhook definitions are independent from calendar schedules, but every
 // delivery joins the same RoutineManager queue. That keeps unattended work
 // ordered behind a busy MAUS and gives webhook runs the same durable receipts.
+function applyWatchChanges(changes: SourceChange[], bumpInput: boolean) {
+  applyWatchToWork({
+    items: workCoordination.items,
+    events: workEvents,
+    changes,
+    bumpInput,
+    onLink(item, link) {
+      broadcast({ kind: "work.link", link, workItem: { groupId: item.groupId, threadId: item.threadId, coordinatorBotId: item.coordinatorBotId } });
+    },
+    onEvent(item, event) {
+      broadcast({ kind: "work.event", event, workItem: { groupId: item.groupId, threadId: item.threadId, coordinatorBotId: item.coordinatorBotId } });
+    },
+    onWake(item) {
+      try {
+        markUnattended(item.coordinatorBotId, item.threadId);
+        workCoordination.start(item);
+        workCoordination.publish(item);
+      } catch (error) {
+        console.error("watch task_update:", error);
+      }
+    },
+  });
+}
+
+function watchNotifyBot(watch: Watch) {
+  const action = watch.action;
+  if (action.type === "notify" && action.botId) return store.bot(action.botId);
+  if (action.type === "run_routine") {
+    const routine = routines!.listRoutines().find((item) => item.id === action.routineId);
+    if (routine) return store.bot(routine.botId);
+  }
+  return store.bots.find((bot) => !bot.hidden) ?? null;
+}
+
 const webhooks = new WebhookManager({
   emit: broadcast,
   botState: unattendedDispatchState,
@@ -9348,6 +9395,7 @@ const webhooks = new WebhookManager({
   findRun: (webhookId, deliveryId) => routines!.webhookRunReceipt(webhookId, deliveryId),
   cancelQueued: (webhookId, message) => routines!.cancelQueuedWebhook(webhookId, message),
   pendingRuns: (webhookId) => routines!.activeWebhookRunCount(webhookId),
+  onDelivery: (input) => { void watches?.ingestWebhook(input); },
   // delivery:"post" webhooks land in the bot's main chat as the bot's own message.
   post: (botId, text) => {
     const bot = store.bot(botId);
@@ -9374,6 +9422,84 @@ const webhookIngressStatus = () => ({
   available: Boolean(webhookIngress),
   baseUrl: webhookIngress?.baseUrl ?? `http://127.0.0.1:${WEBHOOK_PORT}`,
   ...(webhookIngressError ? { error: webhookIngressError } : {}),
+});
+
+watches = new WatchManager({
+  emit: broadcast,
+  routine: (id) => routines!.listRoutines().find((routine) => routine.id === id) ?? null,
+  enqueueRoutine: (input) => routines!.enqueueWatch(input),
+  webhookExists: (id) => Boolean(webhooks.list().find((webhook) => webhook.id === id)),
+  connectionChanges: async (connectionId, scope, cursor) => {
+    const connection = taskConnectionList().find((candidate) => candidate.id === connectionId && candidate.enabled);
+    if (!connection) throw new Error("The assigned connection no longer exists");
+    const connector = connectorById(connection.connectorId);
+    if (!connector?.changes) throw new Error("This connection has no change feed");
+    return connector.changes(connectionContext(connection), scope, cursor);
+  },
+  connectionQuery: async (connectionId, query) => {
+    const connection = taskConnectionList().find((candidate) => candidate.id === connectionId && candidate.enabled);
+    if (!connection) throw new Error("The assigned connection no longer exists");
+    const result = await queryConnection(connection, query);
+    return result.items;
+  },
+  notify: (watch, changes, action) => {
+    const bot = watchNotifyBot(watch);
+    if (!bot) return;
+    const notification = buildNotification("done", bot, action.threadId ?? bot.threadId, `${watch.name}: ${summarizeChanges(changes)}`);
+    if (notification) broadcast({ kind: "notify", notification });
+  },
+  record: (_watch, changes) => applyWatchChanges(changes, false),
+  taskUpdate: (_watch, changes) => applyWatchChanges(changes, true),
+  ensureTask: async (watch, changes, action) => {
+    await ensureTasksFromChanges({
+      watch,
+      changes,
+      action,
+      items: workCoordination.items,
+      scopeOf: (bot) => sectionKey(store.bot(bot.id)?.section),
+      resolveCoordinator: (_watch, chosen) => {
+        const bot = (chosen.coordinatorBotId && store.bot(chosen.coordinatorBotId))
+          || store.bots.find((candidate) => !candidate.hidden)
+          || null;
+        return bot && !bot.hidden ? bot : null;
+      },
+      resolveTopic: (scope, name, bot) => {
+        const candidates = store.groups.filter((group) => !group.dm && group.name === name
+          && sectionKey(group.section) === scope && group.memberIds.includes(bot.id));
+        const group = candidates[0] ?? store.createGroup(name, [bot.id], false, bot.section, {
+          bulletin: "Shared tasks, decisions and results. Worker execution stays in linked task-specific conversations.",
+          defaultResponder: { kind: "member", botId: bot.id },
+          completed: true,
+        });
+        const unused = store.groupTasks(group.id).find((task) => !task.workItemId && !store.messagesFor(task.threadId).length);
+        const threadId = unused?.threadId ?? store.createGroupTask(group.id, name, false)?.threadId ?? group.threadId;
+        return { groupId: group.id, threadId };
+      },
+      sourceLink: (scope, identity) => sourceLinkedItem(taskConnectionList(), scope, identity),
+      publish: (item) => workCoordination.publish(item),
+      onCreated: (item) => {
+        const bot = store.bot(item.coordinatorBotId);
+        store.linkGroupWorkItem(item.groupId, item.threadId, item.id);
+        store.renameGroupTask(item.groupId, item.threadId, item.title);
+        if (bot) {
+          store.appendMessage(item.threadId, {
+            role: "bot",
+            kind: "text",
+            from: { botId: bot.id, name: bot.name, color: bot.color },
+            text: `${item.title}\n\n${item.objective}\n\nAcceptance criteria:\n${item.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n")}`,
+          });
+        }
+        const group = store.group(item.groupId);
+        if (group) broadcast({ kind: "group", group: publicGroupState(group) });
+      },
+    });
+  },
+  raiseAttention: (watch, reason) => {
+    const bot = watchNotifyBot(watch);
+    if (!bot) return;
+    const notification = buildNotification("incident", bot, bot.threadId, reason);
+    if (notification) broadcast({ kind: "notify", notification }, { adminOnly: true });
+  },
 });
 
 // ── config hot-reload ─────────────────────────────────────────────────
@@ -12436,6 +12562,31 @@ ROUTES.push(createTaskConnectionRoutes({
     saveConfig({ taskConnections: connections });
     cfg.taskConnections = connections;
   },
+  sectionForGroup: (groupId) => {
+    const group = store.group(groupId);
+    if (!group) return undefined;
+    return group.section ?? "";
+  },
+}));
+ROUTES.push(createGroupTaskBoardRoutes({
+  group: id => store.group(id),
+  connections: taskConnectionList,
+  save: (groupId, taskBoard) => {
+    const updated = store.patchGroup(groupId, { taskBoard });
+    if (updated && !taskBoard) delete updated.taskBoard;
+    if (updated) broadcast({ kind: "group", group: publicGroupState(updated) });
+    return updated;
+  },
+}));
+ROUTES.push(createWorkItemAnswerRoutes({
+  item: id => workCoordination.items.records.get(id),
+  canSee: (auth, item) => workItemVisible(item, visibleTo(viewerFor(auth))),
+  answer: (id, input) => {
+    const item = workCoordination.items.records.get(id);
+    if (!item) throw new Error("No such shared task");
+    store.appendMessage(item.threadId, { role: "user", kind: "text", text: input.text });
+    return { workItem: workCoordination.update(id, { expectedRevision: input.expectedRevision, reopen: true, detail: input.text }) };
+  },
 }));
 ROUTES.push(createWorkEventRoutes({
   item: id => workCoordination.items.records.get(id),
@@ -12660,6 +12811,25 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     // name and icon before anyone has a session, and it holds nothing secret.
     if (method === "GET" && path === "/api/brand" && !gate.auth) {
       return json(res, 200, loadBrand());
+    }
+    const connectorWebhook = /^\/api\/connectors\/([a-z][a-z0-9-]{0,63})\/webhook$/.exec(path);
+    if (method === "POST" && connectorWebhook) {
+      const connection = taskConnectionList().find((candidate) => candidate.id === connectorWebhook[1] && candidate.enabled);
+      const connector = connection ? connectorById(connection.connectorId) : undefined;
+      if (!connection || (!connector?.webhook && !connector?.webhookChanges)) {
+        return json(res, 404, { error: "no such connection" });
+      }
+      const body = await readBody(req);
+      const headers = new Headers();
+      for (const [key, value] of Object.entries(req.headers)) {
+        if (typeof value === "string") headers.set(key, value);
+        else if (Array.isArray(value) && value[0]) headers.set(key, value.join(","));
+      }
+      const ctx = connectionContext(connection);
+      const refs = connector.webhook ? await connector.webhook(ctx, headers, body) : [];
+      const changes = connector.webhookChanges ? await connector.webhookChanges(ctx, headers, body) : [];
+      if (changes.length) await watches?.ingestConnectionChanges(connection.id, changes);
+      return json(res, 200, { ok: true, refs: refs.length, changes: changes.length });
     }
     if (!gate.auth) return json(res, gate.status, { error: gate.error });
     const auth = gate.auth;
@@ -14994,6 +15164,64 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         : json(res, 404, { error: "no such webhook" });
     }
 
+    // ── watches (engine + built-in sources; editor UI is a later slice) ──
+    const watchVisible = (watch: Watch) => {
+      const action = watch.action;
+      if (action.type === "run_routine") {
+        const routine = routines!.listRoutines().find((item) => item.id === action.routineId);
+        return !routine || routineVisible(routine, visible);
+      }
+      if (action.type === "notify" && action.botId) return visible.bot(action.botId);
+      if (action.type === "ensure_task" && action.coordinatorBotId) return visible.bot(action.coordinatorBotId);
+      return true;
+    };
+    if (path === "/api/watches" && method === "GET") {
+      return json(res, 200, { watches: watches!.list().filter(watchVisible) });
+    }
+    if (path === "/api/watches" && method === "POST") {
+      return json(res, 201, { watch: watches!.create(await readBody(req)) });
+    }
+    if (path === "/api/watches/dry-run" && method === "POST") {
+      const body = await readBody(req).catch(() => ({})) as Record<string, unknown>;
+      try {
+        return json(res, 200, await watches!.dryRunInput(body as unknown as WatchInput, {
+          payload: body.payload,
+          eventName: typeof body.eventName === "string" ? body.eventName : undefined,
+          sinceDays: typeof body.sinceDays === "number" ? body.sinceDays : undefined,
+          backfill: body.backfill === true,
+        }));
+      } catch (error) {
+        return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    let watchMatch = path.match(/^\/api\/watches\/([\w-]+)\/(dry-run|check)$/);
+    if (watchMatch && method === "POST") {
+      const existing = watches!.get(watchMatch[1]);
+      if (!existing) return json(res, 404, { error: "no such watch" });
+      if (watchMatch[2] === "dry-run") {
+        const body = await readBody(req).catch(() => ({})) as Record<string, unknown>;
+        const result = await watches!.dryRun(watchMatch[1], {
+          payload: body.payload,
+          eventName: typeof body.eventName === "string" ? body.eventName : undefined,
+          sinceDays: typeof body.sinceDays === "number" ? body.sinceDays : undefined,
+          backfill: body.backfill === true,
+        });
+        return json(res, 200, result);
+      }
+      const checked = await watches!.check(watchMatch[1]);
+      return json(res, 200, { watch: checked });
+    }
+    watchMatch = path.match(/^\/api\/watches\/([\w-]+)$/);
+    if (watchMatch && method === "PATCH") {
+      const watch = watches!.update(watchMatch[1], await readBody(req));
+      return watch ? json(res, 200, { watch }) : json(res, 404, { error: "no such watch" });
+    }
+    if (watchMatch && method === "DELETE") {
+      return watches!.remove(watchMatch[1])
+        ? json(res, 200, { ok: true })
+        : json(res, 404, { error: "no such watch" });
+    }
+
     // ── events stream ──
     // Owner-only (default-deny in request-auth). Never mix login frames into
     // the general events feed, which is also visible to client-only devices.
@@ -15604,6 +15832,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return json(res, 200, createTeamBackup(store, routines!.listRoutines(), name, workCoordination.items, {
             events: workEvents.exportPortable(exportedItems.map(item => item.id)),
             connections: taskConnectionList().map(({ secrets, ...connection }) => ({ ...connection, secretKeys: Object.keys(secrets).sort() })),
+            watches: watches!.list(),
           }));
         }
         if (body.format === "package") {
@@ -15750,6 +15979,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           const imported = importTeamBackup(store, routines!, body, await defaultSelection(), {
             visibility: importVisibility, workItems: workCoordination.items,
             importEvents: (workItemId, events) => workEvents.importEvents(workItemId, events as Parameters<WorkEvents["importEvents"]>[1]),
+            watches: watches!,
           });
           if (imported.taskConnections.length) {
             const current = taskConnectionList();

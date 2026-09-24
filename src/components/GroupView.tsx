@@ -4,7 +4,7 @@
 // default responder; @mentions override that routing.
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { activeLocale, t } from "@/lib/i18n";
-import { ArrowDown, Check, ChevronDown, ChevronRight, Folder, FolderOpen, Loader2, MessageSquareReply, Pin, PinOff, Plus, Search, X } from "lucide-react";
+import { ArrowDown, Check, ChevronDown, ChevronRight, Folder, FolderOpen, LayoutGrid, Loader2, MessageSquare, MessageSquareReply, Pin, PinOff, Plus, Search, X } from "lucide-react";
 import {
   api,
   useStore,
@@ -38,6 +38,7 @@ import { SecretRequestCard } from "./SecretRequestCard";
 import { hasRoutineExecutionTask, RoutineRunCard } from "./RoutineRunCard";
 import { GoalRunCard } from "./GoalRunCard";
 import { TaskView } from "./work/TaskView";
+import { TopicBoard } from "./work/TopicBoard";
 import { AttachmentGallery, MessageAttachmentGallery } from "./AttachmentGallery";
 import { OptionCard } from "./OptionCard";
 import { GroupCallButton, GroupCallOverlay } from "./GroupCallView";
@@ -915,6 +916,12 @@ export function GroupView({ group: suppliedGroup }: { group: Group }) {
   const [folderOpen, setFolderOpen] = useState(false);
   const [membersOpen, setMembersOpen] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
+  const workCount = suppliedGroup.tasks?.filter(task => task.workItem).length ?? 0;
+  const [pane, setPane] = useState<"board" | "chat">(() =>
+    !suppliedGroup.dm && (workCount > 0 || Boolean(suppliedGroup.taskBoard)) ? "board" : "chat");
+  useEffect(() => {
+    setPane(!suppliedGroup.dm && ((suppliedGroup.tasks?.some(task => task.workItem) ?? false) || Boolean(suppliedGroup.taskBoard)) ? "board" : "chat");
+  }, [suppliedGroup.id]);
   const { replyTo, selectReply, clearReply, consumeReply, restoreReply } = useReplyDraft(
     group.threadId,
     `group:${group.id}:${group.threadId}`,
@@ -1156,6 +1163,24 @@ export function GroupView({ group: suppliedGroup }: { group: Group }) {
         <div className="flex min-w-0 items-center gap-2" style={headerNoDragStyle}>
           <span className="truncate text-[15px] font-semibold text-ink">{group.name}</span>
           {!setupPending && !group.dm && <GroupTaskPicker group={group} />}
+          {!setupPending && !group.dm && (
+            <div className="flex shrink-0 rounded-md border border-hairline/40 p-0.5">
+              <button type="button" aria-pressed={pane === "board"} data-topic-pane="board"
+                onClick={() => setPane("board")}
+                className={cn("flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px]", pane === "board" ? "bg-raised text-ink" : "text-ink-secondary hover:text-ink")}
+                title={t("work.board")}>
+                <LayoutGrid size={12} aria-hidden="true" />
+                {t("work.board")}
+              </button>
+              <button type="button" aria-pressed={pane === "chat"} data-topic-pane="chat"
+                onClick={() => setPane("chat")}
+                className={cn("flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px]", pane === "chat" ? "bg-raised text-ink" : "text-ink-secondary hover:text-ink")}
+                title={t("work.chat")}>
+                <MessageSquare size={12} aria-hidden="true" />
+                {t("work.chat")}
+              </button>
+            </div>
+          )}
         </div>
         <div
           className="flex max-w-full flex-wrap items-center gap-1.5"
@@ -1211,12 +1236,17 @@ export function GroupView({ group: suppliedGroup }: { group: Group }) {
         </div>
       </div>
 
-      {findOpen && <ChatFindBar threadId={group.threadId} onClose={() => setFindOpen(false)} />}
-      {group.tasks?.find(task => task.threadId === group.threadId)?.workItem &&
+      {findOpen && pane === "chat" && <ChatFindBar threadId={group.threadId} onClose={() => setFindOpen(false)} />}
+      {pane === "board" && !setupPending && !group.dm &&
+        <TopicBoard group={group} onOpenTask={threadId => {
+          setPane("chat");
+          if (threadId !== group.threadId) dispatch({ type: "switchGroupTask", groupId: group.id, threadId });
+        }} />}
+      {pane === "chat" && group.tasks?.find(task => task.threadId === group.threadId)?.workItem &&
         <TaskView key={group.threadId} item={group.tasks.find(task => task.threadId === group.threadId)!.workItem!} />}
 
       {/* Bulletin: one pinned line; click to edit */}
-      {!setupPending && <div className="w-full px-5">
+      {pane === "chat" && !setupPending && <div className="w-full px-5">
         {bulletinOpen ? (
           <div className="mb-1 rounded-lg border border-hairline/40 bg-panel p-2">
             <textarea
@@ -1252,7 +1282,7 @@ export function GroupView({ group: suppliedGroup }: { group: Group }) {
       </div>}
 
       {/* Working folder card — the chip in the header toggles it */}
-      {!setupPending && folderOpen && !group.dm && (
+      {pane === "chat" && !setupPending && folderOpen && !group.dm && (
         <div className="w-full px-5">
           <div className="mb-1">
             <RoomWorkingFolder group={group} />
@@ -1261,7 +1291,7 @@ export function GroupView({ group: suppliedGroup }: { group: Group }) {
       )}
 
       {/* Pinned message banner — resolves against the room's full transcript */}
-      {(() => {
+      {pane === "chat" && (() => {
         const pinned = group.messages.find((m) => m.id === group.pinnedMessageId && m.kind === "text");
         const text = pinned ? (pinned.text ?? "").replace(/\s+/g, " ").trim() : "";
         if (!pinned || !text) return null;
@@ -1291,7 +1321,7 @@ export function GroupView({ group: suppliedGroup }: { group: Group }) {
         );
       })()}
 
-      <div className="relative min-h-0 flex-1">
+      {pane === "chat" && <div className="relative min-h-0 flex-1">
       <div
         ref={scrollRef}
         className="h-full overflow-x-hidden overflow-y-auto px-5 [overflow-anchor:none]"
@@ -1444,7 +1474,7 @@ export function GroupView({ group: suppliedGroup }: { group: Group }) {
         onRestoreReply={restoreReply}
       />
       </div>
-      </div>
+      </div>}
     </main>
   );
 }

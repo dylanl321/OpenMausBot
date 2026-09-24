@@ -329,6 +329,9 @@ export const CLIENT_ALLOW: ReadonlyArray<{ methods: readonly string[]; path: Reg
   { methods: ["GET"], path: /^\/api\/work-items\/[\w-]+\/events$/ },
   { methods: ["POST"], path: /^\/api\/work-items\/[\w-]+\/links$/ },
   { methods: ["GET"], path: /^\/api\/task-connectors$/ },
+  { methods: ["GET"], path: /^\/api\/task-connections\/[a-z][a-z0-9-]{0,63}\/query$/ },
+  { methods: ["GET", "PATCH"], path: /^\/api\/groups\/[\w-]+\/task-board$/ },
+  { methods: ["POST"], path: /^\/api\/work-items\/[\w-]+\/answer$/ },
   { methods: ["POST"], path: /^\/api\/groups\/[\w-]+\/messages$/ },
   { methods: ["POST"], path: /^\/api\/groups\/[\w-]+\/interrupt$/ },
   { methods: ["POST"], path: /^\/api\/groups\/[\w-]+\/read$/ },
@@ -354,6 +357,7 @@ export const CLIENT_ALLOW: ReadonlyArray<{ methods: readonly string[]; path: Reg
   { methods: ["POST"], path: /^\/api\/routine-runs\/seen-all$/ },
   // webhook list is secret-free; creating or rotating one is not
   { methods: ["GET"], path: /^\/api\/webhooks$/ },
+  { methods: ["GET"], path: /^\/api\/watches$/ },
   // configured-or-not booleans; the handler strips the few identifying fields for clients
   { methods: ["GET"], path: /^\/api\/config$/ },
 ];
@@ -432,7 +436,8 @@ function mutatingPublicRoute(method: string, path: string): boolean {
     path !== "/api/testing/internal-capability" &&
     path !== "/api/auth/pair" &&
     // The same exchange under the shape the companion apps send.
-    path !== "/api/pair";
+    path !== "/api/pair" &&
+    !/^\/api\/connectors\/[a-z][a-z0-9-]{0,63}\/webhook$/.test(path);
 }
 
 function secureTokenMatch(actual: string | undefined, expected: string): boolean {

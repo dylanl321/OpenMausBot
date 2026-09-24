@@ -1,6 +1,7 @@
 import type { LinkKind, LinkedItem, Provenance, StatusCategory, SyncedItem } from "../../shared/work-links.ts";
+import type { SourceChange, SourceChangeType, WatchScope } from "../../shared/watches.ts";
 
-export type { SyncedItem };
+export type { SourceChange, SourceChangeType, SyncedItem, WatchScope };
 
 export interface SettingField {
   key: string;
@@ -19,6 +20,7 @@ export interface ConnectorManifest {
   secrets: { key: string; label: string; help?: string }[];
   capabilities: { webhooks?: boolean; query?: boolean; poll?: boolean };
   statusDefaults?: Record<string, StatusCategory>;
+  watch?: { scopes: SettingField[]; events: SourceChangeType[] };
 }
 
 export interface ConnectionContext {
@@ -57,6 +59,10 @@ export interface Connector {
   fetch(ctx: ConnectionContext, refs: { kind: LinkKind; externalId: string }[]): Promise<SyncedItem[]>;
   query?(ctx: ConnectionContext, query: string, cursor?: string): Promise<{ items: SyncedItem[]; cursor?: string }>;
   webhook?(ctx: ConnectionContext, headers: Headers, body: unknown): Promise<{ kind: LinkKind; externalId: string }[]>;
+  /** Change feed for watches. Cheap and idempotent: the same cursor returns the same changes. */
+  changes?(ctx: ConnectionContext, scope: WatchScope, cursor: string | null): Promise<{ changes: SourceChange[]; cursor: string }>;
+  /** Map a verified webhook onto the same `SourceChange.id`s the poll feed emits. */
+  webhookChanges?(ctx: ConnectionContext, headers: Headers, body: unknown): Promise<SourceChange[]>;
   capture: CaptureRule[];
 }
 

@@ -1,0 +1,12 @@
+{
+  "grouped_by": null,
+  "next_cursor": null,
+  "next_page_results": false,
+  "results": [
+    {
+      "id": "4af68566-94a4-4eb3-94aa-50dc9427067b",
+      "name": "Payments",
+      "identifier": "PAY"
+    }
+  ]
+}

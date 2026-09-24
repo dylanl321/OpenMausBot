@@ -26,7 +26,7 @@ const item: WorkItem = { id: "onboarding", groupId: "product", threadId: "hub-on
   criteria: [{ id: "c1", text: "Findings supported by evidence", state: "in_progress", evidence: [] }],
   links: [
     link({ id: "src", kind: "work_item", role: "source", title: "Onboarding", externalId: "PAY-9" }),
-    link({ id: "mr", kind: "change_request", title: "Onboarding review", externalId: "482", state: { label: "opened", category: "in_review" } }),
+    link({ id: "mr", kind: "change_request", title: "Onboarding review", externalId: "acme/payments!482", state: { label: "opened", category: "in_review" } }),
   ],
   assignments: [{ id: "analysis", botId: "analyst", threadId: "analysis-thread", revision: 2, attempts: 1, message: "Analyze onboarding interviews", status: "running", result: "",
     currentStep: { summary: "reading interview notes", since: 3 } }],
@@ -48,8 +48,9 @@ beforeEach(() => { fixture.state = { activeView: "chat", selectedId: chief.id, b
 describe("outcome-centered sidebar", () => {
   it("renders a compact task row in a distinct topic folder without expanding an active task", () => {
     const html = renderToStaticMarkup(createElement(GroupListItem, { group, density: "comfortable", onMenu: vi.fn() }));
-    for (const text of ['data-work-topic="product"', "Work topic", 'data-work-item-tree="onboarding"', 'data-sidebar-task-row="onboarding"', "Customer onboarding findings", "PAY-9", "!482", "0/1 criteria"])
+    for (const text of ['data-work-topic="product"', "Work topic", 'data-work-item-tree="onboarding"', 'data-sidebar-task-row="onboarding"', "Customer onboarding findings", "PAY-9", "acme/payments!482", "0/1 criteria"])
       expect(html).toContain(text);
+    expect(html).not.toContain("!acme/payments!482");
     expect(html).toContain("All");
     expect(html).toContain("Needs you");
     expect(html).toContain("In review");
@@ -112,7 +113,7 @@ describe("outcome-centered sidebar", () => {
     expect(matchesSidebarWorkFilter({ ...item, status: "needs-input" }, [analyst], "needs_you")).toBe(true);
     expect(matchesSidebarWorkFilter({ ...item, status: "completed" }, [analyst], "done")).toBe(true);
     expect(compactTaskRowModel(item, [chief, analyst], false)).toMatchObject({
-      key: "PAY-9", expanded: false, liveStep: undefined, changeRequest: { label: "482" }, criteria: { total: 1 },
+      key: "PAY-9", expanded: false, liveStep: undefined, changeRequest: { label: "acme/payments!482" }, criteria: { total: 1 },
     });
     expect(compactTaskRowModel(item, [chief, analyst], true).liveStep).toBe("reading interview notes");
   });
@@ -126,7 +127,7 @@ describe("outcome-centered sidebar", () => {
         const work: WorkItem = {
           ...item, id, groupId: topic, threadId: `hub-${id}`, title: `${topic} task ${index + 1}`, status,
           links: status === "active" && index === 0
-            ? [link({ id: `${id}-cr`, kind: "change_request", title: "Review", externalId: `${topicIndex}${index}`, state: { label: "opened", category: "in_review" } })]
+            ? [link({ id: `${id}-cr`, kind: "change_request", title: "Review", externalId: `acme/${topic}!${topicIndex}${index}`, state: { label: "opened", category: "in_review" } })]
             : [link({ id: `${id}-src`, kind: "work_item", role: "source", title: topic, externalId: `${topic.slice(0, 3).toUpperCase()}-${topicIndex}${index}` })],
           assignments: [], criteria: item.criteria,
         };
@@ -144,7 +145,8 @@ describe("outcome-centered sidebar", () => {
     expect(html).toContain("PAY-01");
     expect(html).toContain("payments task 1");
     expect(html).toContain("pricing task 4");
-    expect(html).toContain("!00");
+    expect(html).toContain("acme/payments!00");
+    expect(html).not.toContain("!acme/payments!00");
     const review = renderToStaticMarkup(createElement(GroupThreadList, { group: groups[0]!, selected: false, filter: "in_review" }));
     expect(review).toContain("payments task 1");
     expect(review).not.toContain("payments task 2");

@@ -2,5 +2,6 @@
   "id": 42,
   "username": "payments-bot",
   "name": "Payments bot",
+  "bot": true,
   "web_url": "https://gitlab.com/payments-bot"
 }

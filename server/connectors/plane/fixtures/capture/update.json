@@ -1,0 +1,7 @@
+{
+  "title": "workitem",
+  "server": "plane",
+  "input": "{\"action\":\"update\",\"project_id\":\"4af68566-94a4-4eb3-94aa-50dc9427067b\",\"workitem_id\":\"550e8400-e29b-41d4-a716-446655440123\",\"state\":\"state-review\"}",
+  "output": "Updated PAY-123 to In Review",
+  "ok": true
+}

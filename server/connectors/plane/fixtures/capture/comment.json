@@ -1,0 +1,7 @@
+{
+  "title": "workitem_comment",
+  "server": "plane",
+  "input": "{\"action\":\"create\",\"project_id\":\"4af68566-94a4-4eb3-94aa-50dc9427067b\",\"workitem_id\":\"550e8400-e29b-41d4-a716-446655440123\",\"comment_html\":\"<p>Started the refund fix</p>\"}",
+  "output": "Comment added to PAY-123 (id f3e29f26-708d-40f0-9209-7e0de44abc49)",
+  "ok": true
+}

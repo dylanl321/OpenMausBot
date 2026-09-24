@@ -53,6 +53,22 @@ jobs:
       - name: production UI build
         run: pnpm exec vite build
 
+  connector-paths:
+    # Phase 8 architecture test: a PR that adds one connector and touches
+    # registry.ts may only also edit docs. Mixed PRs are ignored.
+    if: github.event_name == 'pull_request'
+    name: connector path allowlist
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Check connector-only path allowlist
+        env:
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/check-connector-pr.mjs
+
   vitest:
     # Admit the expensive runner fan-out only after the quick checks pass.
     # A failing preflight still fails the required gates; nothing is waived.
