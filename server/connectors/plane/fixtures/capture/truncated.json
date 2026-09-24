@@ -1,0 +1,6 @@
+{
+  "title": "workitem",
+  "input": "{\"action\":\"create\",\"name\":\"[… preview shortened]\"}",
+  "output": "Created [… preview shortened]",
+  "ok": true
+}

@@ -1,0 +1,16 @@
+{
+  "object_kind": "note",
+  "event_type": "note",
+  "project": {
+    "id": 99,
+    "path_with_namespace": "acme/payments"
+  },
+  "object_attributes": {
+    "id": 10003,
+    "noteable_type": "Issue",
+    "url": "https://gitlab.com/acme/payments/-/issues/140#note_10003"
+  },
+  "issue": {
+    "iid": 140
+  }
+}

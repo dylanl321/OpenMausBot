@@ -15,8 +15,13 @@ const QUALIFIED_COMMIT = new RegExp(`^${PROJECT}@${SHA}$`, "i");
 const BARE_COMMIT = new RegExp(`^${SHA}$`, "i");
 const QUALIFIED_PIPELINE = new RegExp(`^${PROJECT}#pipeline:(\\d+)$`, "i");
 const SHORT_PIPELINE = /^pipeline:(\d+)$/;
+const QUALIFIED_ISSUE = new RegExp(`^${PROJECT}#(\\d+)$`, "i");
+const SHORT_ISSUE = /^#(\d+)$/;
+const QUALIFIED_ISSUE_NOTE = new RegExp(`^${PROJECT}#(\\d+):note:(\\d+)$`, "i");
+const SHORT_ISSUE_NOTE = /^#(\d+):note:(\d+)$/;
 const PROJECT_PATH = /^(?:[\w.-]+\/)+[\w.-]+$/;
 const MR_IN_TEXT = new RegExp(`${PROJECT}!(\\d+)|!(\\d+)`, "i");
+const ISSUE_IN_TEXT = new RegExp(`${PROJECT}#(\\d+)(?!:)|(?<!\\w)#(\\d+)\\b`, "i");
 const PIPELINE_IN_TEXT = /(?:pipeline|Pipeline)[:\s#]+(\d+)|\b#(\d+)\b.*pipeline/i;
 const NOTE_IN_TEXT = /#note_(\d+)|(?:note|comment)(?:\s*id)?[:\s#]+(\d+)/i;
 const THREAD_IN_TEXT = /(?:thread|discussion)[:\s#]+([\w.-]+)/i;
@@ -36,6 +41,17 @@ interface GitlabPipelineRef {
   id?: number;
   status?: string;
   web_url?: string;
+}
+
+interface GitlabIssue {
+  iid?: number;
+  title?: string;
+  state?: string;
+  web_url?: string;
+  labels?: string[] | { name?: string }[];
+  assignees?: { username?: string; name?: string }[];
+  issue_type?: string;
+  updated_at?: string;
 }
 
 interface GitlabMergeRequest {
@@ -108,10 +124,11 @@ interface GitlabDiscussion {
 }
 
 type StructuredRef =
+  | { kind: "work_item"; project: string; iid: string; externalId: string }
   | { kind: "change_request"; project: string; iid: string; externalId: string }
   | { kind: "commit"; project: string; sha: string; externalId: string }
   | { kind: "build"; project: string; pipelineId: string; externalId: string }
-  | { kind: "comment"; project: string; iid: string; noteId?: string; threadId?: string; externalId: string };
+  | { kind: "comment"; project: string; iid: string; noteId?: string; threadId?: string; on: "issue" | "mr"; externalId: string };
 
 const PIPELINE_STATUS: Record<string, StatusCategory> = {
   success: "done",
@@ -156,6 +173,10 @@ function projectPath(value: string): string {
 
 function mrId(project: string, iid: string): string {
   return `${project}!${iid}`;
+}
+
+function issueId(project: string, iid: string): string {
+  return `${project}#${iid}`;
 }
 
 function commitId(project: string, sha: string): string {
@@ -231,8 +252,17 @@ function parseUrlRef(input: string, ctx: ConnectionContext): StructuredRef | nul
     const project = url.pathname.slice(1, url.pathname.toLowerCase().indexOf(marker)).replace(/\/$/, "");
     if (!project || !PROJECT_PATH.test(project)) return null;
     const note = /^note_(\d+)$/i.exec(url.hash.replace(/^#/, ""));
-    if (note) return { kind: "comment", project, iid: mr[1], noteId: note[1], externalId: noteId(project, mr[1], note[1]) };
+    if (note) return { kind: "comment", project, iid: mr[1], noteId: note[1], on: "mr", externalId: noteId(project, mr[1], note[1]) };
     return { kind: "change_request", project, iid: mr[1], externalId: mrId(project, mr[1]) };
+  }
+  const issue = /\/-\/issues\/(\d+)/i.exec(url.pathname) ?? /\/issues\/(\d+)/i.exec(url.pathname);
+  if (issue) {
+    const marker = url.pathname.includes("/-/issues/") ? "/-/issues/" : "/issues/";
+    const project = url.pathname.slice(1, url.pathname.toLowerCase().indexOf(marker)).replace(/\/$/, "");
+    if (!project || !PROJECT_PATH.test(project)) return null;
+    const note = /^note_(\d+)$/i.exec(url.hash.replace(/^#/, ""));
+    if (note) return { kind: "comment", project, iid: issue[1], noteId: note[1], on: "issue", externalId: `${issueId(project, issue[1])}:note:${note[1]}` };
+    return { kind: "work_item", project, iid: issue[1], externalId: issueId(project, issue[1]) };
   }
   const commit = /\/-\/commit\/([0-9a-f]{7,40})/i.exec(url.pathname);
   if (commit) {
@@ -252,14 +282,18 @@ function parseUrlRef(input: string, ctx: ConnectionContext): StructuredRef | nul
 function parseExternalId(input: string, ctx: ConnectionContext): StructuredRef | null {
   const text = input.trim();
   const project = defaultProject(ctx);
+  const qualifiedIssueNote = QUALIFIED_ISSUE_NOTE.exec(text);
+  if (qualifiedIssueNote) return { kind: "comment", project: qualifiedIssueNote[1], iid: qualifiedIssueNote[2], noteId: qualifiedIssueNote[3], on: "issue", externalId: `${issueId(qualifiedIssueNote[1], qualifiedIssueNote[2])}:note:${qualifiedIssueNote[3]}` };
+  const shortIssueNote = SHORT_ISSUE_NOTE.exec(text);
+  if (shortIssueNote && project) return { kind: "comment", project, iid: shortIssueNote[1], noteId: shortIssueNote[2], on: "issue", externalId: `${issueId(project, shortIssueNote[1])}:note:${shortIssueNote[2]}` };
   const qualifiedNote = QUALIFIED_NOTE.exec(text);
-  if (qualifiedNote) return { kind: "comment", project: qualifiedNote[1], iid: qualifiedNote[2], noteId: qualifiedNote[3], externalId: noteId(qualifiedNote[1], qualifiedNote[2], qualifiedNote[3]) };
+  if (qualifiedNote) return { kind: "comment", project: qualifiedNote[1], iid: qualifiedNote[2], noteId: qualifiedNote[3], on: "mr", externalId: noteId(qualifiedNote[1], qualifiedNote[2], qualifiedNote[3]) };
   const shortNote = SHORT_NOTE.exec(text);
-  if (shortNote && project) return { kind: "comment", project, iid: shortNote[1], noteId: shortNote[2], externalId: noteId(project, shortNote[1], shortNote[2]) };
+  if (shortNote && project) return { kind: "comment", project, iid: shortNote[1], noteId: shortNote[2], on: "mr", externalId: noteId(project, shortNote[1], shortNote[2]) };
   const qualifiedThread = QUALIFIED_THREAD.exec(text);
-  if (qualifiedThread) return { kind: "comment", project: qualifiedThread[1], iid: qualifiedThread[2], threadId: qualifiedThread[3], externalId: threadId(qualifiedThread[1], qualifiedThread[2], qualifiedThread[3]) };
+  if (qualifiedThread) return { kind: "comment", project: qualifiedThread[1], iid: qualifiedThread[2], threadId: qualifiedThread[3], on: "mr", externalId: threadId(qualifiedThread[1], qualifiedThread[2], qualifiedThread[3]) };
   const shortThread = SHORT_THREAD.exec(text);
-  if (shortThread && project) return { kind: "comment", project, iid: shortThread[1], threadId: shortThread[2], externalId: threadId(project, shortThread[1], shortThread[2]) };
+  if (shortThread && project) return { kind: "comment", project, iid: shortThread[1], threadId: shortThread[2], on: "mr", externalId: threadId(project, shortThread[1], shortThread[2]) };
   const qualifiedMr = QUALIFIED_MR.exec(text);
   if (qualifiedMr) return { kind: "change_request", project: qualifiedMr[1], iid: qualifiedMr[2], externalId: mrId(qualifiedMr[1], qualifiedMr[2]) };
   const shortMr = SHORT_MR.exec(text);
@@ -267,6 +301,14 @@ function parseExternalId(input: string, ctx: ConnectionContext): StructuredRef |
     return project
       ? { kind: "change_request", project, iid: shortMr[1], externalId: mrId(project, shortMr[1]) }
       : { kind: "change_request", project: "", iid: shortMr[1], externalId: `!${shortMr[1]}` };
+  }
+  const qualifiedIssue = QUALIFIED_ISSUE.exec(text);
+  if (qualifiedIssue) return { kind: "work_item", project: qualifiedIssue[1], iid: qualifiedIssue[2], externalId: issueId(qualifiedIssue[1], qualifiedIssue[2]) };
+  const shortIssue = SHORT_ISSUE.exec(text);
+  if (shortIssue) {
+    return project
+      ? { kind: "work_item", project, iid: shortIssue[1], externalId: issueId(project, shortIssue[1]) }
+      : { kind: "work_item", project: "", iid: shortIssue[1], externalId: `#${shortIssue[1]}` };
   }
   const qualifiedPipeline = QUALIFIED_PIPELINE.exec(text);
   if (qualifiedPipeline) return { kind: "build", project: qualifiedPipeline[1], pipelineId: qualifiedPipeline[2], externalId: pipelineId(qualifiedPipeline[1], qualifiedPipeline[2]) };
@@ -292,6 +334,40 @@ function parseStructured(input: string, ctx: ConnectionContext): StructuredRef |
 
 function mapPipelineStatus(status: string | undefined): StatusCategory {
   return PIPELINE_STATUS[(status ?? "").toLowerCase()] ?? "unknown";
+}
+
+function mapIssueState(issue: GitlabIssue): { label: string; category: StatusCategory } {
+  const state = (issue.state ?? "unknown").toLowerCase();
+  if (state === "opened") return { label: "opened", category: "todo" };
+  if (state === "closed") return { label: "closed", category: "done" };
+  return { label: (issue.state ?? "unknown").slice(0, 80), category: "unknown" };
+}
+
+function issueDetails(issue: GitlabIssue): SyncedItem["details"] {
+  const details: Record<string, string | number | boolean> = {};
+  const labels = (issue.labels ?? []).map(label => typeof label === "string" ? label : label.name ?? "").filter(Boolean);
+  if (labels.length) details.labels = labels.slice(0, 8).join(", ").slice(0, 200);
+  const assignee = issue.assignees?.[0]?.name ?? issue.assignees?.[0]?.username;
+  if (assignee) details.assignee = assignee;
+  if (issue.issue_type) details.type = issue.issue_type;
+  return Object.keys(details).length ? details : undefined;
+}
+
+function syncedIssue(issue: GitlabIssue, ctx: ConnectionContext, project: string): SyncedItem | null {
+  if (issue.iid == null) return null;
+  const iid = String(issue.iid);
+  return {
+    kind: "work_item",
+    externalId: issueId(project, iid),
+    title: (issue.title ?? `#${iid}`).slice(0, 300) || `#${iid}`,
+    url: issue.web_url ?? `${siteUrl(ctx)}/${project}/-/issues/${iid}`,
+    state: mapIssueState(issue),
+    connectorId: "gitlab",
+    connectionId: ctx.connectionId,
+    details: issueDetails(issue),
+    updatedAt: when(issue.updated_at),
+    syncedAt: Date.now(),
+  };
 }
 
 function mapMrState(mr: GitlabMergeRequest): { label: string; category: StatusCategory } {
@@ -414,16 +490,19 @@ function syncedComment(ref: Extract<StructuredRef, { kind: "comment" }>, ctx: Co
   const position = note?.position;
   const file = position?.new_path ?? position?.old_path;
   const line = position?.new_line ?? position?.old_line;
-  const details: Record<string, string | number | boolean> = { mr: mrId(ref.project, ref.iid) };
+  const parent = ref.on === "issue" ? issueId(ref.project, ref.iid) : mrId(ref.project, ref.iid);
+  const details: Record<string, string | number | boolean> = ref.on === "issue" ? { issue: parent } : { mr: parent };
   if (file) details.file = file;
   if (line != null) details.line = line;
   if (found?.discussion.id) details.thread = found.discussion.id;
-  const title = (note?.body ?? `Comment on !${ref.iid}`).replace(/\s+/g, " ").trim().slice(0, 80) || `Comment on !${ref.iid}`;
+  const mark = ref.on === "issue" ? `#${ref.iid}` : `!${ref.iid}`;
+  const title = (note?.body ?? `Comment on ${mark}`).replace(/\s+/g, " ").trim().slice(0, 80) || `Comment on ${mark}`;
+  const path = ref.on === "issue" ? "issues" : "merge_requests";
   return {
     kind: "comment",
     externalId: ref.externalId,
     title,
-    url: `${siteUrl(ctx)}/${ref.project}/-/merge_requests/${ref.iid}${ref.noteId ? `#note_${ref.noteId}` : ""}`,
+    url: `${siteUrl(ctx)}/${ref.project}/-/${path}/${ref.iid}${ref.noteId ? `#note_${ref.noteId}` : ""}`,
     state: found ? commentState(found.discussion, note) : { label: "open", category: "in_review" },
     connectorId: "gitlab",
     connectionId: ctx.connectionId,
@@ -481,11 +560,25 @@ function webhookRefs(body: unknown): { kind: LinkKind; externalId: string }[] {
     if (typeof mr?.iid === "number" || typeof mr?.iid === "string") refs.push({ kind: "change_request", externalId: mrId(project, String(mr.iid)) });
     return refs;
   }
+  if (kind === "issue") {
+    const iid = attrs.iid;
+    if (typeof iid !== "number" && typeof iid !== "string") return [];
+    return [{ kind: "work_item", externalId: issueId(project, String(iid)) }];
+  }
   if (kind === "note") {
+    const note = attrs.id;
+    if (attrs.noteable_type === "Issue") {
+      const issue = record.issue as { iid?: unknown } | undefined;
+      const iid = issue?.iid;
+      if ((typeof iid !== "number" && typeof iid !== "string") || (typeof note !== "number" && typeof note !== "string")) return [];
+      return [
+        { kind: "work_item", externalId: issueId(project, String(iid)) },
+        { kind: "comment", externalId: `${issueId(project, String(iid))}:note:${note}` },
+      ];
+    }
     if (attrs.noteable_type !== "MergeRequest") return [];
     const mr = record.merge_request as { iid?: unknown } | undefined;
     const iid = mr?.iid;
-    const note = attrs.id;
     if ((typeof iid !== "number" && typeof iid !== "string") || (typeof note !== "number" && typeof note !== "string")) return [];
     return [
       { kind: "change_request", externalId: mrId(project, String(iid)) },
@@ -497,9 +590,9 @@ function webhookRefs(body: unknown): { kind: LinkKind; externalId: string }[] {
 
 function previewSource(call: CaptureCall): string | null {
   const output = call.output ?? "";
-  if (output.includes(PREVIEW_CUT)) {
+    if (output.includes(PREVIEW_CUT)) {
     const head = output.split(PREVIEW_CUT)[0] ?? "";
-    if (!MR_IN_TEXT.test(head) && !/\/-\/merge_requests\/\d+/i.test(head) && !/\/-\/pipelines\/\d+/i.test(head) && !NOTE_IN_TEXT.test(head)) {
+    if (!MR_IN_TEXT.test(head) && !ISSUE_IN_TEXT.test(head) && !/\/-\/(?:merge_requests|issues)\/\d+/i.test(head) && !/\/-\/pipelines\/\d+/i.test(head) && !NOTE_IN_TEXT.test(head)) {
       return null;
     }
     return `${head}\n${call.summary ?? ""}\n${call.input ?? ""}`;
@@ -519,9 +612,9 @@ function jsonObject(text: string): Record<string, unknown> | null {
 }
 
 function projectFromText(text: string, ctx: ConnectionContext): string | null {
-  const url = /https?:\/\/[^\s]+\/((?:[\w.-]+\/)+[\w.-]+)\/-\/(?:merge_requests|commit|pipelines)\//i.exec(text);
+  const url = /https?:\/\/[^\s]+\/((?:[\w.-]+\/)+[\w.-]+)\/-\/(?:merge_requests|issues|commit|pipelines)\//i.exec(text);
   if (url) return url[1];
-  const qualified = new RegExp(`${PROJECT}!\\d+`, "i").exec(text);
+  const qualified = new RegExp(`${PROJECT}[!#]\\d+`, "i").exec(text);
   if (qualified) return qualified[1];
   const repo = /--repo[=\s]+([^\s]+)/.exec(text);
   if (repo && PROJECT_PATH.test(repo[1])) return repo[1];
@@ -589,18 +682,59 @@ function extractMr(call: CaptureCall): ReturnType<CaptureRule["extract"]> {
   return { externalId: parsed.externalId, title: title || parsed.externalId, url: (/https?:\/\/[^\s]+\/-\/merge_requests\/\d+/i.exec(text) ?? [])[0] };
 }
 
+function issueFromText(text: string, ctx: ConnectionContext): { project: string; iid: string; externalId: string } | null {
+  const url = parseUrlRef((/https?:\/\/[^\s<>"')\]]+/i.exec(text) ?? [])[0] ?? "", ctx);
+  if (url?.kind === "work_item") return { project: url.project, iid: url.iid, externalId: url.externalId };
+  if (url?.kind === "comment" && url.on === "issue") return { project: url.project, iid: url.iid, externalId: issueId(url.project, url.iid) };
+  const qualified = QUALIFIED_ISSUE.exec((new RegExp(`${PROJECT}#(\\d+)`, "i").exec(text) ?? [])[0] ?? "");
+  if (qualified) return { project: qualified[1], iid: qualified[2], externalId: issueId(qualified[1], qualified[2]) };
+  const short = /#(\d+)/.exec(text);
+  const project = projectFromText(text, ctx);
+  if (short && project && !/#pipeline:/i.test(text.slice(Math.max(0, (short.index ?? 0) - 20), (short.index ?? 0) + 20))) {
+    return { project, iid: short[1], externalId: issueId(project, short[1]) };
+  }
+  return null;
+}
+
+function extractIssue(call: CaptureCall): ReturnType<CaptureRule["extract"]> {
+  const text = previewSource(call);
+  if (!text) return null;
+  const json = mergedRecord(call);
+  const context = emptyCtx();
+  const web = typeof json?.web_url === "string" ? json.web_url : "";
+  const fromUrl = web ? parseUrlRef(web, context) : null;
+  const nested = json?.issue && typeof json.issue === "object" ? json.issue as Record<string, unknown> : null;
+  const rawIid = json?.iid ?? json?.issue_iid ?? json?.issueIid ?? nested?.iid;
+  const iid = typeof rawIid === "number" || typeof rawIid === "string" ? String(rawIid) : null;
+  const project = (fromUrl && "project" in fromUrl ? fromUrl.project : null) ?? projectFromJson(json) ?? projectFromText(`${web}\n${text}`, context);
+  if (iid && project) {
+    return {
+      externalId: issueId(project, iid),
+      url: web || undefined,
+      title: typeof json?.title === "string" ? json.title : `#${iid}`,
+      details: { issue: issueId(project, iid) },
+    };
+  }
+  const parsed = issueFromText(text, context);
+  if (!parsed) return null;
+  const title = /#\d+\s+(.+)/.exec(text)?.[1]?.split("\n")[0]?.trim();
+  return { externalId: parsed.externalId, title: title || parsed.externalId, url: (/https?:\/\/[^\s]+\/-\/issues\/\d+/i.exec(text) ?? [])[0] };
+}
+
 function extractComment(call: CaptureCall): ReturnType<CaptureRule["extract"]> {
   const text = previewSource(call);
   if (!text) return null;
   const context = emptyCtx();
   const json = mergedRecord(call);
   const mr = mrFromText(text, context);
+  const issue = issueFromText(text, context);
   const noteMatch = NOTE_IN_TEXT.exec(text);
   const threadMatch = THREAD_IN_TEXT.exec(text);
   const web = typeof json?.web_url === "string" ? json.web_url : (/https?:\/\/[^\s]+#note_\d+/i.exec(text) ?? [])[0];
   const fromUrl = web ? parseUrlRef(web, context) : null;
-  const project = (fromUrl && "project" in fromUrl ? fromUrl.project : null) ?? mr?.project ?? projectFromJson(json) ?? projectFromText(text, context);
-  const iid = (fromUrl && "iid" in fromUrl ? fromUrl.iid : null) ?? mr?.iid ?? iidFromJson(json);
+  const project = (fromUrl && "project" in fromUrl ? fromUrl.project : null) ?? mr?.project ?? issue?.project ?? projectFromJson(json) ?? projectFromText(text, context);
+  const iid = (fromUrl && "iid" in fromUrl ? fromUrl.iid : null) ?? mr?.iid ?? issue?.iid ?? iidFromJson(json);
+  const onIssue = (fromUrl?.kind === "comment" && fromUrl.on === "issue") || (!mr && Boolean(issue));
   const notes = Array.isArray(json?.notes) ? json.notes[0] : null;
   const nestedNote = notes && typeof notes === "object" ? (notes as Record<string, unknown>).id : null;
   const rawId = json?.id ?? json?.note_id;
@@ -611,16 +745,18 @@ function extractComment(call: CaptureCall): ReturnType<CaptureRule["extract"]> {
     ?? noteMatch?.[1] ?? noteMatch?.[2];
   const threadKey = (typeof rawId === "string" && !numericNote ? rawId : null) ?? threadMatch?.[1];
   if (!project || !iid) return null;
-  const parentRef = mrId(project, iid);
+  const parentRef = onIssue ? issueId(project, iid) : mrId(project, iid);
   const position = positionOf(json);
-  const details: Record<string, string | number | boolean> = { mr: parentRef };
+  const details: Record<string, string | number | boolean> = onIssue ? { issue: parentRef } : { mr: parentRef };
   if (position.file) details.file = position.file;
   if (position.line != null) details.line = position.line;
   if (threadKey) details.thread = threadKey;
   return {
-    externalId: noteKey ? noteId(project, iid, noteKey) : threadKey ? threadId(project, iid, threadKey) : parentRef,
+    externalId: noteKey
+      ? (onIssue ? `${parentRef}:note:${noteKey}` : noteId(project, iid, noteKey))
+      : threadKey && !onIssue ? threadId(project, iid, threadKey) : parentRef,
     parentRef,
-    title: `Comment on !${iid}`,
+    title: `Comment on ${onIssue ? `#${iid}` : `!${iid}`}`,
     url: web,
     details,
   };
@@ -710,6 +846,36 @@ const captureRules: CaptureRule[] = [
     extract: call => extractMr(call),
     event: item => `updated ${item.externalId ?? item.title}`,
   },
+  {
+    match: { tool: /create[_-]?issue(?![_\s-]?(?:note|comment))|(?:gitlab|glab)[_-].*[_-]issue[_-]?create|GITLAB_CREATE_ISSUE\b|\bissue_create\b/i },
+    on: "completed",
+    produce: { kind: "work_item" },
+    extract: call => extractIssue(call),
+    event: item => `opened ${item.externalId ?? item.title}`,
+  },
+  {
+    match: { command: /^glab\s+issue\s+create\b/ },
+    on: "completed",
+    produce: { kind: "work_item" },
+    extract: call => extractIssue(call),
+    event: item => `opened ${item.externalId ?? item.title}`,
+  },
+  {
+    match: { tool: /issue.*(?:note|comment)|create[_-]?issue[_-]?(?:note|comment)|GITLAB_.*ISSUE.*(?:NOTE|COMMENT)/i },
+    on: "completed",
+    produce: { kind: "comment" },
+    eventKind: "comment",
+    extract: call => extractComment(call),
+    event: item => `commented on ${String(item.details?.issue ?? item.externalId ?? item.title).split(":")[0]}`,
+  },
+  {
+    match: { command: /^glab\s+issue\s+(?:note|comment)\b/ },
+    on: "completed",
+    produce: { kind: "comment" },
+    eventKind: "comment",
+    extract: call => extractComment(call),
+    event: item => `commented on ${String(item.details?.issue ?? item.externalId ?? item.title).split(":")[0]}`,
+  },
 ];
 
 export const gitlabConnector: Connector = {
@@ -717,10 +883,10 @@ export const gitlabConnector: Connector = {
     id: "gitlab",
     name: "GitLab",
     icon: GITLAB_ICON,
-    kinds: ["change_request", "commit", "build", "comment"],
+    kinds: ["work_item", "change_request", "commit", "build", "comment"],
     settings: [
       { key: "site", label: "Instance URL", type: "string", help: "https://gitlab.com or your self-managed GitLab URL" },
-      { key: "project", label: "Default project", type: "string", help: "group/project used for !482, commit hashes, and merge-request queries" },
+      { key: "project", label: "Default project", type: "string", help: "group/project used for #140, !482, commit hashes, and issue or merge-request queries" },
     ],
     secrets: [
       { key: "token", label: "Access token", help: "Personal or project access token with read_api" },
@@ -768,6 +934,7 @@ export const gitlabConnector: Connector = {
     const site = siteUrl(ctx);
     const base = site ? escapeRegExp(site) : "https?://[^\\s/]+";
     return [
+      new RegExp(`^${base}/[^\\s]+/-/issues/\\d+`, "i"),
       new RegExp(`^${base}/[^\\s]+/merge_requests/\\d+`, "i"),
       new RegExp(`^${base}/[^\\s]+/-/commit/${SHA.slice(1, -1)}`, "i"),
       new RegExp(`^${base}/[^\\s]+/-/pipelines/\\d+`, "i"),
@@ -775,18 +942,31 @@ export const gitlabConnector: Connector = {
   },
   async fetch(ctx, refs) {
     const resolved = refs.map(ref => ({ ref, parsed: parseStructured(ref.externalId, ctx) }));
+    const issues = new Map<string, GitlabIssue>();
     const mrs = new Map<string, GitlabMergeRequest>();
     const approvals = new Map<string, GitlabApprovals | null>();
     const discussions = new Map<string, GitlabDiscussion[]>();
     const commits = new Map<string, GitlabCommit>();
     const pipelines = new Map<string, { pipeline: GitlabPipeline; jobs: GitlabJob[] }>();
+    const wantedIssues = new Set<string>();
     const wantedMrs = new Set<string>();
     const wantedDiscussions = new Set<string>();
+    const wantedIssueDiscussions = new Set<string>();
     for (const { ref, parsed } of resolved) {
       if (!parsed?.project || parsed.kind !== ref.kind) continue;
-      if (parsed.kind === "change_request" || parsed.kind === "comment") wantedMrs.add(`${parsed.project}\t${parsed.iid}`);
-      if (parsed.kind === "comment") wantedDiscussions.add(`${parsed.project}\t${parsed.iid}`);
+      if (parsed.kind === "work_item") wantedIssues.add(`${parsed.project}\t${parsed.iid}`);
+      if (parsed.kind === "change_request" || (parsed.kind === "comment" && parsed.on === "mr")) wantedMrs.add(`${parsed.project}\t${parsed.iid}`);
+      if (parsed.kind === "comment" && parsed.on === "mr") wantedDiscussions.add(`${parsed.project}\t${parsed.iid}`);
+      if (parsed.kind === "comment" && parsed.on === "issue") {
+        wantedIssues.add(`${parsed.project}\t${parsed.iid}`);
+        wantedIssueDiscussions.add(`${parsed.project}\t${parsed.iid}`);
+      }
     }
+    await Promise.all([...wantedIssues].map(async key => {
+      const [project, iid] = key.split("\t");
+      const result = await gitlabRequest(ctx, `/projects/${projectPath(project)}/issues/${iid}`);
+      if (result.ok && result.body && typeof result.body === "object") issues.set(key, result.body as GitlabIssue);
+    }));
     await Promise.all([...wantedMrs].map(async key => {
       const [project, iid] = key.split("\t");
       const result = await gitlabRequest(ctx, `/projects/${projectPath(project)}/merge_requests/${iid}`);
@@ -798,6 +978,11 @@ export const gitlabConnector: Connector = {
       const [project, iid] = key.split("\t");
       const result = await gitlabRequest(ctx, `/projects/${projectPath(project)}/merge_requests/${iid}/discussions`);
       discussions.set(key, result.ok && Array.isArray(result.body) ? result.body as GitlabDiscussion[] : []);
+    }));
+    await Promise.all([...wantedIssueDiscussions].map(async key => {
+      const [project, iid] = key.split("\t");
+      const result = await gitlabRequest(ctx, `/projects/${projectPath(project)}/issues/${iid}/discussions`);
+      discussions.set(`issue\t${key}`, result.ok && Array.isArray(result.body) ? result.body as GitlabDiscussion[] : []);
     }));
     await Promise.all(resolved.map(async ({ ref, parsed }) => {
       if (!parsed || parsed.kind !== "commit" || ref.kind !== "commit" || !parsed.project) return;
@@ -814,17 +999,21 @@ export const gitlabConnector: Connector = {
         jobs: jobs.ok && Array.isArray(jobs.body) ? jobs.body as GitlabJob[] : [],
       });
     }));
-    const loaded = mrs.size + commits.size + pipelines.size + discussions.size;
+    const loaded = issues.size + mrs.size + commits.size + pipelines.size + discussions.size;
     if (loaded) ctx.log(`Fetched ${loaded} GitLab item(s).`);
     return resolved.map(({ ref, parsed }) => {
       if (!parsed || parsed.kind !== ref.kind || !parsed.project) return stub(ref, ctx);
+      if (parsed.kind === "work_item") {
+        const item = issues.get(`${parsed.project}\t${parsed.iid}`);
+        return item ? syncedIssue(item, ctx, parsed.project) ?? stub(ref, ctx) : stub(ref, ctx);
+      }
       if (parsed.kind === "change_request") {
         const key = `${parsed.project}\t${parsed.iid}`;
         const item = mrs.get(key);
         return item ? syncedMr(item, ctx, parsed.project, approvals.get(key)) ?? stub(ref, ctx) : stub(ref, ctx);
       }
       if (parsed.kind === "comment") {
-        const key = `${parsed.project}\t${parsed.iid}`;
+        const key = parsed.on === "issue" ? `issue\t${parsed.project}\t${parsed.iid}` : `${parsed.project}\t${parsed.iid}`;
         return syncedComment(parsed, ctx, discussions.get(key) ?? []);
       }
       if (parsed.kind === "commit") {
@@ -840,15 +1029,23 @@ export const gitlabConnector: Connector = {
     const project = PROJECT_PATH.test(text) ? text : defaultProject(ctx);
     const search = text && !PROJECT_PATH.test(text) ? text : undefined;
     if (!project) return { items: [] };
-    ctx.log("Queried GitLab merge requests.");
+    ctx.log("Queried GitLab issues and merge requests.");
     const page = cursor && /^\d+$/.test(cursor) ? cursor : "1";
     const params = new URLSearchParams({ state: "opened", per_page: "50", page });
     if (search) params.set("search", search);
-    const result = await gitlabRequest(ctx, `/projects/${projectPath(project)}/merge_requests?${params}`);
-    if (!result.ok) throw new Error(result.error);
-    const rows = Array.isArray(result.body) ? result.body as GitlabMergeRequest[] : [];
-    const items = rows.flatMap(mr => syncedMr(mr, ctx, project) ?? []);
-    const next = result.headers.get("x-next-page");
+    const [issueResult, mrResult] = await Promise.all([
+      gitlabRequest(ctx, `/projects/${projectPath(project)}/issues?${params}`),
+      gitlabRequest(ctx, `/projects/${projectPath(project)}/merge_requests?${params}`),
+    ]);
+    if (!issueResult.ok) throw new Error(issueResult.error);
+    if (!mrResult.ok) throw new Error(mrResult.error);
+    const issueRows = Array.isArray(issueResult.body) ? issueResult.body as GitlabIssue[] : [];
+    const mrRows = Array.isArray(mrResult.body) ? mrResult.body as GitlabMergeRequest[] : [];
+    const items = [
+      ...issueRows.flatMap(issue => syncedIssue(issue, ctx, project) ?? []),
+      ...mrRows.flatMap(mr => syncedMr(mr, ctx, project) ?? []),
+    ];
+    const next = issueResult.headers.get("x-next-page") || mrResult.headers.get("x-next-page");
     return { items, ...(next ? { cursor: next } : {}) };
   },
   async webhook(ctx, headers, body) {
