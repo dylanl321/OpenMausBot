@@ -5,6 +5,7 @@ describe("built-in agent tool read policy", () => {
   it("includes only the reviewed local reads", () => {
     expect([...READ_ONLY_AGENT_TOOL_NAMES]).toEqual([
       "list_bots",
+      "get_work_item",
       "list_team_setup",
       "list_shared_computers",
       "list_rooms",
@@ -33,6 +34,7 @@ describe("built-in agent tool read policy", () => {
     "create_bot", "request_credential", "memory_update", "propose_routine",
     "propose_routine_action", "propose_profile", "skill_manage",
     "propose_team_setup", "propose_bot_deletion",
+    "ensure_work_item", "update_work_item",
     "list_secrets", "read_credentials", "list_bots_and_delete", "unknown", "",
     "mcp__agents__list_bots", "agents.list_bots", "LIST_BOTS", " list_bots",
   ])("does not infer read access for %s", (name) => {

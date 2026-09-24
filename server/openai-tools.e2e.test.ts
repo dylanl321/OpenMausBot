@@ -145,9 +145,12 @@ it("runs structured MCP calls through real harness approval and continuation, pr
           expect(result?.content).toContain("created verification artifact");
           expect(messages.messages.some((message: any) => message.text?.includes("The artifact was created."))).toBe(true);
         } else {
-          expect(settled.status).toBe("failed");
+          // A denied operation is still blocked, but an honest final reply
+          // can settle the conversation without manufacturing a run failure.
+          expect(settled.status).toBe("settled");
           expect(result?.content).toMatch(/denied/i);
           expect(existsSync(artifact)).toBe(false);
+          expect(messages.messages.some((message: any) => message.text?.includes("The operation was denied."))).toBe(true);
         }
       } else {
         expect(requests).toHaveLength(before + 1);
