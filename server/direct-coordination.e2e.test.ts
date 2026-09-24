@@ -575,7 +575,8 @@ it("runs a message sent while a teammate works, keeps the assignment, and names 
 // composer queue until the outstanding assignments settle — room-style
 // parking for direct chat — and only then runs as its own follow-up turn.
 it("parks a message behind outstanding teammate work when the bot opts in, then runs it after", () => fixture(async f => {
-  f.plan[f.lead.id] = { delayMs: 4000, reply: "CSV export implemented" };
+  const gate = join(f.session.info.dataDir, "park-while-working.gate");
+  f.plan[f.lead.id] = { gateFile: gate, reply: "CSV export implemented" };
   f.plan[f.chief.id] = { turns: [
     { steps: structuredClone(f.plan[f.chief.id].steps), reply: "Assigned to Engineering" },
     { reply: "The requested CSV export is implemented and verified" },
@@ -584,15 +585,26 @@ it("parks a message behind outstanding teammate work when the bot opts in, then 
   await f.api(`/api/bots/${f.chief.id}`, { parkDirectMessages: true }, "PATCH");
   await f.start();
   await expect.poll(() => f.nodes().find((node: any) => node.parentId)?.status, { timeout: 15_000 }).toBe("running");
+  // Parking applies once the source has yielded. A 4s delayMs is not enough
+  // on a loaded shard: the teammate can finish first and the send runs.
+  await expect.poll(() => f.evidence().filter((turn: any) => turn.botId === f.chief.id).length, { timeout: 15_000 }).toBe(1);
+  await expect.poll(async () => (await f.api("/api/bots")).bots
+    .find((bot: any) => bot.id === f.chief.id).tasks
+    .find((task: any) => task.threadId === f.chief.activeTaskId)?.waitingForTeammates,
+  { timeout: 15_000 }).toBe(true);
   const assignment = f.nodes().find((node: any) => node.parentId);
 
-  const receipt = await f.api(`/api/bots/${f.chief.id}/messages`, { text: "Also make sure the export is UTF-8.", threadId: f.chief.activeTaskId });
-  // It parked: not run, not even on the transcript yet.
-  expect(receipt.queued).toBe(true);
-  expect(typeof receipt.queueId).toBe("string");
-  expect((await f.messages(f.chief.activeTaskId)).some((message: any) => message.text === "Also make sure the export is UTF-8.")).toBe(false);
-  expect(f.evidence().filter((turn: any) => turn.botId === f.chief.id)).toHaveLength(1);
-  expect(f.nodes().find((node: any) => node.id === assignment.id).status).not.toBe("cancelled");
+  try {
+    const receipt = await f.api(`/api/bots/${f.chief.id}/messages`, { text: "Also make sure the export is UTF-8.", threadId: f.chief.activeTaskId });
+    // It parked: not run, not even on the transcript yet.
+    expect(receipt.queued).toBe(true);
+    expect(typeof receipt.queueId).toBe("string");
+    expect((await f.messages(f.chief.activeTaskId)).some((message: any) => message.text === "Also make sure the export is UTF-8.")).toBe(false);
+    expect(f.evidence().filter((turn: any) => turn.botId === f.chief.id)).toHaveLength(1);
+    expect(f.nodes().find((node: any) => node.id === assignment.id).status).not.toBe("cancelled");
+  } finally {
+    writeFileSync(gate, "go");
+  }
 
   // The teammate finishes, the coordination resumes and settles, and only
   // then the parked words run as their own turn.
