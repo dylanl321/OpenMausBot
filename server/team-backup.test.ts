@@ -342,7 +342,7 @@ describe("additive portable team backups", () => {
   });
 
   it("includes watches with cursors reset and remaps run_routine by name", () => {
-    const { store, routines, chief } = fixture();
+    const { store, routines } = fixture();
     const watches = new WatchManager({
       file: join(DATA_DIR, "watches.json"),
       routine: (id) => routines.listRoutines().find((routine) => routine.id === id) ?? null,
