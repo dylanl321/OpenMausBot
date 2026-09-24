@@ -9411,9 +9411,10 @@ function applyWatchToWork(changes: SourceChange[], bumpInput: boolean) {
 }
 
 function watchNotifyBot(watch: Watch) {
-  if (watch.action.type === "notify" && watch.action.botId) return store.bot(watch.action.botId);
-  if (watch.action.type === "run_routine") {
-    const routine = routines!.listRoutines().find((item) => item.id === watch.action.routineId);
+  const action = watch.action;
+  if (action.type === "notify" && action.botId) return store.bot(action.botId);
+  if (action.type === "run_routine") {
+    const routine = routines!.listRoutines().find((item) => item.id === action.routineId);
     if (routine) return store.bot(routine.botId);
   }
   return store.bots.find((bot) => !bot.hidden) ?? null;
@@ -15128,11 +15129,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
 
     // ── watches (engine + built-in sources; editor UI is a later slice) ──
     const watchVisible = (watch: Watch) => {
-      if (watch.action.type === "run_routine") {
-        const routine = routines!.listRoutines().find((item) => item.id === watch.action.routineId);
+      const action = watch.action;
+      if (action.type === "run_routine") {
+        const routine = routines!.listRoutines().find((item) => item.id === action.routineId);
         return !routine || routineVisible(routine, visible);
       }
-      if (watch.action.type === "notify" && watch.action.botId) return visible.bot(watch.action.botId);
+      if (action.type === "notify" && action.botId) return visible.bot(action.botId);
       return true;
     };
     if (path === "/api/watches" && method === "GET") {
