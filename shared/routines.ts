@@ -60,7 +60,7 @@ export interface RoutineContextAttachment {
   size: number;
 }
 
-export type RoutineRunTrigger = "schedule" | "manual" | "webhook";
+export type RoutineRunTrigger = "schedule" | "manual" | "webhook" | "watch";
 
 export type RoutineRunStatus =
   | "queued"
@@ -104,6 +104,8 @@ export interface Routine {
   attachments?: RoutineContextAttachment[];
   sourceThreadId?: string;
   resultsThreadId?: string;
+  /** Skip a scheduled run when this watch has seen no matching changes since the last run. */
+  onlyIfChanged?: string;
   nextRunAt: number | null;
   createdAt: number;
   updatedAt: number;
@@ -127,6 +129,7 @@ export interface RoutineRun {
   manual: boolean;
   triggerSource?: RoutineRunTrigger;
   webhookId?: string;
+  watchId?: string;
   deliveryId?: string;
   /** Room task created for a team-goal run. */
   executionThreadId?: string;
@@ -161,4 +164,6 @@ export interface RoutineInput {
   attachments?: RoutineContextAttachment[];
   /** Omission preserves routing; null creates a new dedicated results task. */
   resultsThreadId?: string | null;
+  /** `null` clears the watch gate on update. */
+  onlyIfChanged?: string | null;
 }
