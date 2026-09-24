@@ -665,6 +665,14 @@ it("deleting the waiting source cancels its tree and never recreates the deleted
   f.plan[f.lead.id] = { delayMs: 5000, reply: "Must not return to a deleted task" };
   await f.start();
   await expect.poll(() => f.nodes().find((node: any) => node.parentId)?.status, { timeout: 15_000 }).toBe("running");
+  // Delete refuses a live provider turn. The teammate can already be running
+  // before this conversation finishes and waits, so wait for that idle wait.
+  const readChief = async () => (await f.api("/api/bots")).bots.find((bot: any) => bot.id === f.chief.id);
+  await expect.poll(async () => {
+    const chief = await readChief();
+    return !chief.busy && chief.waitingForTeammates
+      && chief.tasks.find((task: any) => task.threadId === f.chief.activeTaskId)?.waitingForTeammates;
+  }, { timeout: 15_000 }).toBe(true);
   await f.api(`/api/bots/${f.chief.id}/tasks/${f.chief.activeTaskId}`, {}, "DELETE");
   await expect.poll(() => f.nodes().every((node: any) => node.status === "cancelled")).toBe(true);
   const chief = (await f.api("/api/bots")).bots.find((bot: any) => bot.id === f.chief.id);
