@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { RoutineManager } from "./routines.ts";
 import { WatchManager } from "./watches.ts";
+import { parseTeamBackup } from "../shared/team-backup.ts";
 import type { SourceChange } from "../shared/watches.ts";
 
 const dirs: string[] = [];
@@ -242,6 +243,56 @@ describe("onlyIfChanged gate", () => {
       onlyIfChanged: "watch-1",
     });
     expect(routines.update(routine.id, { onlyIfChanged: null })?.onlyIfChanged).toBeUndefined();
+  });
+});
+
+describe("watch backups", () => {
+  it("exports run_routine by name, resets startFrom, and remaps on import without cursors", async () => {
+    const dir = tempDir();
+    let heads = { "refs/heads/main": "a".repeat(40) };
+    const source = new WatchManager({
+      file: join(dir, "from.json"),
+      now: () => 9_000,
+      execGit: async () => gitHeads(heads),
+    });
+    const watch = source.create({
+      name: "New stories",
+      source: { type: "git", remote: "/tmp/repo.git" },
+      check: { type: "interval", everyMinutes: 5, anchorAt: 0 },
+      action: { type: "run_routine", routineId: "r-old" },
+    });
+    await source.check(watch.id);
+    heads = { "refs/heads/main": "b".repeat(40) };
+    await source.check(watch.id);
+    expect(source.get(watch.id)?.stats.matches).toBe(1);
+    const portable = source.exportForBackup((id) => id === "r-old" ? "Daily" : undefined);
+    expect(portable[0]).toMatchObject({
+      name: "New stories",
+      startFrom: "now",
+      action: { type: "run_routine", routineName: "Daily" },
+    });
+    const document = parseTeamBackup({
+      format: "openmaus.backup", version: 1, name: "Watches", exportedAt: 1,
+      bots: [{
+        key: "bot-1", name: "Mira", title: "", description: "", color: "green",
+        chiefOfStaff: false, hidden: false, playbooks: [],
+        activeTask: "main", tasks: [{ key: "main", title: "Chat", createdAt: 1, activeLeafId: null, messages: [] }],
+      }],
+      groups: [],
+      routines: [{
+        name: "Daily", prompt: "Report", target: "bot", botId: "bot-1",
+        runOn: "maus", schedule: { type: "interval", everyMinutes: 5, anchorAt: 0 },
+        durationMinutes: 30, onlyIfChanged: "New stories",
+      }],
+      watches: portable,
+    });
+    expect(document.watches?.[0]?.action).toEqual({ type: "run_routine", routineName: "Daily" });
+    const dest = new WatchManager({ file: join(dir, "to.json"), now: () => 9_000 });
+    const imported = dest.importPortable(document.watches ?? [], (name) => name === "Daily" ? "r-new" : undefined);
+    expect(imported[0].id).not.toBe(watch.id);
+    expect(imported[0].action).toEqual({ type: "run_routine", routineId: "r-new" });
+    expect(imported[0].stats).toMatchObject({ checks: 0, matches: 0, actions: 0 });
+    expect(imported[0].startFrom).toBe("now");
   });
 });
 
