@@ -26,7 +26,7 @@ const querySchema = (raw: unknown): { connectionId: string; query: string } | { 
 export function createGroupTaskBoardRoutes(deps: {
   group(id: string): GroupRecord | undefined;
   connections(): StoredConnection[];
-  save(groupId: string, taskBoard: GroupRecord["taskBoard"] | undefined): GroupRecord | undefined;
+  save(groupId: string, taskBoard: GroupRecord["taskBoard"] | undefined): GroupRecord | null | undefined;
 }): RouteHandler {
   return async ({ req, res, path, method, json, readBody }) => {
     const match = /^\/api\/groups\/([\w-]+)\/task-board$/.exec(path);

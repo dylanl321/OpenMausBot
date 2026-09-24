@@ -3,7 +3,7 @@ import { Loader2 } from "lucide-react";
 import type { Bot, Group, GroupDefaultResponder } from "@/state/store";
 import { api, useStore } from "@/state/store";
 import type { WorkItem } from "../../../shared/work-item";
-import type { LinkKind, StatusCategory, SyncedItem } from "../../../shared/work-links";
+import type { LinkKind, SyncedItem } from "../../../shared/work-links";
 import { t } from "@/lib/i18n";
 import { cn } from "@/lib/cn";
 import { firstChangeRequest, workItemKey } from "@/lib/shared-work-sidebar";
