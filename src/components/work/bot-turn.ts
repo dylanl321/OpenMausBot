@@ -68,16 +68,17 @@ export function workerTurns(messages: readonly Message[], item: WorkItem, thread
     const start = slice.find(isUserTurnStart)?.at ?? slice[0]!.at;
     const end = slice.at(-1)!.at;
     const botTexts = slice.filter(message => message.role === "bot" && message.kind === "text" && message.text);
-    const reply = [...botTexts].reverse().find(message => message.turnTerminal) ?? botTexts.at(-1);
+    const steps = toolMessages(slice);
+    const running = steps.some(message => message.tool?.ok === undefined);
+    const reply = botTexts.find(message => message.turnTerminal) ?? (running ? undefined : botTexts.at(-1));
     const plan = botTexts.filter(message => message !== reply).map(message => message.text!).join("\n\n").trim() || undefined;
     const digest = [...slice].reverse().find(message => message.kind === "digest")?.digest;
-    const steps = toolMessages(slice);
     const fromDigest = digest?.tools.map(tool => ({
       name: tool.name, count: tool.count, failed: tool.failed, running: false, sample: tool.sample,
     })) ?? [];
     const tools = fromDigest.length ? fromDigest : groupToolSteps(steps);
-    const running = groupToolSteps(steps.filter(message => message.tool?.ok === undefined));
-    for (const step of running) {
+    const inflight = groupToolSteps(steps.filter(message => message.tool?.ok === undefined));
+    for (const step of inflight) {
       if (!tools.some(tool => tool.name === step.name && tool.running)) tools.push(step);
     }
     const outputs = displayLinks(item).filter(link =>

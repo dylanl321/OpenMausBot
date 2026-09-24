@@ -120,7 +120,6 @@ describe("outcome-centered sidebar", () => {
   it("filters topic tasks and keeps ten-plus rows across three topics scannable", () => {
     const topics = ["payments", "onboarding", "pricing"] as const;
     const statuses = ["active", "needs-input", "completed", "active"] as const;
-    const bots: Bot[] = [chief];
     const groups = topics.map((topic, topicIndex) => {
       const tasks = statuses.map((status, index) => {
         const id = `${topic}-${index}`;
