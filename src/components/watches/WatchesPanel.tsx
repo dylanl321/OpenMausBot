@@ -127,7 +127,7 @@ export function WatchesPanel({
         )}
         <div className="space-y-3" aria-label={t("watches.list")}>
           {state.watches.map((watch) => {
-            const source = watchSourceSummary(watch, connections, manifests);
+            const source = watchSourceSummary(watch, connections, manifests, state.webhooks);
             const connector = connectorForSource(watch.source, connections, manifests);
             return (
               <article key={watch.id} className="rounded-xl border border-hairline/40 bg-card p-3.5" aria-label={watch.name} data-watch-id={watch.id}>

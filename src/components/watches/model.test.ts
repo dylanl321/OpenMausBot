@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Routine } from "@/lib/routines";
+import type { Watch } from "@/lib/watches";
 import {
   buildFilter,
   draftFromRoutine,
   flattenFilter,
   pollingRoutineHint,
   suggestedWatchEvents,
+  watchSourceSummary,
 } from "./model";
 
 const routine = (prompt: string, patch: Partial<Routine> = {}): Routine => ({
@@ -39,6 +41,16 @@ describe("watch model", () => {
     expect(draft.action).toEqual({ type: "run_routine", routineId: "r1" });
     expect(draft.fromRoutineId).toBe("r1");
     expect(draft.events).toContain("item.created");
+  });
+
+  it("names a webhook watch from the trigger, not the id", () => {
+    const watch = {
+      id: "w1",
+      name: "Inbound",
+      source: { type: "webhook", webhookId: "wh-1" },
+    } as Watch;
+    expect(watchSourceSummary(watch, [], [], [{ id: "wh-1", name: "Payments events" }]).detail).toBe("Payments events");
+    expect(watchSourceSummary(watch, [], []).detail).toBe("wh-1");
   });
 
   it("round-trips a flat all/any filter including not and changed-to", () => {
