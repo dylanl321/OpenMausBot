@@ -18149,6 +18149,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             return { ok: true as const, threadId, message };
           }
 
+          // #1194: outstanding assignments beat a live source turn. Park the
+          // words instead of folding them into the assignment reply.
+          if (parksBehindCoordination(bot.id, threadId)) {
+            return startOrQueueDirectMessage(bot.id, threadId, text, replyTo, sendId, messageSender(auth), trigger);
+          }
           // Claude can accept the message inside its live turn. If the write
           // loses a race with turn settlement, or the engine cannot steer, the
           // existing server-side queue records it atomically for the next turn.
