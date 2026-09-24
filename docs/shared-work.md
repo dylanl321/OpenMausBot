@@ -143,4 +143,5 @@ meaningful-input selection still depend on the caller; arbitrary existing
 conversations are not automatically merged or semantically deduplicated.
 
 See [isolated verification](verification/shared-work.md) for coverage and
-reproducible commands.
+reproducible commands. To add Jira, GitLab, Plane, or another tracker, see
+[task connectors](connectors.md).

@@ -21,14 +21,18 @@ const TOKEN = "fixture-gitlab-token";
 const user = readJson("user.json");
 const project = readJson("project.json");
 const mergeRequests = readJson("merge-requests.json") as Record<string, { iid: number }>;
+const issues = readJson("issues.json") as Record<string, { iid: number }>;
 const approvals = readJson("approvals.json") as Record<string, unknown>;
 const commit = readJson("commit.json");
 const pipeline = readJson("pipeline.json");
 const jobs = readJson("jobs.json");
 const discussions = readJson("discussions.json");
+const issueDiscussions = readJson("issue-discussions.json");
 const webhookMr = readJson("webhook-merge-request.json");
 const webhookPipeline = readJson("webhook-pipeline.json");
 const webhookNote = readJson("webhook-note.json");
+const webhookIssue = readJson("webhook-issue.json");
+const webhookIssueNote = readJson("webhook-issue-note.json");
 
 function jsonResponse(body: unknown, status = 200, headers?: Record<string, string>): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -48,7 +52,16 @@ function fixtureFetch(input: Parameters<typeof fetch>[0], init?: RequestInit): P
     const body = approvals[approval[1]];
     return Promise.resolve(body ? jsonResponse(body) : new Response("not found", { status: 404 }));
   }
+  if (url.includes("/issues/") && url.includes("/discussions")) return Promise.resolve(jsonResponse(issueDiscussions));
   if (url.includes("/discussions")) return Promise.resolve(jsonResponse(discussions));
+  const issue = /\/issues\/(\d+)(?:\?|$)/.exec(url);
+  if (issue && !url.includes("?")) {
+    const body = issues[issue[1]];
+    return Promise.resolve(body ? jsonResponse(body) : new Response("not found", { status: 404 }));
+  }
+  if (url.includes("/issues?")) {
+    return Promise.resolve(jsonResponse([issues["140"]], 200, { "x-next-page": "" }));
+  }
   const mr = /merge_requests\/(\d+)(?:\?|$)/.exec(url);
   if (mr && !url.includes("?")) {
     const body = mergeRequests[mr[1]];
@@ -94,17 +107,22 @@ function tool(partial: Partial<RuntimeEvent> & { type: "item.started" | "item.co
 
 describe("gitlab connector contract", () => {
   connectorContract(gitlabConnector, ctx(), [
+    { ref: "acme/payments#140", url: "https://gitlab.com/acme/payments/-/issues/140" },
+    { ref: "#140", url: "https://gitlab.com/acme/payments/-/issues/140" },
     { ref: "acme/payments!482", url: "https://gitlab.com/acme/payments/-/merge_requests/482" },
     { ref: "!482", url: "https://gitlab.com/acme/payments/-/merge_requests/482" },
     { ref: "acme/payments@3f2a1c9", url: "https://gitlab.com/acme/payments/-/commit/3f2a1c9" },
     { ref: "acme/payments#pipeline:9001", url: "https://gitlab.com/acme/payments/-/pipelines/9001" },
     { ref: "acme/payments!482:note:10001", url: "https://gitlab.com/acme/payments/-/merge_requests/482#note_10001" },
+    { ref: "acme/payments#140:note:10003", url: "https://gitlab.com/acme/payments/-/issues/140#note_10003" },
   ], captureCall("mr-create-mcp"));
 });
 
 describe("gitlab connector", () => {
   it("maps merge-request, pipeline, commit and review-thread state", async () => {
     const items = await gitlabConnector.fetch(ctx(), [
+      { kind: "work_item", externalId: "acme/payments#140" },
+      { kind: "work_item", externalId: "#141" },
       { kind: "change_request", externalId: "acme/payments!482" },
       { kind: "change_request", externalId: "!483" },
       { kind: "change_request", externalId: "acme/payments!484" },
@@ -114,8 +132,16 @@ describe("gitlab connector", () => {
       { kind: "build", externalId: "acme/payments#pipeline:9001" },
       { kind: "comment", externalId: "acme/payments!482:note:10001" },
       { kind: "comment", externalId: "acme/payments!482:note:10002" },
+      { kind: "comment", externalId: "acme/payments#140:note:10003" },
     ]);
     const byId = Object.fromEntries(items.map(item => [item.externalId, item]));
+    expect(byId["acme/payments#140"]).toMatchObject({
+      kind: "work_item",
+      title: "Refund failures",
+      state: { label: "opened", category: "todo" },
+      details: { labels: "payments", assignee: "Ada", type: "issue" },
+    });
+    expect(byId["acme/payments#141"]?.state).toEqual({ label: "closed", category: "done" });
     expect(byId["acme/payments!482"]).toMatchObject({
       title: "Round partial refunds",
       state: { label: "opened", category: "in_review" },
@@ -138,11 +164,16 @@ describe("gitlab connector", () => {
       details: { file: "src/refunds.ts", line: 42, mr: "acme/payments!482" },
     });
     expect(byId["acme/payments!482:note:10002"]?.state).toEqual({ label: "resolved", category: "done" });
+    expect(byId["acme/payments#140:note:10003"]).toMatchObject({
+      kind: "comment",
+      title: "Started the refund fix",
+      details: { issue: "acme/payments#140" },
+    });
   });
 
   it("queries opened merge requests and accepts a project token on self-managed GitLab", async () => {
     const page = await gitlabConnector.query!(ctx(), "acme/payments");
-    expect(page.items.map(item => item.externalId)).toEqual(["acme/payments!482", "acme/payments!484"]);
+    expect(page.items.map(item => item.externalId)).toEqual(["acme/payments#140", "acme/payments!482", "acme/payments!484"]);
     expect(page.cursor).toBe("2");
     const urls: string[] = [];
     const headers: string[] = [];
@@ -175,6 +206,13 @@ describe("gitlab connector", () => {
       { kind: "change_request", externalId: "acme/payments!482" },
       { kind: "comment", externalId: "acme/payments!482:note:10001" },
     ]);
+    expect(await gitlabConnector.webhook!(ctx(), headers, webhookIssue)).toEqual([
+      { kind: "work_item", externalId: "acme/payments#140" },
+    ]);
+    expect(await gitlabConnector.webhook!(ctx(), headers, webhookIssueNote)).toEqual([
+      { kind: "work_item", externalId: "acme/payments#140" },
+      { kind: "comment", externalId: "acme/payments#140:note:10003" },
+    ]);
     expect(await gitlabConnector.webhook!(ctx(), new Headers({ "x-gitlab-token": "nope" }), webhookMr)).toEqual([]);
   });
 
@@ -194,6 +232,10 @@ describe("gitlab connector", () => {
       details: { file: "src/refunds.ts", line: 42 },
     });
     expect(pipelineRule?.extract(captureCall("pipeline-glab"))).toMatchObject({ externalId: "acme/payments#pipeline:9001" });
+    const issueCreate = gitlabConnector.capture.find(rule => rule.match.tool?.toString().includes("issue[_-]?create") || rule.produce.kind === "work_item");
+    const glabIssue = gitlabConnector.capture.find(rule => rule.match.command?.toString().includes("issue\\s+create"));
+    expect(issueCreate?.extract(captureCall("issue-create-mcp"))).toMatchObject({ externalId: "acme/payments#140", title: "Refund failures" });
+    expect(glabIssue?.extract(captureCall("issue-create-glab"))).toMatchObject({ externalId: "acme/payments#140" });
     expect(create.extract(captureCall("truncated"))).toBeNull();
   });
 
@@ -220,6 +262,14 @@ describe("gitlab connector", () => {
     expect(parsed.ok).toBe(true);
     const short = await sourceLinkedItem([connection], "Engineering", "gitlab:gitlab-acme:!482", fixtureFetch);
     expect(short?.externalId).toBe("acme/payments!482");
+    const issue = await sourceLinkedItem([connection], "Engineering", "gitlab:gitlab-acme:acme/payments#140", fixtureFetch);
+    expect(issue).toMatchObject({
+      kind: "work_item",
+      externalId: "acme/payments#140",
+      title: "Refund failures",
+      state: { label: "opened", category: "todo" },
+      provenance: "synced",
+    });
   });
 
   it("records a change request with pipeline state and a review thread when a worker opens an MR", async () => {

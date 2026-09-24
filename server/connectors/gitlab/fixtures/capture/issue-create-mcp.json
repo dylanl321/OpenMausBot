@@ -1,0 +1,7 @@
+{
+  "title": "create_issue",
+  "server": "gitlab",
+  "input": "{\"project\":\"acme/payments\",\"title\":\"Refund failures\"}",
+  "output": "{\n  \"iid\": 140,\n  \"title\": \"Refund failures\",\n  \"web_url\": \"https://gitlab.com/acme/payments/-/issues/140\"\n}",
+  "ok": true
+}

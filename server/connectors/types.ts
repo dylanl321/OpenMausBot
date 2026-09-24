@@ -2,6 +2,27 @@ import type { LinkKind, LinkedItem, Provenance, StatusCategory, SyncedItem } fro
 
 export type { SyncedItem };
 
+/** Watch scope fields come from `manifest.watch.scopes`. Connectors read the keys they declared. */
+export type WatchScope = Record<string, string | number | boolean | undefined>;
+
+export type SourceChangeType =
+  | "item.created" | "item.updated" | "item.state_changed" | "item.assigned"
+  | "item.labeled" | "comment.added"
+  | "change_request.opened" | "change_request.updated" | "change_request.merged" | "change_request.closed"
+  | "review.requested" | "review.submitted"
+  | "commit.pushed" | "build.failed" | "build.succeeded" | "branch.created";
+
+export interface SourceChange {
+  id: string;
+  type: SourceChangeType;
+  connectionId: string;
+  item: SyncedItem;
+  before?: { state?: StatusCategory; stateLabel?: string; assignee?: string; labels?: string[] };
+  actor?: { name: string; isBot: boolean };
+  fields: Record<string, string | number | boolean | string[]>;
+  at: number;
+}
+
 export interface SettingField {
   key: string;
   label: string;
@@ -19,6 +40,7 @@ export interface ConnectorManifest {
   secrets: { key: string; label: string; help?: string }[];
   capabilities: { webhooks?: boolean; query?: boolean; poll?: boolean };
   statusDefaults?: Record<string, StatusCategory>;
+  watch?: { scopes: SettingField[]; events: SourceChangeType[] };
 }
 
 export interface ConnectionContext {
@@ -57,6 +79,8 @@ export interface Connector {
   fetch(ctx: ConnectionContext, refs: { kind: LinkKind; externalId: string }[]): Promise<SyncedItem[]>;
   query?(ctx: ConnectionContext, query: string, cursor?: string): Promise<{ items: SyncedItem[]; cursor?: string }>;
   webhook?(ctx: ConnectionContext, headers: Headers, body: unknown): Promise<{ kind: LinkKind; externalId: string }[]>;
+  /** Change feed for watches. Cheap and idempotent: the same cursor returns the same changes. */
+  changes?(ctx: ConnectionContext, scope: WatchScope, cursor: string | null): Promise<{ changes: SourceChange[]; cursor: string }>;
   capture: CaptureRule[];
 }
 

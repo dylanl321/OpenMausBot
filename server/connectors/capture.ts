@@ -42,8 +42,8 @@ function sameParentRef(existing: string | undefined, parentRef: string): boolean
   const left = existing.toLowerCase();
   const right = parentRef.toLowerCase();
   if (left === right) return true;
-  if (right.startsWith("!") && left.endsWith(right)) return true;
-  if (left.startsWith("!") && right.endsWith(left)) return true;
+  if ((right.startsWith("!") || right.startsWith("#")) && left.endsWith(right)) return true;
+  if ((left.startsWith("!") || left.startsWith("#")) && right.endsWith(left)) return true;
   return false;
 }
 

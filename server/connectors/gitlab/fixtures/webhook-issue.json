@@ -1,0 +1,17 @@
+{
+  "object_kind": "issue",
+  "event_type": "issue",
+  "project": {
+    "id": 99,
+    "path_with_namespace": "acme/payments",
+    "web_url": "https://gitlab.com/acme/payments"
+  },
+  "object_attributes": {
+    "id": 200140,
+    "iid": 140,
+    "title": "Refund failures",
+    "state": "opened",
+    "action": "update",
+    "url": "https://gitlab.com/acme/payments/-/issues/140"
+  }
+}

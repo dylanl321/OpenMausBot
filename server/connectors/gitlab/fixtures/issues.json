@@ -1,0 +1,26 @@
+{
+  "140": {
+    "id": 200140,
+    "iid": 140,
+    "project_id": 99,
+    "title": "Refund failures",
+    "state": "opened",
+    "web_url": "https://gitlab.com/acme/payments/-/issues/140",
+    "labels": ["payments"],
+    "assignees": [{ "username": "ada", "name": "Ada" }],
+    "issue_type": "issue",
+    "updated_at": "2026-09-23T14:22:00.000Z"
+  },
+  "141": {
+    "id": 200141,
+    "iid": 141,
+    "project_id": 99,
+    "title": "Export receipts",
+    "state": "closed",
+    "web_url": "https://gitlab.com/acme/payments/-/issues/141",
+    "labels": [],
+    "assignees": [],
+    "issue_type": "issue",
+    "updated_at": "2026-09-22T18:00:00.000Z"
+  }
+}

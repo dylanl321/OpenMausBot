@@ -1,0 +1,7 @@
+{
+  "title": "Bash",
+  "summary": "glab issue create --repo acme/payments -t \"Refund failures\"",
+  "input": "glab issue create --repo acme/payments -t \"Refund failures\"",
+  "output": "#140 Refund failures\nhttps://gitlab.com/acme/payments/-/issues/140",
+  "ok": true
+}

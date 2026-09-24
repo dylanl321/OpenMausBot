@@ -1,0 +1,80 @@
+{
+  "PAY-1": {
+    "id": "550e8400-e29b-41d4-a716-446655440001",
+    "name": "Sample story",
+    "sequence_id": 1,
+    "project": "4af68566-94a4-4eb3-94aa-50dc9427067b",
+    "project_id": "4af68566-94a4-4eb3-94aa-50dc9427067b",
+    "project_identifier": "PAY",
+    "priority": "medium",
+    "state": { "id": "state-backlog", "name": "Backlog", "group": "backlog" },
+    "assignees": [],
+    "created_at": "2026-09-20T09:00:00.000Z",
+    "updated_at": "2026-09-20T09:00:00.000Z"
+  },
+  "PAY-123": {
+    "id": "550e8400-e29b-41d4-a716-446655440123",
+    "name": "Refund failures",
+    "sequence_id": 123,
+    "project": "4af68566-94a4-4eb3-94aa-50dc9427067b",
+    "project_id": "4af68566-94a4-4eb3-94aa-50dc9427067b",
+    "project_identifier": "PAY",
+    "priority": "high",
+    "state": { "id": "state-started", "name": "In Progress", "group": "started" },
+    "assignees": [{ "display_name": "Ada" }],
+    "created_at": "2026-09-21T10:00:00.000Z",
+    "updated_at": "2026-09-23T14:22:00.000Z"
+  },
+  "PAY-140": {
+    "id": "550e8400-e29b-41d4-a716-446655440140",
+    "name": "Export receipts",
+    "sequence_id": 140,
+    "project": "4af68566-94a4-4eb3-94aa-50dc9427067b",
+    "project_id": "4af68566-94a4-4eb3-94aa-50dc9427067b",
+    "project_identifier": "PAY",
+    "priority": "low",
+    "state": { "id": "state-done", "name": "Done", "group": "completed" },
+    "assignees": [],
+    "created_at": "2026-09-18T10:00:00.000Z",
+    "updated_at": "2026-09-22T18:00:00.000Z"
+  },
+  "PAY-201": {
+    "id": "550e8400-e29b-41d4-a716-446655440201",
+    "name": "Triage refund copy",
+    "sequence_id": 201,
+    "project": "4af68566-94a4-4eb3-94aa-50dc9427067b",
+    "project_id": "4af68566-94a4-4eb3-94aa-50dc9427067b",
+    "project_identifier": "PAY",
+    "priority": "none",
+    "state": { "id": "state-todo", "name": "Todo", "group": "unstarted" },
+    "assignees": [],
+    "created_at": "2026-09-23T09:00:00.000Z",
+    "updated_at": "2026-09-23T09:00:00.000Z"
+  },
+  "PAY-202": {
+    "id": "550e8400-e29b-41d4-a716-446655440202",
+    "name": "Cancelled experiment",
+    "sequence_id": 202,
+    "project": "4af68566-94a4-4eb3-94aa-50dc9427067b",
+    "project_id": "4af68566-94a4-4eb3-94aa-50dc9427067b",
+    "project_identifier": "PAY",
+    "priority": "low",
+    "state": { "id": "state-cancelled", "name": "Cancelled", "group": "cancelled" },
+    "assignees": [],
+    "created_at": "2026-09-10T10:00:00.000Z",
+    "updated_at": "2026-09-11T10:00:00.000Z"
+  },
+  "PAY-203": {
+    "id": "550e8400-e29b-41d4-a716-446655440203",
+    "name": "Review refund copy",
+    "sequence_id": 203,
+    "project": "4af68566-94a4-4eb3-94aa-50dc9427067b",
+    "project_id": "4af68566-94a4-4eb3-94aa-50dc9427067b",
+    "project_identifier": "PAY",
+    "priority": "medium",
+    "state": { "id": "state-review", "name": "In Review", "group": "started" },
+    "assignees": [],
+    "created_at": "2026-09-22T10:00:00.000Z",
+    "updated_at": "2026-09-23T11:00:00.000Z"
+  }
+}
