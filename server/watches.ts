@@ -542,7 +542,7 @@ export class WatchManager {
     this.matchSeq.delete(id);
     this.actionDays.delete(id);
     this.receipts = this.receipts.filter((receipt) => receipt.watchId !== id);
-    for (const key of [...this.consumers.keys()]) {
+    for (const key of this.consumers.keys()) {
       if (key.startsWith(`${id}:`)) this.consumers.delete(key);
     }
     this.save();
