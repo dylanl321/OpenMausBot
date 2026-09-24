@@ -25,6 +25,7 @@ import type { ProfileRequestCardData } from "../../shared/profile-request";
 import type { RoutineRequestCardData } from "../../shared/routine-request";
 import type { RoutineRunCardData } from "../../shared/routine-run";
 import type { GroupGoalRunCardData } from "../../shared/group-goal-run";
+import type { WorkItem } from "../../shared/work-item";
 import {
   reviewedSkillSha256,
   skillRequestBehavior,
@@ -41,6 +42,7 @@ import { t } from "@/lib/i18n";
 import { createBotPatchQueue, type BotUpdatePatch } from "./bot-patch-queue";
 import type { OnboardingStatus } from "@/lib/onboarding";
 import { openLiveEvents } from "@/lib/live-events";
+import { randomId } from "@/lib/random-id";
 
 const MAX_ROUTINE_RUNS = 2_000;
 const ACTIVE_ROUTINE_RUN_STATUSES = new Set<RoutineRun["status"]>(["queued", "running", "waiting"]);
@@ -133,6 +135,7 @@ export interface SecretRequestCardData {
 }
 
 export interface Message {
+  workItemReceipt?: { id: string; revision: number; phase: "started" | "result" };
   id: string;
   role: "bot" | "user";
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "routine.run" | "goal.run" | "digest" | "compaction";
@@ -203,6 +206,7 @@ export type GroupDefaultResponder =
 
 /** A room: several bots + you in one shared thread. */
 export interface Group {
+  busyThreadId?: string;
   id: string;
   threadId: string;
   name: string;
@@ -244,6 +248,8 @@ export interface Group {
 /** One of a channel's independent conversations. The channel's threadId
  * points at the active one; folder and pin state belong to the task. */
 export interface GroupTask {
+  workItemId?: string;
+  workItem?: WorkItem;
   threadId: string;
   title: string;
   createdAt: number;
@@ -265,6 +271,7 @@ export interface ModelSelection {
 /** One of a bot's separate contexts: its own thread, transcript and
  * provider session. The bot's threadId points at the active one. */
 export interface Task {
+  workItemId?: string;
   waitingForTeammates?: boolean;
   threadId: string;
   /** Internal routine execution; reachable through its run receipt, not history menus. */
@@ -2767,7 +2774,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       // One identity drives the optimistic row, HTTP retry protection, and
       // canonical SSE reconciliation. Callers may omit it; the store may not.
       if ((action.type === "send" || action.type === "sendGroup") && !action.sendId) {
-        action = { ...action, sendId: crypto.randomUUID() };
+        action = { ...action, sendId: randomId() };
       }
       const botBeforeUpdate =
         action.type === "updateBot" || action.type === "setModel"
@@ -2947,7 +2954,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           if (quizBeforeSend) persistCard(action.botId, quizBeforeSend.id, { dismissed: true });
           const threadId =
             action.threadId ?? stateRef.current.bots.find((bot) => bot.id === action.botId)?.threadId;
-          const sendId = action.sendId ?? crypto.randomUUID();
+          const sendId = action.sendId ?? randomId();
           void waitForExecutionSettings(botBeforeSend ? [botBeforeSend] : [], threadId)
             .then(() => api(`/api/bots/${action.botId}/messages`, {
                 method: "POST",
@@ -3202,7 +3209,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "sendGroup": {
           const threadId =
             action.threadId ?? stateRef.current.groups.find((group) => group.id === action.groupId)?.threadId;
-          const sendId = action.sendId ?? crypto.randomUUID();
+          const sendId = action.sendId ?? randomId();
           void waitForExecutionSettings(executionBotsBeforeAction)
             .then(() => api(`/api/groups/${action.groupId}/messages`, {
               method: "POST",

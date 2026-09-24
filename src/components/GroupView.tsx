@@ -36,6 +36,7 @@ import { ConnectorCard } from "./ConnectorCard";
 import { SecretRequestCard } from "./SecretRequestCard";
 import { hasRoutineExecutionTask, RoutineRunCard } from "./RoutineRunCard";
 import { GoalRunCard } from "./GoalRunCard";
+import { WorkItemPanel } from "./WorkItemPanel";
 import { AttachmentGallery, MessageAttachmentGallery } from "./AttachmentGallery";
 import { OptionCard } from "./OptionCard";
 import { GroupCallButton, GroupCallOverlay } from "./GroupCallView";
@@ -889,7 +890,10 @@ function RoomSetup({ group, members }: { group: Group; members: Bot[] }) {
     </section>
   );
 }
-export function GroupView({ group }: { group: Group }) {
+export function GroupView({ group: suppliedGroup }: { group: Group }) {
+  const selectedWork = suppliedGroup.tasks?.find(task => task.threadId === suppliedGroup.threadId)?.workItem;
+  const group = selectedWork ? { ...suppliedGroup, working: selectedWork.status === "active",
+    busyBotId: suppliedGroup.busyThreadId === suppliedGroup.threadId ? suppliedGroup.busyBotId : null } : suppliedGroup;
   const { state, dispatch } = useStore();
   const remoteClient = window.ogb?.remoteClient?.active === true;
   // Same Windows caption handling as ChatView: drag on the header, shift the
@@ -1143,7 +1147,7 @@ export function GroupView({ group }: { group: Group }) {
       <div
         style={headerDragStyle}
         className={cn(
-          "flex items-center justify-between px-5 py-3",
+          "flex flex-wrap items-center justify-between gap-y-2 px-5 py-3",
           // Room for the drawer button, which overlays this corner below md.
           "pl-11 md:pl-5",
         )}
@@ -1153,7 +1157,7 @@ export function GroupView({ group }: { group: Group }) {
           {!setupPending && !group.dm && <GroupTaskPicker group={group} />}
         </div>
         <div
-          className="flex items-center gap-1.5"
+          className="flex max-w-full flex-wrap items-center gap-1.5"
           // The caption buttons sit over the header's right end; drop this
           // control row 16px (visual only) below the 26px overlay.
           style={controlsShiftStyle}
@@ -1206,6 +1210,8 @@ export function GroupView({ group }: { group: Group }) {
       </div>
 
       {findOpen && <ChatFindBar threadId={group.threadId} onClose={() => setFindOpen(false)} />}
+      {group.tasks?.find(task => task.threadId === group.threadId)?.workItem &&
+        <WorkItemPanel key={group.threadId} item={group.tasks.find(task => task.threadId === group.threadId)!.workItem!} />}
 
       {/* Bulletin: one pinned line; click to edit */}
       {!setupPending && <div className="w-full px-5">

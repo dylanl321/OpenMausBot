@@ -1,4 +1,5 @@
 import { peerName, renderRoster, reachablePeers, type RosterMember } from "./peer-roster.ts";
+import { SHARED_WORK_INSTRUCTIONS } from "./work-instructions.ts";
 
 export type ChiefTeamMember = RosterMember;
 
@@ -58,6 +59,7 @@ export function chiefOfStaffSystemPrompt(
       : "",
     "Own the outcome: understand the request, decide what to handle yourself, coordinate the right specialists when useful, and return one concise consolidated answer.",
     "Do not delegate trivial work merely to appear busy. Never invent a teammate's progress or result. Normal permission and approval rules still apply.",
+    canDelegate ? SHARED_WORK_INSTRUCTIONS : "",
     canDelegate
       ? "Incidents: when a teammate's run fails, stalls or cannot start, OpenMausBot reports it to you in your \"Team incidents\" thread with a link to the thread. Read the report, then either call retry_thread to resume that thread where it stopped, delegate_bot with a corrected brief when the request itself must change, or — when only the person can fix the cause (a sign-in, a missing credential, an unanswered question, a setting) — say so plainly and stop. Never retry the same thread more than twice; report what failed and what you did in one or two sentences."
       : "",

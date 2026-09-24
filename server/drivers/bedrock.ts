@@ -1,4 +1,4 @@
-import { isAnthropicBedrockModel, canonicalBedrockModel, type BedrockConfig, type BedrockSettings } from "../../shared/bedrock.ts";
+import { isAnthropicBedrockModel, canonicalBedrockModel, bedrockChatReasoningEffort, type BedrockConfig, type BedrockSettings } from "../../shared/bedrock.ts";
 import { decodeBedrockConfig, publicBedrockSettings } from "../bedrock-config.ts";
 import type { ProviderDriver, ProviderInstance, ProviderSnapshot } from "../contracts.ts";
 import { createOpenAIChatRuntime, type ChatCompletionRequest, type OpenAIChatMessage } from "./openai-chat.ts";
@@ -80,8 +80,10 @@ export const BedrockDriver: ProviderDriver<BedrockConfig> = {
     const refreshModels = async () => { startedDiscovery = true; await catalog.refresh(); };
     const requestChat = async (request: ChatCompletionRequest) => {
       await connection.authorize(request.model, request.signal ?? connection.signal);
+      const effort = bedrockChatReasoningEffort(catalog.apiModel(request.model));
       const body = {
         model: request.model, messages: await chatMessages(request.messages), stream: request.stream,
+        ...(effort ? { reasoning_effort: effort } : {}),
         ...(request.stream ? { stream_options: { include_usage: true } } : {}),
         ...(request.tools.length && catalog.features(request.model).tools ? { tools: request.tools } : {}),
         ...(config.maxTokens ? (/^(?:openai\.)?gpt-[5-9]/.test(canonicalBedrockModel(catalog.apiModel(request.model)))
@@ -102,6 +104,7 @@ export const BedrockDriver: ProviderDriver<BedrockConfig> = {
       },
       transport: {
         snapshot, secrets: connection.secrets, features: catalog.features,
+        privateEnvironment: config.apiKeyEnv ? [config.apiKeyEnv] : [],
         validateModel: (model) => {
           if (!input.enabled) throw new Error("This Bedrock connection is disabled.");
           connection.checkModel(model);

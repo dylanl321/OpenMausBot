@@ -20,6 +20,7 @@ import type { SkillRequestCardData } from "./skill-request.ts";
 import type { QuestionRequestCardData } from "./ask-question.ts";
 import type { RoutineRunCardData } from "./routine-run.ts";
 import type { GroupGoalRunCardData } from "./group-goal-run.ts";
+import type { WorkItem } from "./work-item.ts";
 import type { RuntimeEvent } from "./runtime-events.ts";
 import type { Notification } from "./notification.ts";
 import type { Routine, RoutineRun } from "./routines.ts";
@@ -105,6 +106,7 @@ export interface TaskUsage {
  * session. Wire form: no resumeCursors or lastInstanceId — the harness's
  * own bookkeeping that no client has ever used. */
 export interface WireTask {
+  workItemId?: string;
   /** Outstanding handoffs, not an active provider turn. */
   waitingForTeammates?: boolean;
   threadId: string;
@@ -300,6 +302,7 @@ export type CardAnswerer =
 /** One transcript line. Serialized as stored — the durable delivery
  * identity (roomRequest) rides the wire unchanged. */
 export interface WireMessage {
+  workItemReceipt?: { id: string; revision: number; phase: "started" | "result" };
   roomRequest?: { id: string; phase: "request" | "result" };
   id: string;
   role: "bot" | "user";
@@ -462,6 +465,8 @@ export type GroupDefaultResponder =
 
 /** One independent conversation inside a user-created channel. */
 export interface GroupTask {
+  workItemId?: string;
+  workItem?: WorkItem;
   threadId: string;
   title: string;
   createdAt: number;
@@ -495,6 +500,7 @@ export interface WireGroup {
   dm?: boolean;
   /** transient: the member currently running a turn. */
   busyBotId?: string | null;
+  busyThreadId?: string;
   /** transient: when the busy member's turn started, for the elapsed
    * readout — the group-side twin of a task's turnStartedAt, stamped on
    * every transition into a busy speaker (never persisted) */

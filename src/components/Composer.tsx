@@ -61,6 +61,7 @@ import {
 import { skillAuthoringEnabled } from "@/lib/feature-flags";
 import { mentionChoicesForQuery } from "@/lib/mentions";
 import { serializeThreadRefs, threadTokenFromPaste, threadTokenSpacing } from "@/lib/thread-refs";
+import { randomId } from "@/lib/random-id";
 import {
   composerSlashTrigger,
   goalTextFromComposer,
@@ -536,7 +537,7 @@ export function Composer({
     const sentDraft: ComposerDraftSnapshot = {
       draftId,
       revision: draftRevision(draftId),
-      sendId: restoredSendId(draftId) ?? crypto.randomUUID(),
+      sendId: restoredSendId(draftId) ?? randomId(),
       text,
       requestText: body,
       attachments: [...attachments],

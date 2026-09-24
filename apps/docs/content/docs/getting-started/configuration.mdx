@@ -54,6 +54,100 @@ Source and headless installations can give separate Claude instances different b
 
 `tools` selects Claude's available built-ins; an explicit empty array disables every built-in, while omitting it keeps Claude's default set. `disallowedTools` applies Claude tool-name patterns as an additional deny list. These settings do not grant or pre-approve MCP integrations, which remain controlled by the instance's mounted integrations and OpenMausBot permission flow.
 
+### Amazon Bedrock
+
+Use **Settings → Engines → Amazon Bedrock** to choose a region, authentication
+method and endpoint. **Automatic — prefer Bedrock token** uses a saved token
+or the server's `OMB_BEDROCK_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`, then legacy
+`BEDROCK_API_KEY`. A Bedrock token is an API key, not an AWS session token.
+Token values may be supplied with or without the `Bearer` prefix.
+
+Alternatively, add an instance in `~/.openmausbot/config.json`. This token
+example reads credentials from the server environment:
+
+```json
+{
+  "instances": {
+    "bedrock": {
+      "driver": "bedrock",
+      "config": {
+        "auth": "api-key",
+        "region": "us-east-1",
+        "endpoint": "runtime",
+        "usOnly": true,
+        "allowAnthropic": false,
+        "blockedModels": []
+      }
+    }
+  }
+}
+```
+
+`allowAnthropic` defaults to `true`; the example disables Claude. `blockedModels`
+accepts model IDs or ARNs and covers their resolved aliases. `usOnly` verifies
+both the source endpoint and inference destinations, rejecting global
+profiles and unverifiable routes. Settings provides these controls without
+editing JSON.
+
+For an AWS profile, use `"auth": "profile", "profile": "work"`. The SDK supports
+SSO, assumed roles and credential refresh; renew SSO with
+`aws sso login --profile work`. For access keys, select `"auth": "access-keys"`
+and supply `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and optional
+`AWS_SESSION_TOKEN` through the environment, or `accessKeyId`,
+`secretAccessKey` and `sessionToken` in `config`. `"auth": "aws"` selects the
+standard AWS credential chain. Each instance can also have an `environment`
+map. An explicit profile never falls back to an unrelated AWS account.
+
+The region comes from `config.region`, then `AWS_REGION`, `AWS_DEFAULT_REGION`,
+the selected AWS profile and finally `us-east-1`. Settings displays the
+resolved region and its source. Select `"endpoint": "mantle"` for Bedrock
+Mantle's regional catalog; Runtime inference profiles and model ARNs belong
+on the Runtime endpoint.
+
+**Test connection / load models** reads the selected region's catalog without
+invoking a model. Choose a returned entry or set `config.model` to a manual
+ID. Manual models remain unverified until discovered. No bundled model is
+assumed to be available in every region.
+
+Saved Bedrock secrets are write-only to the renderer and stored in the private
+`config.json` file (`0600` on Unix). Values in `config` and `environment` are
+plaintext on disk. Profiles or the server environment can keep them outside
+that file. Blank secret inputs preserve saved values; separate removal
+checkboxes clear them.
+
+For a Bedrock-compatible gateway, point `config.url` at its Bedrock base URL
+and name the token environment variable and required header:
+
+```json
+{
+  "instances": {
+    "gateway-bedrock": {
+      "driver": "bedrock",
+      "config": {
+        "auth": "api-key",
+        "region": "us-east-1",
+        "url": "https://gateway.example/bedrock",
+        "apiKeyEnv": "GATEWAY_BEDROCK_TOKEN",
+        "apiKeyHeader": "x-api-key",
+        "model": "gateway.chat-v1"
+      }
+    }
+  }
+}
+```
+
+Set `GATEWAY_BEDROCK_TOKEN` on the server process. If a named token variable is
+missing, the connection reports an error instead of selecting another account.
+Omitting `apiKeyHeader` uses `Authorization: Bearer …`, including on native
+AWS endpoints; the Messages API uses its `x-api-key` header.
+`"auth": "bearer"` is accepted as an alias for `"api-key"`.
+These fields and endpoint overrides are also available in Advanced settings.
+
+HTTPS URLs may include a gateway path prefix. A custom token header sends
+both catalog and inference requests to that gateway; use `controlUrl` if its
+catalog has a separate base URL. Custom gateways cannot be used with US-only
+inference because the app cannot verify their destination regions.
+
 ### Claude Code isolation
 
 A bot on the Claude engine sees only what its owner gave it: the MCP servers under **Settings → MCP servers**, its integrations (computer, browser, agents, phone), and its own project's `.mcp.json`. It does **not** load this machine's Claude Code setup — the MCP servers and claude.ai connectors in your user or local Claude config, your skills and agents, your hooks, or your personal `~/.claude/CLAUDE.md`. Loading those into every turn of every bot cost one measured desktop about 407 extra tools and 10k tokens per model call.

@@ -10,6 +10,7 @@ const empty: Settings = { apiKeyConfigured: false, apiKeySaved: false, accessKey
 
 function editable(settings: Settings): BedrockConfig {
   return { region: settings.region ?? "", profile: settings.profile ?? "", auth: settings.auth ?? "auto",
+    apiKeyEnv: settings.apiKeyEnv ?? "", apiKeyHeader: settings.apiKeyHeader ?? "",
     endpoint: settings.endpoint ?? "runtime", api: settings.api ?? "auto", model: settings.model ?? "",
     tools: settings.tools !== false, maxTokens: settings.maxTokens, allowAnthropic: settings.allowAnthropic !== false,
     usOnly: settings.usOnly === true, blockedModels: settings.blockedModels ?? [], url: settings.url ?? "", controlUrl: settings.controlUrl ?? "" };
@@ -20,7 +21,7 @@ function editable(settings: Settings): BedrockConfig {
 // must wait for a catalog from the new connection.
 function catalogKey(config: BedrockConfig): string {
   return JSON.stringify([config.region, config.profile, config.auth, config.endpoint, config.url, config.controlUrl,
-    config.apiKey, config.accessKeyId, config.secretAccessKey, config.sessionToken]);
+    config.apiKey, config.apiKeyEnv, config.apiKeyHeader, config.accessKeyId, config.secretAccessKey, config.sessionToken]);
 }
 
 function modelError(model: BedrockModelInfo, draft: BedrockConfig, region: string): string | null {
@@ -235,6 +236,10 @@ export function BedrockSettings({ instance, className }: { instance: InstanceInf
           {(["url", "controlUrl"] as const).map((field) => <label key={field} className="block text-ink-secondary">{t(`bedrock.${field}`)}
             <input aria-label={t(`bedrock.${field}`)} className={inputClass} value={draft[field]} spellCheck={false} placeholder="https://…" onChange={(event) => change({ [field]: event.target.value })} />
           </label>)}
+          {(["apiKeyEnv", "apiKeyHeader"] as const).map(field => <label key={field} className="block text-ink-secondary">{t(`bedrock.${field}`)}
+            <input aria-label={t(`bedrock.${field}`)} className={inputClass} value={draft[field]} spellCheck={false} onChange={event => change({ [field]: event.target.value })} />
+          </label>)}
+          <p className="text-ink-secondary">{t("bedrock.gateway.help")}</p>
         </div>
       </details>
       <div className="flex flex-wrap items-center justify-end gap-2">

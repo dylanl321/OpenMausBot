@@ -18,7 +18,9 @@ The driver tests cover token precedence, named profiles and their regions,
 AWS key pairs/session tokens, role/profile credential refresh, per-connection
 isolation, regional foundation models, paginated inference profiles, Mantle's
 separate catalog, partial discovery, model capabilities and all three wire
-protocols. US restrictions check every backing destination and reject global
+protocols. Gateway tests cover named token variables, custom headers, URL
+path prefixes, legacy bearer settings and missing-token account isolation.
+US restrictions check every backing destination and reject global
 profiles, unverifiable aliases and ambient/custom endpoint redirection.
 Provider and model blocks also cover opaque aliases. Native Converse and
 Messages tool continuations preserve signed reasoning, require approval,
@@ -67,7 +69,9 @@ names. It validates regional lists, per-model toggles and aliases, disabling
 Claude, US/global profile filters, rejecting a non-US region in US-only mode,
 discarding stale catalog responses, saving tokens and AWS keys without
 revealing them, retaining a draft after a rejected save, and loading a named
-profile from files under the fixture's home. It then selects that profile's
+profile from files under the fixture's home. Advanced token-variable/header
+edits clear the previous catalog, send the configured gateway header and
+persist without returning the token. It then selects that profile's
 regional model and sends an actual turn to the offline provider through the
 renderer. The picker must identify Bedrock as a cloud engine and display the
 resolved region; the browser console must have no errors.

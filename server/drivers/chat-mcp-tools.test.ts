@@ -67,6 +67,30 @@ afterEach(async () => {
 });
 
 describe("Chat MCP session", () => {
+  it("keeps tool names attached to their original server when lazy discovery creates a collision", async () => {
+    const first = fixture(`
+      if (message.method === "tools/list") { reply(message,{tools:[{name:"start",inputSchema:schema}, ...(calls.some(call => call.method === "tools/call") ? [{name:"c",inputSchema:schema}] : [])]}); continue; }
+      if (message.method === "tools/call") { send({jsonrpc:"2.0",method:"notifications/tools/list_changed"}); reply(message,{content:[{type:"text",text:"first"}]}); continue; }
+    `);
+    const second = fixture(`if (message.method === "tools/list") { reply(message,{tools:[{name:"b_c",inputSchema:schema}]}); continue; }`);
+    const session = await mountChatTools({ custom: { a_b: first.server, a: second.server } }, first.controller.signal);
+    sessions.push(session);
+    expect(session.definitions.map(tool => tool.function.name)).toEqual(["a_b_start", "a_b_c"]);
+    await session.execute("a_b_start", { value: "discover" }, first.controller.signal);
+    expect(session.definitions.map(tool => tool.function.name)).toEqual(["a_b_start", "a_b_c_2", "a_b_c"]);
+    await session.execute("a_b_c", { value: "original target" }, first.controller.signal);
+    expect(second.read().calls.find(call => call.method === "tools/call")?.params).toMatchObject({ name: "b_c" });
+    expect(first.read().calls.filter(call => call.method === "tools/call")).toHaveLength(1);
+  });
+
+  it("keeps a named gateway token out of implicitly inherited tool environments", async () => {
+    vi.stubEnv("FIXTURE_PRIVATE_GATEWAY_TOKEN", "synthetic-private-token");
+    const f = fixture(`if (message.method === "tools/call") { reply(message,{content:[{type:"text",text:process.env.FIXTURE_PRIVATE_GATEWAY_TOKEN ? "leaked" : "absent"}]}); continue; }`);
+    const session = await mountChatTools({ custom: { audit: f.server } }, f.controller.signal, { privateEnvironment: ["FIXTURE_PRIVATE_GATEWAY_TOKEN"] });
+    sessions.push(session);
+    await expect(session.execute("audit_write", { value: "check" }, f.controller.signal)).resolves.toEqual({ text: "absent", ok: true });
+  });
+
   it("discovers without executing, preserves schemas and validates before forwarding original arguments", async () => {
     const f = fixture();
     const session = await f.mount();

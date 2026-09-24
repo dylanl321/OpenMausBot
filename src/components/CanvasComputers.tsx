@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPoi
 import { createPortal } from "react-dom";
 import { Box, ExternalLink, Loader2, Monitor, Plus, RefreshCw, X } from "lucide-react";
 import { api, useStore } from "@/state/store";
+import { randomId } from "@/lib/random-id";
 import type { TeamComputer } from "../../shared/team-computer";
 import { ConfirmDialog } from "./ConfirmDialog";
 
@@ -28,7 +29,7 @@ export function CanvasComputers({ open, createRequest, drop, sections, onClose, 
   const [busy, setBusy] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
-  const requestId = useRef(crypto.randomUUID());
+  const requestId = useRef(randomId());
   const submittedName = useRef<string | null>(null);
   const nameInput = useRef<HTMLInputElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
@@ -40,7 +41,7 @@ export function CanvasComputers({ open, createRequest, drop, sections, onClose, 
   const [assignment, setAssignment] = useState<{ computer: TeamComputer; section: string | null } | null>(null);
   const [viewer, setViewer] = useState<{ id: string; url: string } | null>(null);
   const [heldHere, setHeldHere] = useState<string | null>(null);
-  const controlLeaseId = useRef(crypto.randomUUID());
+  const controlLeaseId = useRef(randomId());
   const heldHereRef = useRef<string | null>(null);
   const shelf = useRef<HTMLElement>(null);
   const pointer = useRef<{ id: number; x: number; y: number; moved: boolean; computer: TeamComputer; handle: HTMLElement } | null>(null);
@@ -197,7 +198,7 @@ export function CanvasComputers({ open, createRequest, drop, sections, onClose, 
           if (!value || !inventory?.configured) return;
           submittedName.current = value;
           void mutate("create", () => api("/api/team-computers", { method: "POST", body: JSON.stringify({ name: value, requestId: requestId.current, acknowledgeCost: true }) }), () => {
-            setName(""); setCreating(false); requestId.current = crypto.randomUUID(); submittedName.current = null;
+            setName(""); setCreating(false); requestId.current = randomId(); submittedName.current = null;
           }, () => {
             submittedName.current = null;
           });

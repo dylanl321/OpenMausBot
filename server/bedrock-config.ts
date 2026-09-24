@@ -11,15 +11,18 @@ function validEndpoint(value: string): boolean {
     const url = new URL(value);
     const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
     return (url.protocol === "https:" || (url.protocol === "http:" && local))
-      && !url.username && !url.password && !url.search && !url.hash && /^\/?$/.test(url.pathname);
+      && !url.username && !url.password && !url.search && !url.hash;
   } catch { return false; }
 }
 
 export const bedrockConfigSchema = z.object({
   region: optionalSetting.refine((value) => !value || /^[a-z]{2}(?:-[a-z]+)+-\d+$/.test(value), "Use an AWS region such as us-east-1."),
   profile: optionalSetting.refine((value) => !value || singleLine(value), "Use an AWS profile name."),
-  auth: z.enum(["auto", "api-key", "profile", "access-keys", "aws"]).optional(),
+  auth: z.enum(["auto", "api-key", "bearer", "profile", "access-keys", "aws"]).optional(),
   apiKey: credential,
+  apiKeyEnv: optionalSetting.refine(value => !value || /^[A-Za-z_][A-Za-z0-9_]*$/.test(value), "Use an environment variable name for the Bedrock token."),
+  apiKeyHeader: optionalSetting.refine(value => !value || (/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(value)
+    && !/^(?:host|content-type|content-length|connection|transfer-encoding|x-amz-.*)$/i.test(value)), "Use a token header such as x-api-key; transport and AWS signing headers are reserved."),
   accessKeyId: credential,
   secretAccessKey: credential,
   sessionToken: credential,
@@ -34,13 +37,22 @@ export const bedrockConfigSchema = z.object({
   allowAnthropic: z.boolean().optional(),
   usOnly: z.boolean().optional(),
   blockedModels: z.array(z.string().trim().min(1).max(2048)).max(2000).optional(),
-  url: optionalSetting.refine((value) => !value || validEndpoint(value), "Use an HTTPS endpoint origin (HTTP is allowed only on loopback)."),
-  controlUrl: optionalSetting.refine((value) => !value || validEndpoint(value), "Use an HTTPS control-plane endpoint origin (HTTP is allowed only on loopback)."),
+  url: optionalSetting.refine((value) => !value || validEndpoint(value), "Use an HTTPS endpoint URL without credentials, query or fragment (HTTP is allowed only on loopback)."),
+  controlUrl: optionalSetting.refine((value) => !value || validEndpoint(value), "Use an HTTPS control-plane endpoint URL without credentials, query or fragment (HTTP is allowed only on loopback)."),
 }).strict();
 
 export function decodeBedrockConfig(raw: unknown): BedrockConfig {
   const parsed = bedrockConfigSchema.safeParse(raw ?? {});
   if (!parsed.success) throw new Error(`Bedrock settings: ${parsed.error.issues[0]?.message ?? "invalid configuration"}`);
+  // The downloaded provider used this name for AWS bearer tokens. Keep
+  // existing instance configurations usable with the Settings UI.
+  if (parsed.data.auth === "bearer") parsed.data.auth = "api-key";
+  if (parsed.data.apiKeyHeader && parsed.data.apiKeyHeader.toLowerCase() !== "authorization" && !parsed.data.url) {
+    throw new Error("A gateway token header requires an explicit Bedrock endpoint URL.");
+  }
+  if (parsed.data.apiKeyHeader && parsed.data.auth && !["auto", "api-key"].includes(parsed.data.auth)) {
+    throw new Error("A gateway token header requires token authentication, not an AWS profile or access keys.");
+  }
   if (parsed.data.endpoint === "mantle" && parsed.data.api === "converse") {
     throw new Error("Bedrock Mantle uses Chat Completions or Messages. Select automatic API selection.");
   }
@@ -56,7 +68,8 @@ export function mergeBedrockConfig(config: unknown, patch: BedrockConfig): Bedro
 
 export function publicBedrockSettings(config: BedrockConfig): BedrockSettings {
   return {
-    region: config.region ?? "", profile: config.profile ?? "", auth: config.auth ?? "auto",
+    region: config.region ?? "", profile: config.profile ?? "", auth: config.auth === "bearer" ? "api-key" : config.auth ?? "auto",
+    apiKeyEnv: config.apiKeyEnv ?? "", apiKeyHeader: config.apiKeyHeader ?? "",
     endpoint: config.endpoint ?? "runtime", api: config.api ?? "auto", model: config.model ?? "",
     ...(config.maxTokens ? { maxTokens: config.maxTokens } : {}),
     tools: config.tools !== false, apiKeyConfigured: Boolean(config.apiKey), apiKeySaved: Boolean(config.apiKey),

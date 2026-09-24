@@ -559,6 +559,9 @@ describe("agents-proxy MCP surface", () => {
       "tool_result_read",
       "list_shared_computers",
       "shared_computer",
+      "ensure_work_item",
+      "get_work_item",
+      "update_work_item",
       "list_bots",
       "list_rooms",
       "ask_bot",
@@ -653,6 +656,7 @@ describe("agents-proxy MCP surface", () => {
     const readNames = [
       "tool_result_read",
       "list_shared_computers",
+      "get_work_item",
       "list_bots", "list_rooms", "check_delegation", "wait_delegation", "list_threads",
       "list_team_setup",
       "session_search", "session_read", "list_routines", "skills_list",
@@ -2051,7 +2055,7 @@ describe("coordinate_bots arguments (room turn)", () => {
     } });
     expect(res.result.isError).toBe(true);
     const text = res.result.content[0].text;
-    for (const field of ["bot_ids", "message", "request_key", "group_id", "rework", "label"]) {
+    for (const field of ["bot_ids", "message", "request_key", "state_key", "group_id", "rework", "label"]) {
       expect(text).toContain(field);
     }
     expect(text).toContain("botIds");

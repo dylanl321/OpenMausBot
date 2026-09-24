@@ -70,6 +70,7 @@ export function messagesStream(response: ServerResponse, events: Array<{ type: s
 
 export interface BedrockWireRequest { path: string; url: URL; method?: string; headers: IncomingHttpHeaders; body: Record<string, any> }
 export interface FakeBedrockOptions {
+  basePath?: string;
   models?: FoundationModelSummary[];
   profiles?: InferenceProfileSummary[];
   unavailable?: string[];
@@ -97,31 +98,32 @@ export async function fakeBedrock(options: FakeBedrockOptions = {}) {
       const request: BedrockWireRequest = { path: url.pathname, url, method: req.method, headers: req.headers, body: source ? JSON.parse(source) : {} };
       requests.push(request);
       if (await options.handle?.(request, res)) return;
-      if (request.path === "/foundation-models") return json({ modelSummaries: models });
-      if (request.path.startsWith("/foundation-model/")) {
-        const id = decodeURIComponent(request.path.slice("/foundation-model/".length));
+      const path = options.basePath ? request.path.slice(options.basePath.length) : request.path;
+      if (path === "/foundation-models") return json({ modelSummaries: models });
+      if (path.startsWith("/foundation-model/")) {
+        const id = decodeURIComponent(path.slice("/foundation-model/".length));
         const model = models.find((entry) => entry.modelId === id || entry.modelArn === id);
         return model ? json({ modelDetails: model }) : json({ message: "Unknown fixture foundation model" }, 404);
       }
-      if (request.path.startsWith("/foundation-model-availability/")) return json({ regionAvailability: options.unavailable?.includes(decodeURIComponent(request.path.split("/").at(-1)!)) ? "NOT_AVAILABLE" : "AVAILABLE" });
-      if (request.path === "/inference-profiles") {
+      if (path.startsWith("/foundation-model-availability/")) return json({ regionAvailability: options.unavailable?.includes(decodeURIComponent(path.split("/").at(-1)!)) ? "NOT_AVAILABLE" : "AVAILABLE" });
+      if (path === "/inference-profiles") {
         const page = url.searchParams.get("nextToken") ? 1 : 0;
         return json({ inferenceProfileSummaries: page ? profiles.slice(2) : profiles.slice(0, 2), ...(page || profiles.length <= 2 ? {} : { nextToken: "page-2" }) });
       }
-      if (request.path.startsWith("/inference-profiles/")) {
-        const id = decodeURIComponent(request.path.slice("/inference-profiles/".length));
+      if (path.startsWith("/inference-profiles/")) {
+        const id = decodeURIComponent(path.slice("/inference-profiles/".length));
         const found = profiles.find((entry) => entry.inferenceProfileId === id || entry.inferenceProfileArn === id);
         return found ? json(found) : json({ message: "Unknown fixture profile" }, 404);
       }
-      if (request.path === "/v1/models") return json({ data: (options.mantleModels ?? ["openai.gpt-oss-120b", "moonshot.kimi-k2.5", "anthropic.claude-sonnet-4-6"]).map((id) => ({ id })) });
-      if (request.path.endsWith("/converse-stream")) { converseAnswer(res); return; }
-      if (request.path.endsWith("/converse")) return json({ output: { message: { role: "assistant", content: [{ text: "Helper response." }] } }, stopReason: "end_turn", usage: { inputTokens: 12, outputTokens: 3, totalTokens: 15 } });
-      if (request.path.endsWith("/chat/completions")) {
+      if (path === "/v1/models") return json({ data: (options.mantleModels ?? ["openai.gpt-oss-120b", "moonshot.kimi-k2.5", "anthropic.claude-sonnet-4-6"]).map((id) => ({ id })) });
+      if (path.endsWith("/converse-stream")) { converseAnswer(res); return; }
+      if (path.endsWith("/converse")) return json({ output: { message: { role: "assistant", content: [{ text: "Helper response." }] } }, stopReason: "end_turn", usage: { inputTokens: 12, outputTokens: 3, totalTokens: 15 } });
+      if (path.endsWith("/chat/completions")) {
         if (!request.body.stream) return json({ choices: [{ message: { content: "Helper response." }, finish_reason: "stop" }] });
         res.writeHead(200, { "content-type": "text/event-stream" });
         res.end('data: {"choices":[{"index":0,"delta":{"content":"Hello from Bedrock chat."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'); return;
       }
-      if (request.path === "/anthropic/v1/messages") {
+      if (path === "/anthropic/v1/messages") {
         if (!request.body.stream) return json({ content: [{ type: "text", text: "Helper response." }], stop_reason: "end_turn", usage: { input_tokens: 5, output_tokens: 2 } });
         const events = [
           { type: "message_start", message: { usage: { input_tokens: 5, output_tokens: 0 } } },
@@ -131,13 +133,13 @@ export async function fakeBedrock(options: FakeBedrockOptions = {}) {
         ];
         messagesStream(res, events); return;
       }
-      json({ message: `Unknown fixture endpoint: ${request.path}` }, 404);
+      json({ message: `Unknown fixture endpoint: ${path}` }, 404);
     } catch { if (!res.headersSent) json({ message: "Invalid fixture request" }, 400); else res.destroy(); }
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Bedrock fixture did not listen");
-  return { url: `http://127.0.0.1:${address.port}`, requests, models, profiles,
+  return { url: `http://127.0.0.1:${address.port}${options.basePath ?? ""}`, requests, models, profiles,
     async close() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); },
   };
 }

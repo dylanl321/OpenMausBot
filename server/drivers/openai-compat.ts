@@ -2,6 +2,7 @@
 // other endpoints that speak the OpenAI chat-completions contract.
 import type { ModelCatalog, ProviderDriver } from "../contracts.ts";
 import { createOpenAIChatRuntime } from "./openai-chat.ts";
+import { bedrockChatReasoningEffort } from "../../shared/bedrock.ts";
 
 const DRIVER_KIND = "openai-compat";
 const DEFAULT_IDLE_TIMEOUT_MS = 180_000;
@@ -21,7 +22,9 @@ const DEFAULT_MODELS: ModelCatalog = {
 
 export interface OpenAICompatConfig {
   tools?: boolean;
+  toolApproval?: "ask" | "always";
   url: string;
+  modelUrls?: Record<string, string>;
   apiKeyEnv: string;
   key?: string;
   model?: string;
@@ -38,14 +41,58 @@ function isOpenRouterUrl(url: string): boolean {
   }
 }
 
+function configuredModelLabel(id: string): string {
+  const model = id.split("::").at(-1) ?? id;
+  const match = /^(?:us\.)?openai\.gpt-(\d+(?:\.\d+)?)-(sol|luna|terra|astra)$/iu.exec(model);
+  return match
+    ? `GPT-${match[1]} ${match[2][0].toUpperCase()}${match[2].slice(1).toLowerCase()}`
+    : id;
+}
+
+function bedrockEndpointRegion(endpoint: string): string | undefined {
+  try {
+    return /^bedrock-(?:runtime|mantle)(?:-fips)?\.([a-z]{2}(?:-[a-z]+)+-\d+)\.(?:amazonaws\.com(?:\.cn)?|api\.aws)$/.exec(new URL(endpoint).hostname)?.[1];
+  } catch { return undefined; }
+}
+
+function decodeModelUrls(raw: unknown): Record<string, string> | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("modelUrls must be an object");
+  }
+  const decoded: Record<string, string> = Object.create(null);
+  for (const [model, value] of Object.entries(raw)) {
+    if (!model.trim() || typeof value !== "string" || !value.trim()) {
+      throw new Error("modelUrls must map model ids to URLs");
+    }
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      throw new Error(`Invalid model URL for ${model}`);
+    }
+    if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password || url.search || url.hash) {
+      throw new Error(`Invalid model URL for ${model}`);
+    }
+    decoded[model] = value.replace(/\/+$/, "");
+  }
+  return decoded;
+}
+
 function decodeConfig(raw: unknown): OpenAICompatConfig {
   const config = (raw ?? {}) as Record<string, unknown>;
   if (config.tools !== undefined && typeof config.tools !== "boolean") throw new Error("tools must be a boolean");
+  if (config.toolApproval !== undefined && config.toolApproval !== "ask" && config.toolApproval !== "always") {
+    throw new Error("toolApproval must be ask or always");
+  }
   if (config.managedModels !== undefined && (!Array.isArray(config.managedModels) || !config.managedModels.length || config.managedModels.some(model => typeof model !== "string" || !model.trim()))) throw new Error("Invalid managed models.");
+  const modelUrls = decodeModelUrls(config.modelUrls);
   const envUrl = process.env.OPENAI_COMPAT_URL;
   return {
     ...(config.tools !== undefined ? { tools: config.tools as boolean } : {}),
+    ...(config.toolApproval !== undefined ? { toolApproval: config.toolApproval as "ask" | "always" } : {}),
     ...(config.managedModels ? { managedModels: config.managedModels as string[] } : {}),
+    ...(modelUrls ? { modelUrls } : {}),
     url: (typeof config.url === "string" && config.url ? config.url : envUrl || "https://openrouter.ai/api/v1")
       .replace(/\/+$/, ""),
     apiKeyEnv: typeof config.apiKeyEnv === "string" && config.apiKeyEnv
@@ -96,8 +143,20 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       process.env[config.apiKeyEnv] ??
       process.env.OPENAI_COMPAT_API_KEY ??
       "";
+    const urlForModel = (model: string) => (config.modelUrls && Object.hasOwn(config.modelUrls, model)
+      ? config.modelUrls[model] : config.url).replace(/\/+$/, "");
+    const optionFor = (id: string, label = configuredModelLabel(id)): ModelCatalog["options"][number] => {
+      const region = bedrockEndpointRegion(urlForModel(id));
+      return { id, label: region ? `${label} · ${region}` : label, custom: true };
+    };
+    const configuredIds = [...new Set([...(config.model ? [config.model] : []), ...Object.keys(config.modelUrls ?? {})])];
     let catalog: ModelCatalog = config.managedModels
-      ? { default: config.managedModels[0], options: config.managedModels.map(id => ({ id, label: id })) }
+      ? {
+          default: config.managedModels[0],
+          options: config.managedModels.map(id => optionFor(id)),
+        }
+      : config.modelUrls || bedrockEndpointRegion(config.url)
+      ? { default: config.model ?? configuredIds[0] ?? "", options: configuredIds.map(id => optionFor(id)) }
       : config.model
       ? {
           default: config.model,
@@ -124,16 +183,10 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           const id = typeof row.id === "string" ? row.id : "";
           if (!id || seen.has(id)) continue;
           seen.add(id);
-          options.push({
-            id,
-            label: typeof row.name === "string" && row.name.trim() ? row.name : id,
-            custom: true,
-          });
+          options.push(optionFor(id, typeof row.name === "string" && row.name.trim() ? row.name : configuredModelLabel(id)));
         }
         if (!options.length) return;
-        if (config.model && !options.some((model) => model.id === config.model)) {
-          options.unshift({ id: config.model, label: config.model, custom: true });
-        }
+        options.unshift(...configuredIds.filter(id => !options.some(model => model.id === id)).map(id => optionFor(id)));
         catalog = { default: config.model ?? options[0].id, options };
       } catch {
         // Catalog refresh is opportunistic; keep the seeded options.
@@ -145,8 +198,9 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       input,
       driverKind: DRIVER_KIND,
       apiKey,
-      apiUrl: config.url,
+      apiUrl: urlForModel,
       tools: config.tools,
+      approveToolsWithoutPrompt: config.toolApproval === "always",
       models: () => catalog,
       refreshModels: fetchModels,
       requestBody: (model, messages, stream) => ({
@@ -154,7 +208,8 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         messages,
         stream,
         stream_options: stream ? { include_usage: true } : undefined,
-        ...(config.provider && isOpenRouterUrl(config.url)
+        ...(bedrockChatReasoningEffort(model) ? { reasoning_effort: bedrockChatReasoningEffort(model) } : {}),
+        ...(config.provider && isOpenRouterUrl(urlForModel(model))
           ? { provider: { order: [config.provider], allow_fallbacks: false } }
           : {}),
       }),
@@ -168,9 +223,11 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       nativeLog: {
         source: "openai-compat.chat.completions",
         outgoing: (_turn, messages, model) => ({ model, messageCount: messages.length }),
-        incoming: ({ text, reasoning, usage }) => ({
+        incoming: ({ text, reasoning, usage, toolCalls, finishReason }) => ({
           textLength: text.length,
           reasoningLength: reasoning.length,
+          toolCallCount: toolCalls.length,
+          finishReason,
           usage,
         }),
       },

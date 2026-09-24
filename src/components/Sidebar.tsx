@@ -13,6 +13,7 @@ import {
   ClipboardCopy,
   Copy,
   Crown,
+  FolderKanban,
   FolderMinus,
   FolderPlus,
   Library,
@@ -91,6 +92,8 @@ import { sidebarSectionAttention } from "@/lib/sidebar-attention";
 import { botListItemPointerIntent } from "@/lib/sidebar-selection";
 import { phoneSettingsAction, SidebarPhoneButton } from "./SidebarPhoneButton";
 import { SidebarMoreMenu } from "./SidebarMoreMenu";
+import { SharedWorkThreadTree } from "./SharedWorkThreadTree";
+import { selectedSharedWork, sharedWorkIds, sharedWorkMatches } from "@/lib/shared-work-sidebar";
 import { DesktopWorkspaceSwitcher } from "./DesktopWorkspaceSwitcher";
 import { profileInitials, SidebarProfileMenu } from "./SidebarProfileMenu";
 import { SidebarSectionHeader } from "./SidebarSectionHeader";
@@ -197,16 +200,18 @@ export function GroupListItem({
 }) {
   const { state, dispatch } = useStore();
   const selected = state.activeView === "chat" && state.selectedId === group.id;
-  const [threadsOpen, setThreadsOpen] = useState(selected || Boolean(query));
-  useEffect(() => { if (selected || query) setThreadsOpen(true); }, [selected, query]);
+  const workCount = group.tasks?.filter(task => task.workItem).length ?? 0;
+  const topicSelected = selectedSharedWork(state)?.groupId === group.id;
+  const [threadsOpen, setThreadsOpen] = useState(selected || topicSelected || workCount > 0 || Boolean(query));
+  useEffect(() => { if (selected || topicSelected || query || workCount > 0) setThreadsOpen(true); }, [selected, topicSelected, query, workCount]);
   const expanded = !group.dm && threadsOpen && density !== "icons";
   const members = group.memberIds
     .map((id) => state.bots.find((b) => b.id === id))
     .filter((b): b is Bot => Boolean(b));
   const last = group.messages.at(-1);
   return (
-    <>
-    <div className="group relative">
+    <div data-work-topic={workCount > 0 ? group.id : undefined}>
+    <div className={cn("group relative", workCount > 0 && "rounded-lg border-l-2 border-accent/50 bg-accent/5")}>
     <button
       onClick={() => dispatch({ type: "select", id: group.id })}
       onContextMenu={(e) => {
@@ -230,13 +235,14 @@ export function GroupListItem({
       title={density === "icons" ? group.name : undefined}
       aria-label={density === "icons" ? group.name : undefined}
     >
-      <StackedMauses members={members} density={density} />
+      {workCount > 0 ? <FolderKanban size={density === "icons" ? 30 : 23} aria-hidden="true" className="shrink-0 text-accent" /> : <StackedMauses members={members} density={density} />}
       <div className={cn("min-w-0 flex-1", density === "icons" && "hidden")}>
         <div className="flex items-baseline justify-between gap-2">
           <span className="truncate text-[14px] font-semibold text-ink">{group.name}</span>
           {selected && last && !expanded && <span className="shrink-0 text-[10px] text-ink-secondary">{formatTime(last.at)}</span>}
           {expanded && group.unread && <span className="size-1.5 shrink-0 rounded-full bg-accent" aria-label={t("task.unreadMany")} />}
         </div>
+        {workCount > 0 && <div className="mt-0.5 truncate text-[10px] text-ink-secondary">{t("work.topic")} · {t(workCount === 1 ? "work.topicTask" : "work.topicTasks", { count: workCount })}</div>}
         {!expanded && <div className="flex items-center justify-between gap-2">
           <span className="truncate text-[11px] text-ink-secondary">{groupPreview(group, state.bots)}</span>
           {group.unread && <span className="size-2 shrink-0 rounded-full bg-accent" />}
@@ -252,7 +258,7 @@ export function GroupListItem({
     </button>}
     </div>
     {expanded && <GroupThreadList group={group} selected={selected} density={density} query={group.name.toLowerCase().includes(query.toLowerCase()) ? "" : query} />}
-    </>
+    </div>
   );
 }
 
@@ -273,13 +279,17 @@ export function GroupThreadList({ group, selected, density = "comfortable", quer
   const busy = Boolean(group.working || group.busyBotId);
   const waiting = state.bots.find((bot) => bot.id === group.busyBotId)?.activity === "waiting-on-you";
   const tasks = (group.tasks ?? [{ threadId: group.threadId, title: group.name, createdAt: group.createdAt }]).map((task) => ({
-    ...task, busy: task.threadId === group.threadId && busy, unread: task.threadId === group.threadId && group.unread,
-    activity: task.threadId === group.threadId && waiting ? "waiting-on-you" as const : undefined,
+    ...task, busy: task.workItem ? task.workItem.status === "active" : task.threadId === group.threadId && busy, unread: task.threadId === group.threadId && group.unread,
+    activity: task.workItem?.status === "needs-input" || (!task.workItem && task.threadId === group.threadId && waiting) ? "waiting-on-you" as const : undefined,
   }));
-  const visible = orderedThreadList(visibleSidebarThreads(tasks, group.threadId, query, [], showAll));
-  useRevealedThreadRow(state.revealThread, selected ? group.threadId : null);
+  const activeWork = selectedSharedWork(state);
+  const activeThread = activeWork?.groupId === group.id ? activeWork.threadId : group.threadId;
+  const matchingTasks = query ? tasks.filter(task => task.workItem ? sharedWorkMatches(task.workItem, state.bots, query) : task.title.toLowerCase().includes(query.toLowerCase())) : tasks;
+  const visible = orderedThreadList(visibleSidebarThreads(matchingTasks, activeThread, "", [], showAll || Boolean(query)));
+  const selectedBot = state.bots.find(bot => bot.id === state.selectedId);
+  useRevealedThreadRow(state.revealThread, activeWork?.groupId === group.id && selectedBot ? selectedBot.threadId : selected ? group.threadId : null);
   return <div className="mb-2 ml-5 space-y-0.5 border-l border-hairline/30 pl-2" role="group" aria-label={t("task.namedList", { name: group.name })}>
-    {visible.map((task) => <SidebarThreadRow key={task.threadId} task={task} ownerId={group.id} current={selected && task.threadId === group.threadId} compact={density === "compact"}
+    {visible.map((task) => task.workItem ? <SharedWorkThreadTree key={task.threadId} item={task.workItem} compact={density === "compact"} query={query} /> : <SidebarThreadRow key={task.threadId} task={task} ownerId={group.id} current={selected && task.threadId === group.threadId} compact={density === "compact"}
       onSelect={() => { if (task.threadId !== group.threadId) dispatch({ type: "switchGroupTask", groupId: group.id, threadId: task.threadId }); else dispatch({ type: "select", id: group.id }); }}
       onRename={(title) => dispatch({ type: "renameGroupTask", groupId: group.id, threadId: task.threadId, title })}
       onDelete={() => dispatch({ type: "deleteGroupTask", groupId: group.id, threadId: task.threadId })}
@@ -869,8 +879,9 @@ export function BotDeleteMenuItem({ deleting, onClick }: { deleting: boolean; on
  * Waiting and working stay visible as status, not as a sort key. */
 export function BotThreadList({ bot, selected, density = "comfortable", query = "", hidden = false }: { bot: Bot; selected: boolean; density?: SidebarDensity; query?: string; hidden?: boolean }) {
   const { state, dispatch } = useStore();
+  const topicWorkIds = sharedWorkIds(state.groups);
   const tasks = (bot.tasks ?? [{ threadId: bot.threadId, title: t("task.newShort"), createdAt: 0 }])
-    .filter((task) => !task.routineRunId)
+    .filter((task) => !task.routineRunId && !topicWorkIds.has(task.workItemId ?? ""))
     .map((task) => ({ ...task, queued: Boolean(state.pendingQueued[task.threadId]?.length) }));
   const projects = bot.projects ?? [];
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -1060,7 +1071,8 @@ export function BotListItem({
   // a thread opened from a chip or #Title link: unfold this bot so the row
   // it lands on is on screen (BotThreadList scrolls it into view)
   const reveal = state.revealThread;
-  const revealHere = Boolean(reveal && (bot.threadId === reveal.threadId || bot.tasks?.some((task) => task.threadId === reveal.threadId)));
+  const revealedTask = bot.tasks?.find(task => task.threadId === reveal?.threadId);
+  const revealHere = Boolean(reveal && !sharedWorkIds(state.groups).has(revealedTask?.workItemId ?? "") && (bot.threadId === reveal.threadId || revealedTask));
   useEffect(() => { if (revealHere && showThreads) setThreadsOpen(true); }, [reveal, revealHere, showThreads]);
   const deleting = state.deletingBots[bot.id] === true;
   const mascotMotion = selected && state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
@@ -1671,7 +1683,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
         b.tasks?.some((task) => !task.routineRunId && task.title.toLowerCase().includes(q)) ||
         b.projects?.some((folder) => folder.name.toLowerCase().includes(q)),
     );
-  const visibleGroups = state.groups.filter((g) => !q || g.name.toLowerCase().includes(q) || g.tasks?.some((task) => task.title.toLowerCase().includes(q)));
+  const visibleGroups = state.groups.filter((g) => !q || g.name.toLowerCase().includes(q) || g.tasks?.some((task) => task.workItem ? sharedWorkMatches(task.workItem, state.bots, q) : task.title.toLowerCase().includes(q)));
   const {
     unsectionedChief,
     pinnedBots,

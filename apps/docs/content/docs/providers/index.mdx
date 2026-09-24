@@ -23,8 +23,37 @@ OpenMausBot does not proxy every message through its own model account. It start
 | Qwen | Qwen CLI login | ACP integration |
 | Hermes | Hermes CLI login | ACP integration |
 | Pi | Pi CLI login | Native driver |
+| Amazon Bedrock | Bedrock token, AWS profile, access keys, or workload credentials | Regional Runtime/Mantle catalogs, streaming, tools, approvals, and model access controls |
 
 Additional driver instances can be declared in local configuration. Unavailable engines remain visible with a reason instead of crashing the provider fleet.
+
+## Amazon Bedrock
+
+Open **Settings → Engines → Amazon Bedrock** to connect with a Bedrock token,
+an AWS profile, access keys, or the AWS credential chain. Automatic
+authentication prefers a Bedrock token. Credentials can also come from the
+server environment or per-instance configuration.
+
+Choose a region and either **Bedrock Runtime** or **Bedrock Mantle**, then use
+**Test connection / load models** to read that endpoint's regional catalog.
+The app shows regional models and inference-profile destinations; it does
+not substitute models from another region when discovery fails. Loading the
+catalog does not invoke a model. Use a separate connection for each region or
+account.
+
+All conversational providers are allowed by default. Settings can disable
+Anthropic/Claude, block individual models and their aliases, and require
+US-only inference. These controls also apply when a request runs, including
+continuations after tools.
+
+Bedrock bots support streaming, task threads, shared tasks and MCP tools.
+Image and tool controls follow each model's capabilities. Models without
+tool calling remain available for chat. Runtime supports Converse, Chat
+Completions and Messages; Mantle supports Chat Completions and Messages.
+Embedding, image-generation and speech models are not conversational engines.
+
+See [Bedrock configuration](/docs/getting-started/configuration#amazon-bedrock)
+for environment, profile and gateway examples.
 
 ## Detection
 

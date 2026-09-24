@@ -6,6 +6,7 @@ import type { BotVisibility } from "../shared/wire.ts";
 import type { BotRecord, GroupRecord, Message, Store, TaskRecord } from "./store.ts";
 import type { Routine, RoutineManager } from "./routines.ts";
 import { redactSecretsInText } from "./redact.ts";
+import { publicWorkItem, type WorkItems } from "./work-items.ts";
 import {
   listMemoryLogs, listMemoryTopics, readMemoryFile, readMemoryLog, readMemoryTopic,
   writeMemoryFile, writeMemoryLog, writeMemoryTopic,
@@ -53,7 +54,7 @@ function messageText(message: Message): string {
   return parts.filter(Boolean).join("\n");
 }
 
-export function createTeamBackup(store: Store, routines: Routine[], name: string): TeamBackup {
+export function createTeamBackup(store: Store, routines: Routine[], name: string, workItems?: WorkItems): TeamBackup {
   const botIds = new Set(store.bots.map((bot) => bot.id));
   const warnings: string[] = [];
   const history = (record: BotRecord | GroupRecord): BackupTask[] => {
@@ -114,6 +115,9 @@ export function createTeamBackup(store: Store, routines: Routine[], name: string
       activeTask: bot.threadId, tasks: history(bot),
     })),
     groups,
+    ...(workItems ? { workItems: [...workItems.records.values()].filter(item => store.groupTaskByThread(item.groupId, item.threadId) && botIds.has(item.coordinatorBotId))
+      .map(item => ({ ...publicWorkItem(item), identity: item.identity, inputHash: item.inputHash,
+        assignments: item.assignments.filter(assignment => store.taskByThread(assignment.botId, assignment.threadId)) })) } : {}),
     routines: validRoutines.map((routine) => ({
       name: routine.name, prompt: routine.prompt, target: routine.target, botId: routine.botId,
       groupId: routine.groupId, runOn: routine.runOn, schedule: routine.schedule,
@@ -129,7 +133,8 @@ export function createTeamBackup(store: Store, routines: Routine[], name: string
 
 /** Import is always additive, including sections and Chiefs. Rollback owns
  * only the fresh records below and cannot touch any pre-existing bot/chat. */
-export function importTeamBackup(store: Store, routines: RoutineManager, input: unknown, selection: ModelSelection, options: { visibility?: BotVisibility } = {}) {
+export function importTeamBackup(store: Store, routines: RoutineManager, input: unknown, selection: ModelSelection, options: { visibility?: BotVisibility; workItems?: WorkItems } = {}) {
+  const { workItems } = options;
   const backup = parseTeamBackup(input);
   const bots: BotRecord[] = [];
   const groups: GroupRecord[] = [];
@@ -138,6 +143,10 @@ export function importTeamBackup(store: Store, routines: RoutineManager, input: 
   const existingGroupIds = new Set(store.groups.map((group) => group.id));
   const botIds = new Map<string, string>();
   const groupIds = new Map<string, string>();
+  // Task keys are scoped to their bot/room in portable backups. Keying by
+  // the parsed task object also handles two owners both naming a task "main".
+  const threadIds = new Map<BackupTask, string>();
+  const createdWorkIds: string[] = [];
   const takenNames = new Set(store.bots.map((bot) => bot.name.trim().toLowerCase()));
   const takenGroups = new Set(store.groups.map((group) => group.name.trim().toLowerCase()));
   const takenSections = new Set([
@@ -151,6 +160,7 @@ export function importTeamBackup(store: Store, routines: RoutineManager, input: 
     return sections.get(key)!;
   };
   const restore = (task: BackupTask, threadId: string) => {
+    threadIds.set(task, threadId);
     const ids = new Map(task.messages.map((message) => [message.id, newId()]));
     const messages: Message[] = task.messages.map((message) => ({
       id: ids.get(message.id)!, kind: "text", role: message.role, text: message.text, at: message.at,
@@ -240,8 +250,23 @@ export function importTeamBackup(store: Store, routines: RoutineManager, input: 
       createdRoutines.push(routines.create({ ...source, botId: botIds.get(source.botId)!,
         groupId: source.target === "room-goal" ? groupIds.get(source.groupId!) : undefined, enabled: false }));
     }
+    for (const source of workItems ? backup.workItems ?? [] : []) {
+      const id = newId();
+      const groupId = groupIds.get(source.groupId)!;
+      const hub = backup.groups.find(group => group.key === source.groupId)!.tasks.find(task => task.key === source.threadId)!;
+      const threadId = threadIds.get(hub)!;
+      createdWorkIds.push(id);
+      const item = workItems!.restore({ ...source, id, groupId, threadId, coordinatorBotId: botIds.get(source.coordinatorBotId)!,
+        scope: store.group(groupId)!.section ?? "", assignments: source.assignments.map(assignment => {
+          const worker = backup.bots.find(bot => bot.key === assignment.botId)!.tasks.find(task => task.key === assignment.threadId)!;
+          return { ...assignment, id: newId(), botId: botIds.get(assignment.botId)!, threadId: threadIds.get(worker)!, requestId: undefined };
+        }) });
+      store.linkGroupWorkItem(groupId, threadId, item.id);
+      for (const assignment of item.assignments) store.patchTask(assignment.botId, assignment.threadId, { workItemId: item.id });
+    }
     return { name: backup.name, bots, groups, routines: createdRoutines };
   } catch (error) {
+    if (createdWorkIds.length) workItems?.discardImported(createdWorkIds);
     for (const routine of createdRoutines) routines.remove(routine.id);
     // createBot/createGroup can throw during persistence before returning.
     // This synchronous import cannot interleave another writer, so include

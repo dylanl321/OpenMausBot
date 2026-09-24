@@ -75,6 +75,15 @@ afterAll(async () => { await waitForExit(child, { signal: "SIGINT", graceMs: 30_
     expect(await evaluate("document.querySelector('[data-bedrock-settings]').innerText")).toContain("Unsaved settings");
     expect((await settings()).settings.apiKeyConfigured).toBe(false);
 
+    await fill("Token environment variable (optional)", "BEDROCK_UI_FIXTURE_TOKEN");
+    await fill("Gateway token header (optional)", "x-api-key");
+    expect(await catalog()).toContain("0 of 0 allowed");
+    await load();
+    expect(await catalog()).toContain("5 of 5 allowed");
+    const gatewayRequest = upstream.requests.findLast(request => request.path.startsWith("/foundation-models"));
+    expect(gatewayRequest?.headers["x-api-key"]).toBe(BEDROCK_FIXTURE_TOKEN);
+    expect(gatewayRequest?.headers.authorization).toBeUndefined();
+
     await click("Allow Anthropic and Claude models");
     expect(await catalog()).toContain("2 of 5 allowed");
     expect(await evaluate(`${input("Allow model opaque-claude")}.disabled`)).toBe(true);
@@ -110,7 +119,8 @@ afterAll(async () => { await waitForExit(child, { signal: "SIGINT", graceMs: 30_
     expect(await catalog()).toContain("0 of 0 allowed");
     await load(); await click("Allow Anthropic and Claude models");
     await save();
-    expect((await settings()).settings).toMatchObject({ resolvedRegion: "us-east-1", apiKeySaved: true, allowAnthropic: false });
+    expect((await settings()).settings).toMatchObject({ resolvedRegion: "us-east-1", apiKeySaved: true, allowAnthropic: false,
+      apiKeyEnv: "BEDROCK_UI_FIXTURE_TOKEN", apiKeyHeader: "x-api-key" });
     expect(await evaluate(`${input("Bedrock token")}.value`)).toBe("");
     expect(JSON.stringify(await settings())).not.toContain(BEDROCK_FIXTURE_TOKEN);
     await evaluate("document.querySelector('[data-bedrock-settings] details').open=false; document.querySelector('[data-engine-card=bedrock]').scrollIntoView({block:'start'}); true");
@@ -134,6 +144,9 @@ afterAll(async () => { await waitForExit(child, { signal: "SIGINT", graceMs: 30_
     expect(readFileSync(join(info!.dataDir, "config.json"), "utf8")).not.toContain("synthetic-draft-replacement");
     await evaluate("window.fetch=window.bedrockFetch; true");
     await fill("Bedrock token", "");
+    await evaluate("document.querySelector('[data-bedrock-settings] details').open=true; true");
+    await fill("Token environment variable (optional)", "");
+    await fill("Gateway token header (optional)", "");
     await select("Authentication", "access-keys");
     await fill("AWS access key ID", BEDROCK_FIXTURE_KEY);
     await fill("AWS secret access key", BEDROCK_FIXTURE_SECRET);

@@ -38,6 +38,56 @@ async function fixture(config: BedrockConfig = {}, options: FakeBedrockOptions =
 }
 
 describe("Bedrock credentials and AWS wire protocols", () => {
+  it("loads the downloaded bearer configuration and sends the required regional chat parameters", async () => {
+    const model = "us.openai.gpt-6-luna";
+    const f = await fixture({ auth: "bearer", apiKey: "", model, maxTokens: 128 }, {},
+      { AWS_BEARER_TOKEN_BEDROCK: `Bearer ${BEDROCK_FIXTURE_TOKEN}` });
+    await f.instance.adapter.sendTurn({ threadId: "legacy-bearer", text: "Hello", model });
+    expect(await f.recorder.until(event => event.type === "turn.completed")).toMatchObject({ ok: true });
+    const request = f.requests.find(entry => entry.path === "/openai/v1/chat/completions");
+    expect(request).toMatchObject({ headers: { authorization: `Bearer ${BEDROCK_FIXTURE_TOKEN}` },
+      body: { model, reasoning_effort: "none", max_completion_tokens: 128 } });
+    expect(describeBedrockSettings(f.instance, f.config)).toMatchObject({ auth: "api-key", apiKeyConfigured: true, apiKeySaved: false });
+    expect(bedrockModelFeatures("us.openai.gpt-6-astra")).toMatchObject({ tools: false, images: true });
+  });
+
+  it.each(["converse", "chat-completions", "messages"] as const)("keeps named gateway tokens and URL prefixes through catalog and %s requests", async api => {
+    const model = "amazon.nova-lite-v1:0";
+    const f = await fixture({ auth: "api-key", apiKey: "", apiKeyEnv: "FIXTURE_BEDROCK_GATEWAY_KEY", apiKeyHeader: "x-gateway-key", controlUrl: "", model, api },
+      { basePath: "/bedrock" }, { FIXTURE_BEDROCK_GATEWAY_KEY: BEDROCK_FIXTURE_TOKEN });
+    await f.instance.refreshModels!();
+    expect(f.instance.models.options.some(option => option.id === model)).toBe(true);
+    await f.instance.adapter.sendTurn({ threadId: `gateway-${api}`, text: "Hello", model });
+    expect(await f.recorder.until(event => event.type === "turn.completed")).toMatchObject({ ok: true });
+    expect(f.requests.some(request => request.path === "/bedrock/foundation-models")).toBe(true);
+    expect(f.requests.some(request => request.method === "POST")).toBe(true);
+    for (const request of f.requests) {
+      expect(request.url.pathname).toMatch(/^\/bedrock\//);
+      expect(request.headers["x-gateway-key"]).toBe(BEDROCK_FIXTURE_TOKEN);
+      expect(request.headers.authorization).toBeUndefined();
+    }
+  });
+
+  it("does not fall back to another account when a named token variable is missing", async () => {
+    const connection = await createBedrockConnection({ apiKeyEnv: "FIXTURE_MISSING_BEDROCK_KEY" }, { AWS_BEARER_TOKEN_BEDROCK: BEDROCK_FIXTURE_TOKEN });
+    cleanups.push(async () => connection.close());
+    await expect(connection.ready()).rejects.toThrow("Bedrock API key");
+    expect(() => decodeBedrockConfig({ apiKeyHeader: "host", url: "https://gateway.example/bedrock" })).toThrow("reserved");
+    expect(() => decodeBedrockConfig({ apiKeyHeader: "x-api-key" })).toThrow("explicit Bedrock endpoint");
+    await expect(createBedrockConnection({ usOnly: true, region: "us-east-1", apiKeyHeader: "x-api-key", url: "https://gateway.example/bedrock" }, {})).rejects.toThrow("regional AWS endpoint");
+  });
+
+  it.each(["OMB_BEDROCK_API_KEY", "AWS_BEARER_TOKEN_BEDROCK", "BEDROCK_API_KEY"])("keeps the explicit %s account ahead of ambient token aliases", async variable => {
+    vi.stubEnv("OMB_BEDROCK_API_KEY", "ambient-wrong-account");
+    vi.stubEnv("AWS_BEARER_TOKEN_BEDROCK", "ambient-wrong-account");
+    const f = await fixture({ apiKey: "", model: "amazon.nova-lite-v1:0" }, {}, { [variable]: BEDROCK_FIXTURE_TOKEN });
+    await f.instance.generateText!("Check the selected account");
+    expect(f.requests[0].headers.authorization).toBe(`Bearer ${BEDROCK_FIXTURE_TOKEN}`);
+    const empty = await createBedrockConnection({}, { [variable]: "" });
+    cleanups.push(async () => empty.close());
+    await expect(empty.ready()).rejects.toThrow(variable);
+  });
+
   it.each([
     ["runtime", "amazon.nova-lite-v1:0", "/model/amazon.nova-lite-v1%3A0/converse-stream"],
     ["runtime", "us.openai.gpt-5.4", "/openai/v1/chat/completions"],
@@ -357,7 +407,9 @@ describe("native agent turns", () => {
     expect(existsSync(artifact)).toBe(false);
     if (behavior === "cancel") await f.instance.adapter.interruptTurn("agent", turnId.turnId);
     else await f.instance.adapter.respondToRequest("agent", request.requestId!, { behavior });
-    expect(await f.recorder.until((event) => event.type === "turn.completed")).toMatchObject({ ok: behavior === "allow" });
+    // Denial is a valid conversation outcome: no tool ran, and the model
+    // can acknowledge the denial. Cancellation still interrupts the turn.
+    expect(await f.recorder.until((event) => event.type === "turn.completed")).toMatchObject({ ok: behavior !== "cancel" });
     if (behavior === "allow") expect(readFileSync(artifact, "utf8")).toBe("verified"); else expect(existsSync(artifact)).toBe(false);
     if (behavior !== "cancel") {
       const continuation = f.requests.filter((entry) => entry.path.endsWith("/converse-stream"))[1].body.messages;
@@ -428,7 +480,7 @@ describe("native agent turns", () => {
     expect(existsSync(artifact)).toBe(false);
     if (behavior === "cancel") await f.instance.adapter.interruptTurn("messages-agent", turn.turnId);
     else await f.instance.adapter.respondToRequest("messages-agent", approval.requestId!, { behavior });
-    expect(await f.recorder.until((event) => event.type === "turn.completed")).toMatchObject({ ok: behavior === "allow" });
+    expect(await f.recorder.until((event) => event.type === "turn.completed")).toMatchObject({ ok: behavior !== "cancel" });
     if (behavior === "allow") expect(readFileSync(artifact, "utf8")).toBe("messages verified"); else expect(existsSync(artifact)).toBe(false);
     if (behavior !== "cancel") {
       const continuation = f.requests.filter((entry) => entry.path === "/anthropic/v1/messages")[1].body.messages;

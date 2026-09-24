@@ -1,7 +1,7 @@
 // Scripted provider fixture that exercises the REAL injected agents MCP proxy.
 // The plan and evidence are confined to the isolated launcher's temporary home.
 import { spawn } from "node:child_process";
-import { appendFileSync, readFileSync, existsSync } from "node:fs";
+import { appendFileSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { waitForExit } from "./cleanup.ts";
 
@@ -95,20 +95,33 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
       evidence.push(await call("tools/list"));
       evidence.push(await call("tools/call", { name: "list_room_targets", arguments: {} }));
       for (const step of steps) {
-        const response = await call("tools/call", { name: step.tool ?? "coordinate_bots", arguments: step.arguments });
+        const argumentsForStep = { ...step.arguments };
+        if (argumentsForStep.work_item_id === "$current") {
+          const lookup = await call("tools/call", { name: "get_work_item", arguments: {} });
+          evidence.push(lookup);
+          const current = JSON.parse(lookup.result.content[0].text).current;
+          if (!current) throw new Error("Fixture expected a current shared task");
+          argumentsForStep.work_item_id = current.id;
+          if (argumentsForStep.expected_revision === "$current") argumentsForStep.expected_revision = current.revision;
+          if (argumentsForStep.completed_criteria === "$current") argumentsForStep.completed_criteria = current.acceptanceCriteria;
+        }
+        const response = await call("tools/call", { name: step.tool ?? "coordinate_bots", arguments: argumentsForStep });
         evidence.push({ step, response });
         if (Boolean(response.error || response.result?.isError) !== Boolean(step.expectError)) throw new Error(`Unexpected tool outcome: ${JSON.stringify(response)}`);
       }
       if (typeof plan.progress === "string") progress?.(plan.progress);
       // Let a race fixture release this exact turn after its settings mutation,
       // independent of machine load. The run timeout also bounds this wait.
-      if (plan.gateFile && !existsSync(plan.gateFile)) await new Promise<void>(resolve => {
-        gateTimer = setInterval(() => {
-          if (!existsSync(plan.gateFile)) return;
-          clearInterval(gateTimer);
-          resolve();
-        }, 10);
-      });
+      if (plan.gateFile && !existsSync(plan.gateFile)) {
+        if (plan.gateEnteredFile) writeFileSync(plan.gateEnteredFile, "provider waiting");
+        await new Promise<void>(resolve => {
+          gateTimer = setInterval(() => {
+            if (!existsSync(plan.gateFile)) return;
+            clearInterval(gateTimer);
+            resolve();
+          }, 10);
+        });
+      }
       if (typeof plan.progressAfterGate === "string") progress?.(plan.progressAfterGate);
       if (plan.delayMs) await new Promise(resolve => { delayTimer = setTimeout(resolve, plan.delayMs); });
       if (plan.fail && !resumed) throw new Error("Scripted addressed agent failure");

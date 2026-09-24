@@ -191,8 +191,9 @@ It also exercises live provider capabilities against the memory-update route:
 both sibling appends survive, stale replacements conflict, foreign ownership is
 refused, and stopped-turn tokens expire without revoking the running sibling.
 Provider working directories are checked against each task's private directory;
-an explicitly shared project folder cannot launch a second engine until its
-owner stops. On macOS, an inert computer descriptor inside the disposable home
+an explicitly shared project folder parks a second engine until its owner
+stops, then launches it automatically without losing or repeating its message.
+On macOS, an inert computer descriptor inside the disposable home
 checks lazy first-use ownership and exact-generation release through the real
 control gate. It does not launch a desktop driver or prove actual UI actions.
 The fixture prints its server log and a retained `.log.json` evidence path with

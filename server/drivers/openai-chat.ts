@@ -49,6 +49,18 @@ export interface ChatCompletion {
 }
 type Completion = ChatCompletion;
 
+function toolOperationKey(call: ChatToolCall): string {
+  const stable = (value: unknown): string => {
+    if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+    const record = object(value);
+    if (record) return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${stable(record[key])}`).join(",")}}`;
+    return JSON.stringify(value) ?? "null";
+  };
+  let argumentsKey = call.function.arguments;
+  try { argumentsKey = stable(JSON.parse(argumentsKey)); } catch { /* Validation below returns malformed arguments to the model. */ }
+  return `${call.function.name}\0${argumentsKey}`;
+}
+
 export interface ChatCompletionRequest {
   messages: OpenAIChatMessage[];
   model: string;
@@ -68,6 +80,7 @@ export interface ChatTransport {
   complete(request: ChatCompletionRequest): Promise<ChatCompletion | null>;
   request(request: ChatCompletionRequest): Promise<Response>;
   features(model: string): { tools: boolean; images: boolean };
+  privateEnvironment?: readonly string[];
 }
 
 interface CompletionJson {
@@ -106,7 +119,7 @@ interface RuntimeOptions<Config> {
   input: DriverCreateInput<Config>;
   driverKind: string;
   apiKey: string;
-  apiUrl: string;
+  apiUrl: string | ((model: string) => string);
   models: () => ModelCatalog;
   requestBody(model: string, messages: OpenAIChatMessage[], stream: boolean): Record<string, unknown>;
   httpErrorLabel: string;
@@ -124,6 +137,8 @@ interface RuntimeOptions<Config> {
   /** Explicit text-only mode for endpoints/models that cannot accept tools. */
   tools?: boolean;
   transport?: ChatTransport;
+  /** Operator-configured trust for every tool exposed by this instance. */
+  approveToolsWithoutPrompt?: boolean;
 }
 
 const usageFrom = (usage: CompletionJson["usage"]): Usage | null =>
@@ -185,9 +200,10 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         ? AbortSignal.any([signal, timeoutController.signal])
         : timeoutController.signal;
 
+      const apiUrl = typeof options.apiUrl === "function" ? options.apiUrl(model) : options.apiUrl;
       const response = options.transport
         ? await options.transport.request({ ...request, signal: activeSignal })
-        : await fetch(`${options.apiUrl}/chat/completions`, {
+        : await fetch(`${apiUrl}/chat/completions`, {
         method: "POST",
         headers: { authorization: `Bearer ${options.apiKey}`, "content-type": "application/json" },
         body: JSON.stringify({
@@ -396,13 +412,17 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       let stopReason: string | null = null;
       let failure: string | undefined;
       let toolFailed = false;
+      let toolProtocolFailed = false;
+      let emptyFinalAllowed = false;
+      let emptyResponseRetries = 0;
       const denials: string[] = [];
-      const seenCalls = new Set<string>();
+      const seenCalls = new Map<string, Set<string>>();
+      const usedCallIds = new Set<string>();
       try {
         const features = options.transport?.features(model);
         if (turn.images?.length && features?.images === false) throw new ChatProtocolError("This model does not support image input. Choose a vision model or remove the images.");
         tools = await mountChatTools(options.tools === false || features?.tools === false ? undefined : turn.integrations, abort.signal,
-          options.transport ? { extended: true, images: features?.images === true } : undefined);
+          options.transport ? { extended: true, images: features?.images === true, privateEnvironment: options.transport.privateEnvironment } : undefined);
         for (let round = 0; round < 16; round++) {
           abort.signal.throwIfAborted();
           native("out", options.nativeLog.outgoing(turn, messages, model));
@@ -462,30 +482,80 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
           if (reply.trim()) emit({ ...base(turn.threadId, turnId), type: "item.completed", itemType: "assistant_text", text: safeText(reply) });
           abort.signal.throwIfAborted();
           if (!completion.toolCalls.length) {
-            if (!reply.trim()) throw new ChatProtocolError("provider returned an empty response");
             if (completion.finishReason && completion.finishReason !== "stop") {
               throw new ChatProtocolError(`provider did not finish the response (${completion.finishReason})`);
             }
-            if (toolFailed) {
+            if (toolProtocolFailed) {
               stopReason = "tool_error";
-              throw new ChatProtocolError("One or more tool operations failed or were denied. See the tool results; the final response is not an execution receipt.");
+              throw new ChatProtocolError("The provider requested an invalid tool operation. See the tool result for details.");
+            }
+            if (!reply.trim()) {
+              // Coordination and proposal tools explicitly tell the model to
+              // end the turn. GPT-5.6 represents that as a blank stop frame;
+              // the successful tool receipt is the turn's useful result.
+              if (emptyFinalAllowed && !toolFailed) {
+                ok = true;
+                break;
+              }
+              // Other blank stops are intermittently emitted by compatible
+              // endpoints, including when a model interprets "do not reply
+              // until done" as permission to stop before doing any work.
+              // Ask it to continue. Completed effects are represented in the
+              // transcript and the call fingerprint guard still rejects an
+              // exact tool replay.
+              if (emptyResponseRetries < 2) {
+                emptyResponseRetries += 1;
+                messages.push({
+                  role: "user",
+                  content: seenCalls.size
+                    ? "Continue the original request using completed tool results. Do not repeat completed operations. Return a final answer only when the requested completion condition is satisfied or a precise external blocker remains."
+                    : "Continue working on the original request now. Use the available tools as needed. Return a final answer only when the requested completion condition is satisfied or a precise external blocker remains.",
+                });
+                continue;
+              }
+              if (toolFailed) {
+                stopReason = "tool_error";
+                throw new ChatProtocolError("One or more tool operations failed or were denied, and the provider returned no final answer. See the tool results.");
+              }
+              throw new ChatProtocolError("provider returned an empty response");
             }
             ok = true;
             break;
           }
           if (!tools.definitions.length) throw new ChatProtocolError("provider returned tool calls, but no tools are available for this turn");
-          // Validate IDs for the entire batch before executing any of its calls.
-          for (const call of completion.toolCalls) {
-            if (seenCalls.has(call.id)) throw new ChatProtocolError("provider reused a tool-call ID; refusing to repeat an operation");
-            seenCalls.add(call.id);
-          }
-          if (seenCalls.size > MAX_CHAT_TOOL_CALLS) throw new ChatProtocolError("tool-call limit reached");
-          messages.push({ role: "assistant", content: completion.text || null, tool_calls: completion.toolCalls,
+          // Some compatible providers restart their call counter for each
+          // completion and return call_0 again. Duplicate IDs inside one batch
+          // remain invalid, as does a true replay of the same operation. A
+          // recycled ID for a different operation is namespaced before it is
+          // added to the continuation transcript.
+          const batchIds = new Set<string>();
+          const toolCalls = completion.toolCalls.map((call) => {
+            if (completion.nativeContent && usedCallIds.has(call.id)) {
+              throw new ChatProtocolError("native provider reused a tool-call ID; refusing to change its signed continuation");
+            }
+            if (batchIds.has(call.id)) {
+              throw new ChatProtocolError("provider returned duplicate tool-call IDs in one operation batch");
+            }
+            batchIds.add(call.id);
+            const fingerprint = toolOperationKey(call);
+            const previous = seenCalls.get(call.id) ?? new Set<string>();
+            if (previous.has(fingerprint)) {
+              throw new ChatProtocolError("provider repeated a previously executed tool operation");
+            }
+            previous.add(fingerprint);
+            seenCalls.set(call.id, previous);
+            let id = call.id;
+            for (let suffix = 2; usedCallIds.has(id); suffix += 1) id = `${call.id}_${suffix}`;
+            usedCallIds.add(id);
+            return id === call.id ? call : { ...call, id };
+          });
+          if (usedCallIds.size > MAX_CHAT_TOOL_CALLS) throw new ChatProtocolError("tool-call limit reached");
+          messages.push({ role: "assistant", content: completion.text || null, tool_calls: toolCalls,
             ...(completion.protocolReasoning ? { reasoning_content: completion.protocolReasoning } : {}),
             ...(completion.protocolReasoningDetails.length ? { reasoning_details: completion.protocolReasoningDetails } : {}),
             ...(completion.nativeContent ? { nativeContent: completion.nativeContent } : {}),
           });
-          for (const call of completion.toolCalls) {
+          for (const call of toolCalls) {
             abort.signal.throwIfAborted();
             let result: { text: string; ok: boolean; images?: ChatToolImage[] };
             let started = false;
@@ -505,7 +575,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
               const scope = tools.approvalScope(call.function.name);
               // Full access never grants authority over the user's host
               // desktop. Preserve the harness's explicit local scope gate.
-              const allowed = (turn.approvalMode === "full" && scope !== "local-computer")
+              const allowed = ((options.approveToolsWithoutPrompt || turn.approvalMode === "full") && scope !== "local-computer")
                 || await approval.ask(call.function.name, inputPreview ?? "This tool has no arguments.", scope);
               abort.signal.throwIfAborted();
               emit({ ...base(turn.threadId, turnId), type: "item.started", itemType: "tool", itemId: call.id,
@@ -520,6 +590,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
               }
             } catch (error) {
               if (error instanceof ChatToolSessionError) fatal = error;
+              else if (!started) toolProtocolFailed = true;
               result = { ok: false, text: abort.signal.aborted
                 ? "Tool interrupted; an operation already dispatched may have taken effect. Verify its state before retrying."
                 : safeText(asError(error).message).slice(0, 2_000) };
@@ -529,6 +600,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             const output = preview({ ok: result.ok, result: text });
             emit({ ...base(turn.threadId, turnId), type: "item.completed", itemType: "tool", itemId: call.id, ok: result.ok, output });
             if (!result.ok) toolFailed = true;
+            if (result.ok && /\bend (?:your|this) turn\b/i.test(text)) emptyFinalAllowed = true;
             messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: result.ok, result: text }),
               ...(result.images?.length ? { toolImages: result.images } : {}),
             });

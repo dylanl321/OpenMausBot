@@ -62,13 +62,15 @@ import { createInterface } from "node:readline";
 const [directory, callback] = process.argv.slice(2);
 writeFileSync(join(directory, "pid"), String(process.pid));
 const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n");
+const notify = (method) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method }) + "\\n");
 const schema = { type: "object", properties: { name: { type: "string" }, value: { type: "string" } }, required: ["name", "value"], additionalProperties: false };
+let loaded = false;
 createInterface({ input: process.stdin }).on("line", async (line) => {
   const request = JSON.parse(line);
   if (request.method === "initialize") {
     reply(request.id, { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1" } });
   } else if (request.method === "tools/list") {
-    reply(request.id, { tools: ["write", "wait", "fail"].map((name) => ({ name, description: "Synthetic fixture operation", inputSchema: schema })) });
+    reply(request.id, { tools: ["write", "wait", "fail", "load", "handoff", ...(loaded ? ["dynamic"] : [])].map((name) => ({ name, description: "Synthetic fixture operation", inputSchema: schema })) });
   } else if (request.method === "tools/call") {
     const { name, arguments: args } = request.params;
     await fetch(callback + "/mcp-start", { method: "POST", body: JSON.stringify({ name, args }) });
@@ -77,8 +79,14 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
       return;
     }
     if (name === "wait") await new Promise((resolve) => setTimeout(resolve, 30_000));
+    if (name === "load") {
+      loaded = true;
+      notify("notifications/tools/list_changed");
+    }
     appendFileSync(join(directory, "effects.ndjson"), JSON.stringify({ name, ...args }) + "\\n");
-    reply(request.id, { content: [{ type: "text", text: "Stored " + args.name + "=" + args.value }] });
+    reply(request.id, { content: [{ type: "text", text: name === "handoff"
+      ? "End your turn after sending all work. Results will arrive automatically."
+      : "Stored " + args.name + "=" + args.value }] });
   } else if (request.id !== undefined && request.method === "ping") reply(request.id, {});
 });
 `;
@@ -221,6 +229,22 @@ describe.each<Provider>(["openai-compat", "grok", "minimax"])("%s structured too
 });
 
 describe("structured tool execution boundaries", () => {
+  it("continues after a blank stop before any tool work begins", async () => {
+    const f = await fixture((_request, response, round) => {
+      if (round === 1) sse(response, [chunk({ content: "" }, "stop")]);
+      else if (round === 2) sse(response, [chunk({ content: null, tool_calls: [toolCall()] }, "tool_calls")]);
+      else answer(response);
+    });
+    await f.start({ approvalMode: "full" });
+    expect(await f.completed()).toMatchObject({ ok: true });
+    expect(f.requests).toHaveLength(3);
+    expect(f.requests[1].messages.at(-1)).toMatchObject({
+      role: "user",
+      content: expect.stringContaining("Continue working on the original request"),
+    });
+    expect(f.effects()).toEqual([{ name: "receipt", value: "done" }]);
+  });
+
   it.each(["JSON", "SSE"] as const)("preserves opaque reasoning details and their original order through %s tool continuation", async (format) => {
     const details = [
       { type: "reasoning.text", id: "trace-text", format: "fixture-format", index: 2, text: "Opaque reasoning text", signature: "synthetic-text-signature" },
@@ -300,19 +324,19 @@ describe("structured tool execution boundaries", () => {
   });
 
   it.each([
-    { scenario: "missing choices", body: {} },
-    { scenario: "empty choices", body: { choices: [] } },
-    { scenario: "empty assistant message", body: { choices: [{ message: {}, finish_reason: "stop" }] } },
-    { scenario: "null content without calls", body: { choices: [{ message: { content: null }, finish_reason: "stop" }] } },
-    { scenario: "blank content", body: { choices: [{ message: { content: "   " }, finish_reason: "stop" }] } },
-  ])("rejects a JSON completion with $scenario instead of reporting an empty successful turn", async ({ body }) => {
+    { scenario: "missing choices", body: {}, expectedRequests: 1 },
+    { scenario: "empty choices", body: { choices: [] }, expectedRequests: 1 },
+    { scenario: "empty assistant message", body: { choices: [{ message: {}, finish_reason: "stop" }] }, expectedRequests: 1 },
+    { scenario: "null content without calls", body: { choices: [{ message: { content: null }, finish_reason: "stop" }] }, expectedRequests: 3 },
+    { scenario: "blank content", body: { choices: [{ message: { content: "   " }, finish_reason: "stop" }] }, expectedRequests: 3 },
+  ])("rejects a JSON completion with $scenario instead of reporting an empty successful turn", async ({ body, expectedRequests }) => {
     const f = await fixture((_request, response) => {
       response.setHeader("content-type", "application/json");
       response.end(JSON.stringify(body));
     });
     await f.start({ integrations: undefined });
     expect(await f.completed()).toMatchObject({ ok: false });
-    expect(f.requests).toHaveLength(1);
+    expect(f.requests).toHaveLength(expectedRequests);
     expect(f.effects()).toEqual([]);
     expect(f.recorder.events.some((event) => event.type === "runtime.error")).toBe(true);
     expect(f.recorder.events.some((event) => event.type === "item.completed" && event.itemType === "assistant_text")).toBe(false);
@@ -422,6 +446,96 @@ describe("structured tool execution boundaries", () => {
     expect(f.recorder.events.some((event) => event.type === "request.opened")).toBe(false);
   });
 
+  it("namespaces recycled provider call IDs when later rounds request different operations", async () => {
+    const f = await fixture((_body, response, round) => {
+      if (round <= 2) {
+        return sse(response, [chunk({
+          tool_calls: [toolCall(
+            "audit_write",
+            JSON.stringify({ name: `step-${round}`, value: "done" }),
+            "call_0",
+          )],
+        }, "tool_calls")]);
+      }
+      answer(response, "Both operations completed.");
+    });
+    await f.start({ approvalMode: "full" });
+    expect(await f.completed()).toMatchObject({ ok: true });
+    expect(f.effects()).toEqual([
+      { name: "step-1", value: "done" },
+      { name: "step-2", value: "done" },
+    ]);
+    expect(f.requests[2].messages.filter((message) => message.role === "tool").map((message) => message.tool_call_id))
+      .toEqual(["call_0", "call_0_2"]);
+  });
+
+  it("rejects a recycled operation even when the provider reformats its JSON arguments", async () => {
+    const f = await fixture((_body, response, round) => sse(response, [chunk({ tool_calls: [toolCall("audit_write",
+      round === 1 ? '{"name":"receipt","value":"done"}' : '{ "value": "done", "name": "receipt" }', "call_0")] }, "tool_calls")]));
+    await f.start({ approvalMode: "full" });
+    expect(await f.completed()).toMatchObject({ ok: false });
+    expect(f.effects()).toEqual([{ name: "receipt", value: "done" }]);
+    expect(f.requests).toHaveLength(2);
+  });
+
+  it("refreshes lazy MCP catalogs after a tools/list_changed notification", async () => {
+    const f = await fixture((body, response, round) => {
+      if (round === 1) {
+        expect(body.tools?.some((tool) => tool.function.name === "audit_dynamic")).toBe(false);
+        return sse(response, [chunk({
+          tool_calls: [toolCall("audit_load", '{"name":"catalog","value":"loaded"}', "call_load")],
+        }, "tool_calls")]);
+      }
+      if (round === 2) {
+        expect(body.tools?.some((tool) => tool.function.name === "audit_dynamic")).toBe(true);
+        return sse(response, [chunk({
+          tool_calls: [toolCall("audit_dynamic", '{"name":"issue","value":"read"}', "call_dynamic")],
+        }, "tool_calls")]);
+      }
+      answer(response, "Lazy operation completed.");
+    });
+    await f.start({ approvalMode: "full" });
+    expect(await f.completed()).toMatchObject({ ok: true });
+    expect(f.effects()).toEqual([
+      { name: "catalog", value: "loaded" },
+      { name: "issue", value: "read" },
+    ]);
+  });
+
+  it("accepts an empty final stop after a successful handoff that says to end the turn", async () => {
+    const f = await fixture((_body, response, round) => {
+      if (round === 1) {
+        return sse(response, [chunk({
+          tool_calls: [toolCall("audit_handoff", '{"name":"peer","value":"assigned"}', "call_handoff")],
+        }, "tool_calls")]);
+      }
+      sse(response, [chunk({ content: "" }, "stop")]);
+    });
+    await f.start({ approvalMode: "full" });
+    expect(await f.completed()).toMatchObject({ ok: true });
+    expect(f.requests).toHaveLength(2);
+    expect(f.effects()).toEqual([{ name: "peer", value: "assigned" }]);
+    expect(f.recorder.events.some((event) => event.type === "runtime.error")).toBe(false);
+  });
+
+  it("recovers an ordinary empty final stop without replaying a completed tool", async () => {
+    const f = await fixture((body, response, round) => {
+      if (round === 1) {
+        return sse(response, [chunk({ tool_calls: [toolCall()] }, "tool_calls")]);
+      }
+      if (round === 2) return sse(response, [chunk({ content: "" }, "stop")]);
+      expect(body.messages.at(-1)).toMatchObject({
+        role: "user",
+        content: expect.stringContaining("Do not repeat completed operations"),
+      });
+      answer(response, "Recovered final response.");
+    });
+    await f.start({ approvalMode: "full" });
+    expect(await f.completed()).toMatchObject({ ok: true });
+    expect(f.requests).toHaveLength(3);
+    expect(f.effects()).toEqual([{ name: "receipt", value: "done" }]);
+  });
+
   it("aggregates model usage across execution and continuation", async () => {
     const f = await fixture((_body, response, round) => sse(response, [
       round === 1 ? chunk({ tool_calls: [toolCall()] }, "tool_calls") : chunk({ content: "Receipt verified." }, "stop"),
@@ -432,18 +546,19 @@ describe("structured tool execution boundaries", () => {
     expect(await f.completed()).toMatchObject({ ok: true, usage: { input: 30, output: 6 } });
   });
 
-  it("returns denial to the model without treating a convincing final answer as successful execution", async () => {
+  it("keeps a denied operation visible without failing an honest final response", async () => {
     const f = await fixture((_body, response, round) => {
       if (round === 1) sse(response, [chunk({ tool_calls: [toolCall()] }, "tool_calls")]);
-      else answer(response, "I successfully wrote the receipt.");
+      else answer(response, "The receipt was not written because permission was denied.");
     });
     await f.start();
     expect(await f.decide("deny")).toBe("rejected");
-    expect(await f.completed()).toMatchObject({ ok: false });
+    expect(await f.completed()).toMatchObject({ ok: true, denials: ["audit_write"] });
     expect(f.effects()).toEqual([]);
     expect(f.requests).toHaveLength(2);
     expect(f.requests[1].messages.at(-1)).toMatchObject({ role: "tool", tool_call_id: "call_write", content: expect.stringMatching(/denied|declined|not allowed/i) });
     expect(f.recorder.events).toContainEqual(expect.objectContaining({ type: "item.completed", itemType: "tool", ok: false }));
+    expect(f.recorder.events.some((event) => event.type === "runtime.error")).toBe(false);
   });
 
   it("keeps approvals bound to the pending request and thread", async () => {
@@ -493,14 +608,31 @@ describe("structured tool execution boundaries", () => {
     expect(f.recorder.events.some((event) => event.type === "runtime.error")).toBe(true);
   });
 
-  it("returns an MCP tool failure and preserves its unsuccessful operation status", async () => {
+  it("keeps an MCP failure visible without failing an honest final response", async () => {
     const f = await fixture((_body, response, round) => round === 1
-      ? sse(response, [chunk({ tool_calls: [toolCall("audit_fail")] }, "tool_calls")]) : answer(response));
+      ? sse(response, [chunk({ tool_calls: [toolCall("audit_fail")] }, "tool_calls")])
+      : answer(response, "The operation failed before writing, so there is no receipt."));
     await f.start();
     await f.decide();
-    expect(await f.completed()).toMatchObject({ ok: false });
+    expect(await f.completed()).toMatchObject({ ok: true });
     expect(f.effects()).toEqual([]);
     expect(f.requests[1].messages.at(-1)).toMatchObject({ role: "tool", tool_call_id: "call_write", content: expect.stringContaining("Synthetic tool failed") });
+    expect(f.recorder.events).toContainEqual(expect.objectContaining({ type: "item.completed", itemType: "tool", ok: false }));
+    expect(f.recorder.events.some((event) => event.type === "runtime.error")).toBe(false);
+  });
+
+  it("fails a tool operation when the provider never supplies a final explanation", async () => {
+    const f = await fixture((_body, response, round) => round === 1
+      ? sse(response, [chunk({ tool_calls: [toolCall("audit_fail")] }, "tool_calls")])
+      : sse(response, [chunk({ content: "" }, "stop")]));
+    await f.start({ approvalMode: "full" });
+    expect(await f.completed()).toMatchObject({ ok: false, stopReason: "tool_error" });
+    expect(f.requests).toHaveLength(4);
+    expect(f.effects()).toEqual([]);
+    expect(f.recorder.events).toContainEqual(expect.objectContaining({
+      type: "runtime.error",
+      message: expect.stringContaining("provider returned no final answer"),
+    }));
   });
 
   it("fails explicitly if the model requests a structured tool when none was mounted", async () => {

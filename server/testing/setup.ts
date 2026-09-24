@@ -20,7 +20,7 @@ delete process.env.HERMES_HOME;
 // AWS SDK discovery must never reach a developer's account, alternate
 // credential file, container endpoint or instance metadata during tests.
 for (const key of Object.keys(process.env)) {
-  if (key.startsWith("AWS_") || key === "OMB_BEDROCK_API_KEY") delete process.env[key];
+  if (key.startsWith("AWS_") || key === "OMB_BEDROCK_API_KEY" || key === "BEDROCK_API_KEY") delete process.env[key];
 }
 process.env.AWS_EC2_METADATA_DISABLED = "true";
 // The companion keeps its paired devices in its own directory, and resolves

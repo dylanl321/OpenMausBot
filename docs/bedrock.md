@@ -61,7 +61,7 @@ use Settings or a profile available to the server's OS account in that case.
 
 | Setting | Source |
 | --- | --- |
-| Preferred Bedrock token | `AWS_BEARER_TOKEN_BEDROCK`, or `OMB_BEDROCK_API_KEY` |
+| Preferred Bedrock token | `OMB_BEDROCK_API_KEY`, then `AWS_BEARER_TOKEN_BEDROCK`, then legacy `BEDROCK_API_KEY` |
 | Region | `AWS_REGION`, then `AWS_DEFAULT_REGION` |
 | Named profile | `AWS_PROFILE`, then `AWS_DEFAULT_PROFILE` |
 | Static AWS credentials | `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` |
@@ -96,11 +96,17 @@ Authentication modes are explicit:
 
 | Mode | Behavior |
 | --- | --- |
-| `auto` (default) | Saved token, then `OMB_BEDROCK_API_KEY`, then `AWS_BEARER_TOKEN_BEDROCK`. Without a token, use the selected profile; otherwise use configured AWS keys or the standard AWS credential chain. |
-| `api-key` | Require a Bedrock token from Settings/config or the environment. |
+| `auto` (default) | Saved token, then `OMB_BEDROCK_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`, and legacy `BEDROCK_API_KEY`. Without a token, use the selected profile; otherwise use configured AWS keys or the standard AWS credential chain. An explicit token environment variable or header selects token authentication even if the token is missing. |
+| `api-key` (also `bearer`) | Require a Bedrock token from Settings/config or the environment. |
 | `profile` | Use the named profile, falling back to the `default` profile name. Ignore Bedrock tokens and saved access keys. |
 | `access-keys` | Use a complete saved AWS key pair or a complete environment pair, with its optional session token. Never combine halves from different sources. |
 | `aws` | Use AWS credentials, ignoring saved Bedrock tokens and saved access keys. The selected profile or standard SDK chain can resolve workload roles. |
+
+An instance's token variables take precedence over all ambient token aliases.
+If an instance explicitly binds an empty token variable, token authentication
+reports that missing value instead of using another account's process token.
+An explicit `apiKeyEnv` selects only its named variable. Saved `apiKey` values
+take precedence over either environment source.
 
 Region resolution is independent of authentication, in this order:
 
@@ -195,7 +201,22 @@ Optional advanced settings:
 | `maxTokens` | Positive output-token limit. Leave blank for the model/API default; Messages defaults to 4096. A null value in a settings PATCH clears a saved limit. |
 | `tools` | Set `false` to disable all tool discovery and execution for this connection. |
 | `blockedModels` | IDs/ARNs excluded from this connection, including their resolved aliases. |
-| `url` / `controlUrl` | Runtime/Mantle and native control-plane endpoint origins. HTTPS is required, except loopback HTTP for development fixtures. Regional AWS overrides must match the configured region. |
+| `apiKeyEnv` | Explicit token environment variable. With no saved token, only this variable is used; a missing value does not fall through to another account. |
+| `apiKeyHeader` | Gateway token header. Defaults to `Authorization: Bearer …` (Messages uses `x-api-key`); nonstandard headers require an explicit URL. Protocol, signing and routing headers are rejected. |
+| `url` / `controlUrl` | Runtime/Mantle and native control-plane base URLs, including gateway path prefixes. HTTPS is required, except loopback HTTP for development fixtures. Regional AWS overrides must match the configured region. |
+
+For a token gateway, set `auth: "api-key"`, `apiKeyEnv: "GATEWAY_BEDROCK_TOKEN"`,
+`url: "https://gateway.example/bedrock"` and its required `apiKeyHeader`, such
+as `"x-api-key"`. A custom header also sends control-plane catalog requests to
+that base URL unless `controlUrl` is supplied. Gateways using the default
+Authorization header should explicitly configure `controlUrl` if discovery
+also goes through the gateway. Non-AWS gateways are incompatible with
+`usOnly` because their inference destinations cannot be verified.
+
+Tokens sent in Authorization may contain a leading `Bearer` prefix; it is
+normalized to one prefix. Gateway headers receive the raw token value. Named
+token variables are redacted from errors and excluded from the environment
+inherited by tool subprocesses unless explicitly granted to that tool server.
 
 Use the explicit endpoint settings for private endpoints. Ambient
 `AWS_ENDPOINT_URL` and service-specific endpoint overrides are ignored so
@@ -233,6 +254,11 @@ Runtime. Runtime uses native AWS Converse event streams, or
 Messages route is `/anthropic/v1/messages` on either endpoint. New models can
 be selected from the catalog without an app release, with explicit API and
 tool settings available for models whose capabilities differ.
+
+OpenAI GPT-5.6 and GPT-6 Sol/Luna Chat Completions requests use reasoning
+effort `none` for tool compatibility. GPT-6 Astra uses `low` and is offered
+for chat; its agent tool calling requires a Responses-capable route such as a
+configured Codex provider. See [custom engine routes](custom-engines.md).
 
 References: [AWS endpoints](https://docs.aws.amazon.com/bedrock/latest/userguide/endpoints.html),
 [Bedrock API keys](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html),

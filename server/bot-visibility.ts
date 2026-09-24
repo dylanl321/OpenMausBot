@@ -27,6 +27,7 @@
 import { z } from "zod";
 
 import type { BotVisibility } from "../shared/wire.ts";
+import type { WorkItem } from "../shared/work-item.ts";
 
 export type { BotVisibility };
 
@@ -284,6 +285,7 @@ export type PathSubject =
   | { kind: "group"; id: string }
   | { kind: "routine"; id: string }
   | { kind: "routine-run"; id: string }
+  | { kind: "work-item"; id: string }
   | { kind: "attachment"; name: string };
 
 export function pathSubject(path: string): PathSubject | null {
@@ -299,6 +301,8 @@ export function pathSubject(path: string): PathSubject | null {
   if (m && m[1] !== "seen-all") return { kind: "routine-run", id: m[1]! };
   m = /^\/api\/attachments\/([\w.-]+)$/.exec(path);
   if (m) return { kind: "attachment", name: m[1]! };
+  m = /^\/api\/work-items\/([\w-]+)$/.exec(path);
+  if (m && m[1] !== "ensure") return { kind: "work-item", id: m[1]! };
   return null;
 }
 
@@ -312,6 +316,7 @@ export function notFoundFor(subject: PathSubject): string {
     case "routine": return "no such routine";
     case "routine-run": return "no such active run";
     case "attachment": return "no such attachment";
+    case "work-item": return "No such shared task";
   }
 }
 
@@ -346,11 +351,30 @@ export function memberBot<T extends object>(bot: T, visible: VisibleSet): T {
   return { ...rest, ...(peers ? { peers } : {}) } as T;
 }
 
-/** A room as a member receives it: without its audience floor. */
-export function memberGroup<T extends object>(group: T): T {
-  if (!("audienceFloor" in group)) return group;
-  const { audienceFloor: _floor, ...rest } = group as T & { audienceFloor?: unknown };
-  return rest as T;
+export function workItemVisible(item: Pick<WorkItem, "groupId" | "threadId" | "coordinatorBotId">, visible: VisibleSet): boolean {
+  return visible.group(item.groupId) && visible.thread(item.threadId) && visible.bot(item.coordinatorBotId);
+}
+
+/** Specialists may acquire a narrower audience after a task was shared.
+ * Apply the current visibility rules to both HTTP answers and live frames. */
+export function memberWorkItem<T extends WorkItem>(item: T, visible: VisibleSet): T {
+  if (visible.everything) return item;
+  return { ...item, assignments: item.assignments.filter(assignment => visible.bot(assignment.botId) && visible.thread(assignment.threadId)) };
+}
+
+/** A room as a member receives it: no audience floor or hidden task work. */
+export function memberGroup<T extends object>(group: T, visible: VisibleSet): T {
+  let result = group;
+  if ("audienceFloor" in result) {
+    const { audienceFloor: _floor, ...rest } = result;
+    result = rest as T;
+  }
+  const tasks = (group as { tasks?: Array<{ workItem?: WorkItem }> }).tasks;
+  if (!visible.everything && tasks?.some(task => task.workItem)) {
+    result = { ...result, tasks: tasks.filter(task => !task.workItem || workItemVisible(task.workItem, visible))
+      .map(task => task.workItem ? { ...task, workItem: memberWorkItem(task.workItem, visible) } : task) };
+  }
+  return result;
 }
 
 /** A JSON response as a member receives it: every bot it carries (under
@@ -366,9 +390,13 @@ export function memberBody(body: unknown, visible: VisibleSet): unknown {
       if (key === "bot" && child && typeof child === "object" && !Array.isArray(child)) next = memberBot(child, visible);
       else if (key === "bots" && Array.isArray(child)) {
         next = child.map((bot) => (bot && typeof bot === "object" ? memberBot(bot as object, visible) : bot));
-      } else if (key === "group" && child && typeof child === "object" && !Array.isArray(child)) next = memberGroup(child);
+      } else if (key === "group" && child && typeof child === "object" && !Array.isArray(child)) next = memberGroup(child, visible);
       else if (key === "groups" && Array.isArray(child)) {
-        next = child.map((group) => (group && typeof group === "object" ? memberGroup(group as object) : group));
+        next = child.map((group) => (group && typeof group === "object" ? memberGroup(group as object, visible) : group));
+      } else if (key === "workItem" && child && typeof child === "object" && !Array.isArray(child)) {
+        next = workItemVisible(child as WorkItem, visible) ? memberWorkItem(child as WorkItem, visible) : null;
+      } else if (key === "workItems" && Array.isArray(child)) {
+        next = (child as WorkItem[]).filter(item => workItemVisible(item, visible)).map(item => memberWorkItem(item, visible));
       } else if (depth > 0 && key !== "messages" && child && typeof child === "object" && !Array.isArray(child)) next = narrow(child, depth - 1);
       if (next !== child) (out ??= { ...record })[key] = next;
     }
@@ -424,9 +452,10 @@ export function frameForMember(payload: Record<string, unknown>, ctx: FrameConte
       if (!seen.groups.has(id)) {
         seen.groups.add(id);
         const fresh = ctx.freshGroup(id);
-        if (fresh) return { ...payload, group: memberGroup({ ...fresh, ...group }) };
+        if (fresh) return { ...payload, group: memberGroup({ ...fresh, ...group }, visible) };
       }
-      return "audienceFloor" in group ? { ...payload, group: memberGroup(group) } : payload;
+      const shown = memberGroup(group, visible);
+      return shown === group ? payload : { ...payload, group: shown };
     }
     case "group.deleted":
       return seen.groups.delete(str(payload.groupId)) ? payload : undefined;

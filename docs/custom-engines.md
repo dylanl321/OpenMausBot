@@ -68,7 +68,8 @@ entry:
       "config": {
         "url": "http://127.0.0.1:1234/v1",
         "apiKeyEnv": "MY_ENDPOINT_KEY",
-        "model": "my-model"
+        "model": "my-model",
+        "tools": true
       }
     }
   }
@@ -79,9 +80,66 @@ entry:
   instances can hold different keys without colliding.
 - The driver lists the endpoint's `/models` when it can and keeps your
   `model` as a custom option either way.
-- Honest limits: chat text + reasoning streams only — **no tool calls**, so
-  bots on these instances answer and write, but don't operate computers or
-  connected apps.
+- Set `tools` to `true` when the endpoint supports OpenAI function tools.
+- `toolApproval: "always"` pre-approves mounted tools except host computer
+  operations, which retain their explicit approval gate. Omit it or use
+  `"ask"` to follow the bot's normal permission flow.
+- `modelUrls` maps individual model ids to a different OpenAI-compatible base
+  URL. This is useful for Bedrock models or inference profiles that live in
+  different AWS regions while keeping one model picker:
+
+  ```json
+  {
+    "modelUrls": {
+      "us.openai.gpt-6-luna": "https://bedrock-runtime.us-east-2.amazonaws.com/openai/v1"
+    }
+  }
+  ```
+
+  These are explicit routes, not regional discovery. The driver keeps their
+  models in the picker even when `/models` is unavailable, and labels known
+  AWS endpoints with their actual region. All routes use this instance's
+  token. Use separate instances when credentials differ. AWS profiles and
+  SigV4 signing require the native Bedrock driver.
+
+For native regional catalogs, per-model blocking and US-only inference, use
+the built-in [Amazon Bedrock engine](bedrock.md). A generic OpenAI-compatible
+connection does not inherit another Bedrock connection's access policy.
+
+## Configured Codex provider routes
+
+An existing Codex CLI can expose its configured providers through a picker
+allowlist. The provider before `::` must already exist in that CLI's
+configuration, with its endpoint and credentials:
+
+```json
+{
+  "instances": {
+    "codex-bedrock": {
+      "driver": "codex",
+      "displayName": "Codex via Bedrock",
+      "environment": { "AWS_BEARER_TOKEN_BEDROCK": "…" },
+      "config": {
+        "cli": "codex",
+        "models": [
+          "bedrock-us-east-1::us.openai.gpt-6-sol",
+          "bedrock-us-west-2::us.openai.gpt-6-astra"
+        ]
+      }
+    }
+  }
+}
+```
+
+This list replaces CLI model discovery for the instance. Provider-qualified
+selections retain both the model and provider when starting or resuming a
+thread. Region labels reflect the configured provider name; OpenMausBot does
+not verify that name against the CLI's URL. Use only routes that your account
+supports. Custom providers in Auto mode keep the workspace sandbox and send
+escalation requests to the user; they do not approve every permission request.
+Standard Bedrock token variables are passed to Codex only when explicitly set
+in the instance's `environment` map. The server's ambient token belongs to its
+Bedrock connection and is not automatically shared with another engine.
 
 ## Notes
 
@@ -89,3 +147,15 @@ entry:
   as plaintext in that file. Prefer keys scoped to the one engine.
 - A typo'd `driver` or invalid `config` never breaks the app: the instance
   shows as unavailable with the reason, and the rest of the fleet loads.
+- The built-in `bedrock` driver supports tokens, AWS profiles and keys, plus
+  compatible gateways with `config.url`, `config.apiKeyEnv` and an optional
+  `config.apiKeyHeader`. Native token authentication uses
+  `Authorization: Bearer ...`; `auth: "api-key"` and the legacy `"bearer"`
+  alias both select it. See [Bedrock setup](bedrock.md) for precedence,
+  streaming, tools, access controls and gateway requirements.
+- OpenAI models use Bedrock's OpenAI-compatible Chat Completions endpoint.
+  The catalog may include both GPT-5.6 and GPT-6 inference-profile ids. GPT-6
+  models require a supported reasoning effort. GPT-6 Sol and Luna use `none`
+  for Chat Completions tool compatibility; Astra uses `low`, but Astra tool
+  calling requires a Responses-capable engine such as native Codex. GPT-5.6
+  tool calls retain `none`.

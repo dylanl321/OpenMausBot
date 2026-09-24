@@ -3,8 +3,11 @@
 export interface BedrockConfig {
   region?: string;
   profile?: string;
-  auth?: "auto" | "api-key" | "profile" | "access-keys" | "aws";
+  auth?: "auto" | "api-key" | "bearer" | "profile" | "access-keys" | "aws";
   apiKey?: string;
+  /** Optional token environment name and an explicit gateway header. */
+  apiKeyEnv?: string;
+  apiKeyHeader?: string;
   accessKeyId?: string;
   secretAccessKey?: string;
   sessionToken?: string;
@@ -100,6 +103,14 @@ export function bedrockArnRegion(model: string): string | undefined {
   return /^arn:[^:]+:bedrock:([^:]+):/.exec(model)?.[1];
 }
 
+/** Compatibility requirements of the provider-qualified Chat Completions
+ * routes. Other families retain their provider defaults. */
+export function bedrockChatReasoningEffort(model: string): "none" | "low" | undefined {
+  const id = canonicalBedrockModel(model).replace(/^gpt-/, "openai.gpt-");
+  if (id.startsWith("openai.gpt-5.6-") || /^openai\.gpt-6-(?:sol|luna)$/.test(id)) return "none";
+  if (id === "openai.gpt-6-astra") return "low";
+}
+
 export function bedrockRoutingError(model: string, config: Pick<BedrockConfig, "usOnly">,
   region: string, identities: readonly string[] = [],
 ): string | null {
@@ -124,7 +135,7 @@ export function bedrockModelFeatures(model: string): BedrockModelFeatures {
     .replace(/^grok-/, "xai.grok-").replace(/^kimi-/, "moonshot.kimi-");
   const legacyText = /^(?:amazon\.titan-text|ai21\.j2-|anthropic\.claude-(?:v[12]|instant)|cohere\.command(?:-light)?-text|meta\.llama(?:2-|3-(?:8b|70b)-)|mistral\.(?:mistral-7b|mixtral-8x7b))/.test(id);
   return {
-    tools: !legacyText && !/^(?:meta\.llama3-2-(?:1b|3b)-|deepseek\.r1|ai21\.jamba-instruct)/.test(id),
+    tools: !legacyText && !/^(?:meta\.llama3-2-(?:1b|3b)-|deepseek\.r1|ai21\.jamba-instruct|openai\.gpt-6-astra$)/.test(id),
     images: !legacyText && /^(?:anthropic\.claude|amazon\.nova-(?:lite|pro|premier)|amazon\.nova-2-(?:lite|pro|premier)|meta\.llama(?:3-2-(?:11b|90b)|4)|mistral\.(?:pixtral|ministral)|google\.gemma-3|qwen\.(?:qwen3-vl|qwen3\.5)|moonshot\.kimi-k[23]|nvidia\..*vl|writer\.palmyra-vision|openai\.gpt-(?:[5-9])|xai\.grok)/.test(id),
     streaming: !id.startsWith("ai21.j2-"),
     system: !legacyText,

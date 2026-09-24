@@ -301,6 +301,39 @@ posixOnly("per-bot visibility on a shared workspace", () => {
     expect(await status("POST", `/api/groups/${ids.roomPub}/read`, BOB)).toBe(200);
   });
 
+  it("protects shared task lists, reads, updates and creation targets with the same member visibility", async () => {
+    const owner = await makeBot("Task owner", "Task visibility");
+    const restricted = await makeBot("Private task owner", "Task visibility");
+    expect((await api("PATCH", `/api/bots/${restricted.id}`, { visibility: "admins" }, BOSS)).status).toBe(200);
+    const brief = { topic: "Task visibility", title: "Private outcome", identity: "private:task-visibility",
+      objective: "PRIVATE-TASK-RESULT", acceptanceCriteria: ["Result checked"] };
+    const created = await api("POST", "/api/work-items/ensure", { ...brief, coordinatorBotId: restricted.id }, BOSS);
+    expect(created.status, JSON.stringify(created.body)).toBe(200);
+    const task = created.body.workItem;
+    const hiddenPath = `/api/work-items/${task.id}`;
+    expect((await api("GET", hiddenPath, undefined, BOSS)).status).toBe(200);
+    expect((await api("GET", hiddenPath, undefined, BOB)).status).toBe(404);
+    expect((await api("PATCH", hiddenPath, { expectedRevision: task.revision, status: "cancelled", detail: "Unauthorized change" }, BOB)).status).toBe(404);
+    const listed = await api("GET", "/api/work-items", undefined, BOB);
+    expect(listed.status).toBe(200);
+    expect(JSON.stringify(listed.body)).not.toContain(task.id);
+    expect(JSON.stringify(listed.body)).not.toContain("PRIVATE-TASK-RESULT");
+    for (const target of [
+      { coordinatorBotId: restricted.id },
+      { coordinatorBotId: owner.id, sourceThreadId: restricted.threadId },
+      { coordinatorBotId: owner.id, groupId: task.groupId },
+      { coordinatorBotId: owner.id, workItemId: task.id },
+    ]) expect((await api("POST", "/api/work-items/ensure", { ...brief, ...target }, BOB)).status).toBe(404);
+    const own = await api("POST", "/api/work-items/ensure", { ...brief, identity: "public:task-visibility", title: "Public outcome", objective: "Public result", coordinatorBotId: owner.id }, BOB);
+    expect(own.status, JSON.stringify(own.body)).toBe(200);
+    expect((await api("GET", `/api/work-items/${own.body.workItem.id}`, undefined, BOB)).status).toBe(200);
+    const stream = openStream(BOB);
+    try {
+      expect(await stream.ready()).not.toBeNull();
+      expect(JSON.stringify(stream.state.hello)).not.toContain("PRIVATE-TASK-RESULT");
+    } finally { stream.close(); }
+  });
+
   it("narrows search, routines, webhooks and the team map", async () => {
     const hits = async (as: string) => (await api("GET", "/api/search?q=Zebra", undefined, as)).body.hits as Array<{ threadId: string }>;
     expect((await hits(ADA)).some((hit) => hit.threadId === ids.hrThread)).toBe(true);

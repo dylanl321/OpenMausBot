@@ -79,8 +79,18 @@ export async function createBedrockConnection(config: BedrockConfig, environment
       throw new Error("US-only inference requires a regional AWS endpoint, including for endpoint overrides.");
     }
   }
-  const apiKey = config.apiKey || env.OMB_BEDROCK_API_KEY || env.AWS_BEARER_TOKEN_BEDROCK || "";
-  const apiKeyMode = config.auth === "api-key" || ((!config.auth || config.auth === "auto") && Boolean(apiKey));
+  const tokenHeader = config.apiKeyHeader?.toLowerCase() || undefined;
+  const tokenVariables = ["OMB_BEDROCK_API_KEY", "AWS_BEARER_TOKEN_BEDROCK", "BEDROCK_API_KEY"];
+  const instanceTokenVariables = tokenVariables.filter(key => Object.hasOwn(environment, key));
+  // An instance's chosen account outranks every ambient token alias. Even
+  // an empty explicit binding must not silently select the host's account.
+  const tokenEnvironment = instanceTokenVariables.length ? environment : env;
+  const rawApiKey = config.apiKey || (config.apiKeyEnv ? env[config.apiKeyEnv]
+    : tokenVariables.map(key => tokenEnvironment[key]).find(Boolean)) || "";
+  const apiKey = (!tokenHeader || tokenHeader === "authorization") ? rawApiKey.trim().replace(/^Bearer\s+/i, "") : rawApiKey.trim();
+  const apiKeyMode = config.auth === "api-key" || config.auth === "bearer"
+    || ((!config.auth || config.auth === "auto") && Boolean(apiKey || config.apiKeyEnv || tokenHeader || instanceTokenVariables.length));
+  const missingToken = `Add a Bedrock API key in Settings → Engines, or set ${config.apiKeyEnv || instanceTokenVariables[0] || "AWS_BEARER_TOKEN_BEDROCK"}.`;
   const savedKeys = Boolean(config.accessKeyId || config.secretAccessKey);
   const instanceKeys = Object.hasOwn(environment, "AWS_ACCESS_KEY_ID") || Object.hasOwn(environment, "AWS_SECRET_ACCESS_KEY");
   const useSavedKeys = savedKeys && config.auth !== "aws";
@@ -93,7 +103,7 @@ export async function createBedrockConnection(config: BedrockConfig, environment
     : useKeys ? (useSavedKeys ? "saved-keys" : "environment-keys") : profile ? "profile"
     : env.AWS_ACCESS_KEY_ID ? "environment-keys" : "aws-chain";
   const stop = new AbortController();
-  const secrets = new Set<string>([apiKey, config.accessKeyId, config.secretAccessKey, config.sessionToken,
+  const secrets = new Set<string>([rawApiKey, apiKey, config.accessKeyId, config.secretAccessKey, config.sessionToken,
     env.AWS_ACCESS_KEY_ID, env.AWS_SECRET_ACCESS_KEY, env.AWS_SESSION_TOKEN].filter((value): value is string => Boolean(value)));
   const providerOptions = {
     profile, filepath: env.AWS_SHARED_CREDENTIALS_FILE, configFilepath: env.AWS_CONFIG_FILE,
@@ -123,7 +133,7 @@ export async function createBedrockConnection(config: BedrockConfig, environment
   };
   const auth = apiKeyMode ? {
     token: async () => {
-      if (!apiKey) throw new Error("Add a Bedrock API key in Settings → Engines, or set AWS_BEARER_TOKEN_BEDROCK.");
+      if (!apiKey) throw new Error(missingToken);
       return { token: apiKey };
     },
     // Selecting exactly one scheme prevents fallback to another account.
@@ -134,7 +144,8 @@ export async function createBedrockConnection(config: BedrockConfig, environment
       propertiesExtractor: (client: unknown, context: unknown) => ({ signingProperties: { config: client, context } }),
     }],
   };
-  const control = new BedrockClient({ region, ...auth, endpoint: config.controlUrl || undefined, ignoreConfiguredEndpointUrls: true, maxAttempts: 2,
+  const gateway = tokenHeader && tokenHeader !== "authorization";
+  const control = new BedrockClient({ region, ...auth, endpoint: config.controlUrl || (gateway ? config.url : undefined), ignoreConfiguredEndpointUrls: true, maxAttempts: 2,
     requestHandler: { connectionTimeout: 5_000, requestTimeout: CATALOG_TIMEOUT_MS },
   });
   const runtime = new BedrockRuntimeClient({ region, ...auth, endpoint: config.url || undefined, ignoreConfiguredEndpointUrls: true, maxAttempts: 1,
@@ -142,6 +153,21 @@ export async function createBedrockConnection(config: BedrockConfig, environment
     // support HTTP/1.1, including private gateways and local test endpoints.
     requestHandler: new NodeHttpHandler({ connectionTimeout: 5_000, requestTimeout: BEDROCK_REQUEST_TIMEOUT_MS }),
   });
+  if (apiKeyMode && gateway) {
+    const addToken = (request: unknown) => {
+      if (HttpRequest.isInstance(request)) {
+        for (const name of Object.keys(request.headers)) if (name.toLowerCase() === "authorization") delete request.headers[name];
+        request.headers[tokenHeader] = apiKey;
+      }
+    };
+    const middleware = <Args extends { request: unknown }, Output>(next: (args: Args) => Promise<Output>) => async (args: Args) => {
+      addToken(args.request);
+      return next(args);
+    };
+    const placement = { name: "bedrockGatewayToken", relation: "after" as const, toMiddleware: "httpSigningMiddleware" };
+    control.middlewareStack.addRelativeTo(middleware, placement);
+    runtime.middlewareStack.addRelativeTo(middleware, placement);
+  }
   const domain = region.startsWith("cn-") ? "amazonaws.com.cn" : "amazonaws.com";
   const root = config.url?.replace(/\/+$/, "") || (config.endpoint === "mantle"
     ? `https://bedrock-mantle.${region}.api.aws` : `https://bedrock-runtime.${region}.${domain}`);
@@ -237,7 +263,7 @@ export async function createBedrockConnection(config: BedrockConfig, environment
       const bounded = combine(signal, 5_000);
       try {
         if (apiKeyMode) {
-          if (!apiKey) throw new Error("Add a Bedrock API key in Settings → Engines, or set AWS_BEARER_TOKEN_BEDROCK.");
+          if (!apiKey) throw new Error(missingToken);
         } else await withBedrockAbort(credentials(), bounded);
       } catch (error) { throw safeError(error); }
     },
@@ -248,8 +274,9 @@ export async function createBedrockConnection(config: BedrockConfig, environment
       const method = body === undefined ? "GET" : "POST";
       let headers: Record<string, string> = { "content-type": "application/json", ...options.headers };
       if (apiKeyMode) {
-        if (!apiKey) throw new Error("Add a Bedrock API key in Settings → Engines.");
-        headers[options.messages ? "x-api-key" : "authorization"] = options.messages ? apiKey : `Bearer ${apiKey}`;
+        if (!apiKey) throw new Error(missingToken);
+        const header = tokenHeader ?? (options.messages ? "x-api-key" : "authorization");
+        headers[header] = header === "authorization" ? `Bearer ${apiKey}` : apiKey;
       } else {
         const query: Record<string, string> = Object.fromEntries(url.searchParams);
         const signed = await withBedrockAbort(signer.sign(new HttpRequest({

@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { gzipSync } from "node:zlib";
 import { Header } from "tar";
 import { afterEach, describe, expect, it } from "vitest";
+import { WorkItems } from "./work-items.ts";
 import {
   applyPendingWorkspaceRestore, commitPendingWorkspaceRestore, createWorkspaceBackup,
   readLastWorkspaceRestore, readPendingWorkspaceRestoreMetadata, readStagedWorkspaceBackup,
@@ -79,6 +80,13 @@ describe("encrypted full workspace backups", () => {
   it("round-trips WAL conversations, binary files, drafts and IDs; preserves destination identity and connections", async () => {
     const source = directory();
     const db = fixture(source);
+    const workItems = new WorkItems(join(source, "work-items.json"));
+    const workInput = { scope: "Delivery", identity: "generic:backup", groupId: "room", threadId: "hub", coordinatorBotId: "bot",
+      title: "Backup task", objective: "Check retained task state", acceptanceCriteria: ["State retained"] };
+    const { item: sharedTask } = workItems.ensure(workInput);
+    const { assignment } = workItems.claim(sharedTask, { botId: "bot", threadId: "thread", message: "Check retained state" });
+    assignment.status = "running";
+    workItems.changed(sharedTask);
     // Production closes its sole live message handle after draining writes,
     // while the maintenance gate is held. No server mutation can reopen it.
     db.close();
@@ -123,6 +131,10 @@ describe("encrypted full workspace backups", () => {
       expect(restoredBot).not.toHaveProperty("voice");
       expect(readFileSync(join(target, restoredBot.avatarUrl.slice("/api/".length)))).toEqual(AVATAR_BYTES);
       expect(readJson(join(target, "groups.json"))[0].cwd).toBe("/external/project");
+      const restoredWork = new WorkItems(join(target, "work-items.json"));
+      expect(restoredWork.records.get(sharedTask.id)).toMatchObject({ id: sharedTask.id, groupId: "room", threadId: "hub", status: "blocked",
+        assignments: [{ id: assignment.id, threadId: "thread", status: "failed" }] });
+      expect(restoredWork.ensure(workInput).started).toBe(false);
       expect(readJson(join(target, "config.json"))).toEqual({ ...connections, language: "ja" });
       expect(readFileSync(join(target, "task-workspaces", "bot", "thread", "binary.bin"))).toEqual(Buffer.alloc(2 * 1024 * 1024, 0xa5));
       expect(readJson(join(target, "sessions.json"))).toEqual({ identity: "target-session" });

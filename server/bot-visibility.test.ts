@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { WorkItem } from "../shared/work-item.ts";
 
 import {
   audienceWithin,
@@ -164,6 +165,8 @@ describe("VisibleSet", () => {
     expect(pathSubject("/api/attachments")).toBeNull();
     expect(pathSubject("/api/bots")).toBeNull();
     expect(pathSubject("/api/groups")).toBeNull();
+    expect(pathSubject("/api/work-items/work-1")).toEqual({ kind: "work-item", id: "work-1" });
+    expect(pathSubject("/api/work-items/ensure")).toBeNull();
   });
 
   it("follows a routine to its room when it runs in one", () => {
@@ -274,5 +277,30 @@ describe("live frames for a member", () => {
   it("strips nothing for someone who sees everything", () => {
     const bot = { id: "hr", visibility: "admins", peers: ["x"] };
     expect(memberBot(bot, new VisibleSet(bots, groups, SEES_EVERYTHING))).toBe(bot);
+  });
+
+  it("withholds restricted task hubs and specialist results in HTTP and live room frames", () => {
+    const bob = new VisibleSet(bots, groups, BOB);
+    const item: WorkItem = {
+      id: "shared", groupId: "room-pub", threadId: "t-room-pub", coordinatorBotId: "pub",
+      title: "Shared outcome", objective: "Review the delivery", acceptanceCriteria: ["Reviewed"],
+      revision: 1, status: "active", detail: "Working", decisions: [], artifacts: [], evidence: [], createdAt: 1, updatedAt: 1,
+      assignments: [
+        { id: "public", botId: "pub", threadId: "t-pub-2", revision: 1, attempts: 1, message: "Public work", status: "completed", result: "Public result" },
+        { id: "private", botId: "hr", threadId: "t-hr", revision: 1, attempts: 1, message: "Private brief", status: "completed", result: "Private result" },
+      ],
+    };
+    const hidden = { ...item, id: "private-hub", groupId: "room-mixed", threadId: "t-room-mixed", coordinatorBotId: "hr" };
+    const shown = { ...item, assignments: [item.assignments[0]] };
+    const group = { ...groups[0], tasks: [{ threadId: item.threadId, workItem: item }, { threadId: hidden.threadId, workItem: hidden }] };
+    const shownGroup = { ...group, tasks: [{ threadId: item.threadId, workItem: shown }] };
+    expect(memberBody({ workItems: [item, hidden], workItem: hidden, group, groups: [group] }, bob)).toEqual({
+      workItems: [shown], workItem: null, group: shownGroup, groups: [shownGroup],
+    });
+    const context: FrameContext = { visible: bob, webhookBot: () => undefined, freshBot: () => undefined, freshGroup: () => group };
+    const seen = { bots: new Set<string>(), groups: new Set<string>() };
+    expect(frameForMember({ kind: "group", group }, context, seen)).toEqual({ kind: "group", group: shownGroup });
+    expect(frameForMember({ kind: "group", group }, context, seen)).toEqual({ kind: "group", group: shownGroup });
+    expect(item.assignments).toHaveLength(2);
   });
 });
