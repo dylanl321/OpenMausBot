@@ -376,6 +376,9 @@ import { RepeatDetector, callKey } from "./repeat-detector.ts";
 import { redactSecretsInText } from "./redact.ts";
 import * as vps from "./vps-computer.ts";
 import { RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
+import { WatchManager } from "./watches.ts";
+import { summarizeChanges } from "../shared/watches.ts";
+import type { SourceChange, Watch } from "../shared/watches.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
 import { BrowserRuntime } from "./browser-runtime.ts";
@@ -5024,6 +5027,7 @@ function isInternalTurn(threadId: string): boolean {
 // such a turn finds in its thread may be hours old and its author gone.
 const personAskAt = new Map<string, number>();
 let routines: RoutineManager | null = null;
+let watches: WatchManager | null = null;
 let calendarCalls: CalendarCallManager | null = null;
 const localVmOwnerBusy = (botId: string) => store.bot(botId)?.busy === true;
 const localVmLeases = new LocalVmLeasePool(30 * 60_000);
@@ -8640,6 +8644,11 @@ _loadPending();
 
 routines = new RoutineManager({
   emit: broadcast,
+  onScheduleTick: (now) => watches?.checkDue(now),
+  watchHasUnconsumedMatches: (watchId, consumerId) => watches?.hasUnconsumedMatches(watchId, consumerId) ?? false,
+  watchConsumeMatches: (watchId, consumerId) => watches?.consumeMatches(watchId, consumerId),
+  onWatchUnchanged: (watchId) => watches?.recordUnchanged(watchId),
+  nextDueWatch: () => watches?.nextDueAt(),
   hasPendingDelegations: (threadId) => pendingThreads().includes(threadId) ||
     [...delegationWatch.values()].some((watch) => watch.sourceThreadId === threadId) ||
     pendingDelegationWakes.has(threadId) || [...workCoordination.items.records.values()].some(item => item.sources.some(source => source.threadId === threadId)),
@@ -9344,6 +9353,72 @@ function resolveAndSendProfile(
 // Webhook definitions are independent from calendar schedules, but every
 // delivery joins the same RoutineManager queue. That keeps unattended work
 // ordered behind a busy MAUS and gives webhook runs the same durable receipts.
+function isWatchInputChange(change: SourceChange): boolean {
+  return change.type === "item.updated" || change.type === "item.created" || change.type === "commit.pushed";
+}
+
+function applyWatchToWork(changes: SourceChange[], bumpInput: boolean) {
+  for (const change of changes) {
+    for (const item of workCoordination.items.records.values()) {
+      const match = item.links?.find((link) =>
+        (change.item.externalId && link.externalId === change.item.externalId)
+        || (change.item.url && link.url === change.item.url),
+      );
+      if (!match) continue;
+      const link = workCoordination.items.upsertLink(item, {
+        ...match,
+        title: change.item.title || match.title,
+        state: change.item.state ?? match.state,
+        url: change.item.url ?? match.url,
+        provenance: "synced",
+        syncedAt: change.at,
+        updatedAt: change.at,
+      });
+      const event = workEvents.append({
+        id: randomUUID(),
+        workItemId: item.id,
+        revision: item.revision,
+        at: change.at,
+        actor: { type: "system" },
+        kind: change.type === "item.state_changed" ? "state_change" : "output",
+        summary: `${change.type} ${change.item.title}`.slice(0, 240),
+        linkId: link.id,
+        state: "complete",
+        provenance: "synced",
+      });
+      const workItem = { groupId: item.groupId, threadId: item.threadId, coordinatorBotId: item.coordinatorBotId };
+      broadcast({ kind: "work.link", link, workItem });
+      broadcast({ kind: "work.event", event, workItem });
+      if (bumpInput && isWatchInputChange(change)) {
+        try {
+          workCoordination.items.ensure({
+            groupId: item.groupId,
+            identity: item.identity,
+            scope: item.scope,
+            title: item.title,
+            objective: item.objective,
+            acceptanceCriteria: item.acceptanceCriteria,
+            threadId: item.threadId,
+            coordinatorBotId: item.coordinatorBotId,
+            input: summarizeChanges([change]),
+          });
+        } catch {
+          /* still working; the event already recorded the change */
+        }
+      }
+    }
+  }
+}
+
+function watchNotifyBot(watch: Watch) {
+  if (watch.action.type === "notify" && watch.action.botId) return store.bot(watch.action.botId);
+  if (watch.action.type === "run_routine") {
+    const routine = routines!.listRoutines().find((item) => item.id === watch.action.routineId);
+    if (routine) return store.bot(routine.botId);
+  }
+  return store.bots.find((bot) => !bot.hidden) ?? null;
+}
+
 const webhooks = new WebhookManager({
   emit: broadcast,
   botState: unattendedDispatchState,
@@ -9351,6 +9426,7 @@ const webhooks = new WebhookManager({
   findRun: (webhookId, deliveryId) => routines!.webhookRunReceipt(webhookId, deliveryId),
   cancelQueued: (webhookId, message) => routines!.cancelQueuedWebhook(webhookId, message),
   pendingRuns: (webhookId) => routines!.activeWebhookRunCount(webhookId),
+  onDelivery: (input) => { void watches?.ingestWebhook(input); },
   // delivery:"post" webhooks land in the bot's main chat as the bot's own message.
   post: (botId, text) => {
     const bot = store.bot(botId);
@@ -9377,6 +9453,34 @@ const webhookIngressStatus = () => ({
   available: Boolean(webhookIngress),
   baseUrl: webhookIngress?.baseUrl ?? `http://127.0.0.1:${WEBHOOK_PORT}`,
   ...(webhookIngressError ? { error: webhookIngressError } : {}),
+});
+
+watches = new WatchManager({
+  emit: broadcast,
+  routine: (id) => routines!.listRoutines().find((routine) => routine.id === id) ?? null,
+  enqueueRoutine: (input) => routines!.enqueueWatch(input),
+  webhookExists: (id) => Boolean(webhooks.list().find((webhook) => webhook.id === id)),
+  connectionChanges: async (connectionId, scope, cursor) => {
+    const connection = taskConnectionList().find((candidate) => candidate.id === connectionId && candidate.enabled);
+    if (!connection) throw new Error("The assigned connection no longer exists");
+    const connector = connectorById(connection.connectorId);
+    if (!connector?.changes) throw new Error("This connection has no change feed");
+    return connector.changes(connectionContext(connection), scope, cursor);
+  },
+  notify: (watch, changes, action) => {
+    const bot = watchNotifyBot(watch);
+    if (!bot) return;
+    const notification = buildNotification("done", bot, action.threadId ?? bot.threadId, `${watch.name}: ${summarizeChanges(changes)}`);
+    if (notification) broadcast({ kind: "notify", notification });
+  },
+  record: (_watch, changes) => applyWatchToWork(changes, false),
+  taskUpdate: (_watch, changes) => applyWatchToWork(changes, true),
+  raiseAttention: (watch, reason) => {
+    const bot = watchNotifyBot(watch);
+    if (!bot) return;
+    const notification = buildNotification("incident", bot, bot.threadId, reason);
+    if (notification) broadcast({ kind: "notify", notification }, { adminOnly: true });
+  },
 });
 
 // ── config hot-reload ─────────────────────────────────────────────────
@@ -15022,6 +15126,43 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         : json(res, 404, { error: "no such webhook" });
     }
 
+    // ── watches (engine + built-in sources; editor UI is a later slice) ──
+    const watchVisible = (watch: Watch) => {
+      if (watch.action.type === "run_routine") {
+        const routine = routines!.listRoutines().find((item) => item.id === watch.action.routineId);
+        return !routine || routineVisible(routine, visible);
+      }
+      if (watch.action.type === "notify" && watch.action.botId) return visible.bot(watch.action.botId);
+      return true;
+    };
+    if (path === "/api/watches" && method === "GET") {
+      return json(res, 200, { watches: watches!.list().filter(watchVisible) });
+    }
+    if (path === "/api/watches" && method === "POST") {
+      return json(res, 201, { watch: watches!.create(await readBody(req)) });
+    }
+    let watchMatch = path.match(/^\/api\/watches\/([\w-]+)\/(dry-run|check)$/);
+    if (watchMatch && method === "POST") {
+      const existing = watches!.get(watchMatch[1]);
+      if (!existing) return json(res, 404, { error: "no such watch" });
+      if (watchMatch[2] === "dry-run") {
+        const result = await watches!.dryRun(watchMatch[1], await readBody(req).catch(() => ({})));
+        return json(res, 200, result);
+      }
+      const checked = await watches!.check(watchMatch[1]);
+      return json(res, 200, { watch: checked });
+    }
+    watchMatch = path.match(/^\/api\/watches\/([\w-]+)$/);
+    if (watchMatch && method === "PATCH") {
+      const watch = watches!.update(watchMatch[1], await readBody(req));
+      return watch ? json(res, 200, { watch }) : json(res, 404, { error: "no such watch" });
+    }
+    if (watchMatch && method === "DELETE") {
+      return watches!.remove(watchMatch[1])
+        ? json(res, 200, { ok: true })
+        : json(res, 404, { error: "no such watch" });
+    }
+
     // ── events stream ──
     // Owner-only (default-deny in request-auth). Never mix login frames into
     // the general events feed, which is also visible to client-only devices.
@@ -15632,6 +15773,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return json(res, 200, createTeamBackup(store, routines!.listRoutines(), name, workCoordination.items, {
             events: workEvents.exportPortable(exportedItems.map(item => item.id)),
             connections: taskConnectionList().map(({ secrets, ...connection }) => ({ ...connection, secretKeys: Object.keys(secrets).sort() })),
+            watches: watches!.list(),
           }));
         }
         if (body.format === "package") {
@@ -15778,6 +15920,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           const imported = importTeamBackup(store, routines!, body, await defaultSelection(), {
             visibility: importVisibility, workItems: workCoordination.items,
             importEvents: (workItemId, events) => workEvents.importEvents(workItemId, events as Parameters<WorkEvents["importEvents"]>[1]),
+            watches: watches!,
           });
           if (imported.taskConnections.length) {
             const current = taskConnectionList();

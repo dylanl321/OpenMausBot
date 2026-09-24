@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DATA_DIR } from "./config.ts";
 import { Store, UNTITLED_TASK } from "./store.ts";
 import { RoutineManager } from "./routines.ts";
+import { WatchManager } from "./watches.ts";
 import { createTeamBackup, importTeamBackup } from "./team-backup.ts";
 import { parseTeamBackup } from "../shared/team-backup.ts";
 import { WorkItems } from "./work-items.ts";
@@ -338,5 +339,37 @@ describe("additive portable team backups", () => {
     expect(store.messagesFor(restoredDm.threadId)[0]).toMatchObject({ text: "Mira:\nKeep this old reply" });
     // Exporting never repairs or removes the original records in place.
     expect(store.group(group.id)?.memberIds).toEqual([chief.id, scout.id]);
+  });
+
+  it("includes watches with cursors reset and remaps run_routine by name", () => {
+    const { store, routines, chief } = fixture();
+    const watches = new WatchManager({
+      file: join(DATA_DIR, "watches.json"),
+      routine: (id) => routines.listRoutines().find((routine) => routine.id === id) ?? null,
+    });
+    const daily = routines.listRoutines().find((routine) => routine.name === "Daily")!;
+    const watch = watches.create({
+      name: "New stories",
+      source: { type: "git", remote: "/tmp/repo.git" },
+      check: { type: "interval", everyMinutes: 5, anchorAt: 0 },
+      action: { type: "run_routine", routineId: daily.id },
+    });
+    routines.update(daily.id, { onlyIfChanged: watch.id });
+    const backup = createTeamBackup(store, routines.listRoutines(), "Watches", undefined, { watches: watches.list() });
+    expect(backup.watches?.[0]).toMatchObject({
+      name: "New stories",
+      startFrom: "now",
+      action: { type: "run_routine", routineName: "Daily" },
+    });
+    expect(backup.routines.find((routine) => routine.name === "Daily")?.onlyIfChanged).toBe("New stories");
+    const imported = importTeamBackup(store, routines, backup, selection(), { watches });
+    const restored = imported.watches.find((item) => item.name === "New stories")!;
+    expect(restored.id).not.toBe(watch.id);
+    expect(restored.stats).toMatchObject({ checks: 0, matches: 0, actions: 0 });
+    expect(restored.action).toMatchObject({
+      type: "run_routine",
+      routineId: imported.routines.find((routine) => routine.name === "Daily")!.id,
+    });
+    expect(imported.routines.find((routine) => routine.name === "Daily")?.onlyIfChanged).toBe(restored.id);
   });
 });

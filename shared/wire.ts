@@ -25,6 +25,7 @@ import type { LinkedItem, TaskEvent } from "./work-links.ts";
 import type { RuntimeEvent } from "./runtime-events.ts";
 import type { Notification } from "./notification.ts";
 import type { Routine, RoutineRun } from "./routines.ts";
+import type { Watch } from "./watches.ts";
 import type { WebhookAttempt, WebhookTrigger } from "./webhooks.ts";
 
 /** Reasoning-effort levels, ascending. A union of everything any engine
@@ -561,6 +562,8 @@ export type ServerFrame =
   | { kind: "webhook"; webhook: WebhookTrigger }
   | { kind: "webhook.attempt"; attempt: WebhookAttempt }
   | { kind: "webhook.deleted"; webhookId: string }
+  | { kind: "watch"; watch: Watch }
+  | { kind: "watch.deleted"; watchId: string }
   | { kind: "runtime"; event: RuntimeEvent }
   | { kind: "screen"; botId: string; threadId: string; png: string; mime?: string }
   | { kind: "computer"; botId: string; state: "provisioning" | "waking" }
