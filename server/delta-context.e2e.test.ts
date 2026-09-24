@@ -74,8 +74,10 @@ async function fixture(test: (f: any) => Promise<void>, options: { env?: NodeJS.
     save();
     const thread = chief.activeTaskId;
     const send = async (text: string, threadId = thread) => { save(); return api(`/api/bots/${chief.id}/messages`, { text, threadId }); };
-    const wait = async (threadId = thread) =>
-      expect((await cli("wait", "--bot", chief.id, "--task", threadId, "--timeout", "40")).status).toBe("settled");
+    const wait = async (threadId = thread) => {
+      const result = await cli("wait", "--bot", chief.id, "--task", threadId, "--timeout", "40");
+      expect(result.status, JSON.stringify(result)).toBe("settled");
+    };
     const turns = (botId = chief.id) => jsonl(`${planPath}.evidence.jsonl`).filter((turn: any) => turn.botId === botId);
     const prompt = (turn: any) => String(turn?.prompt?.message?.content ?? "");
     const messages = async (threadId = thread) => (await api(`/api/threads/${threadId}/messages`)).messages;
@@ -257,13 +259,17 @@ it("offers the results again when the return turn fails before the provider acts
 it("offers the results again when the person stops the return turn before the provider acts on it", () => fixture(async (f) => {
   await warmUp(f);
   f.plan[f.lead.id] = { reply: "STOPPED_RETURN_RESULT" };
-  f.plan[f.chief.id] = { turns: [{}, f.delegate("build", [f.lead], "Build the export"), { reply: "never sent", gateFile: f.gate("return") }, { reply: "Recovered" }] };
+  f.plan[f.chief.id] = { turns: [{}, f.delegate("build", [f.lead], "Build the export"), { reply: "never sent", gateFile: f.gate("return") }] };
   await f.send("Please have Engineering build the export.");
   await expect.poll(() => f.nodes().find((node: any) => node.botId === f.lead.id)?.status, { timeout: 20_000 }).toBe("completed");
   await expect.poll(() => f.nodes().find((node: any) => !node.parentId)?.status, { timeout: 20_000 }).toBe("running");
   await f.api(`/api/bots/${f.chief.id}/interrupt`, { threadId: f.thread });
-  await f.wait();
+  // A person-stopped turn does not settle as "settled" for `wait`.
+  await f.idle();
   f.open(f.gate("return"));
+  // Interrupted gated launches still reserve a plan slot. Pin the recovery
+  // reply on its own plan so a Windows relaunch cannot skip it.
+  f.plan[f.chief.id] = { reply: "Recovered" };
 
   await f.send("What did Engineering find?");
   await f.wait();
