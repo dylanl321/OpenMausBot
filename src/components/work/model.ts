@@ -28,11 +28,19 @@ export interface TaskConnectionListing {
   secretKeys?: string[];
 }
 
+export interface TaskConnectorSecret {
+  key: string;
+  label: string;
+  help?: string;
+}
+
 export interface TaskConnectorManifest {
   id: string;
   name: string;
   icon?: string;
   kinds?: LinkKind[];
+  settings?: SettingField[];
+  secrets?: TaskConnectorSecret[];
   watch?: { scopes: SettingField[]; events: SourceChangeType[] };
 }
 
