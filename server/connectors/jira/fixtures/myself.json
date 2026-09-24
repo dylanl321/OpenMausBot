@@ -1,0 +1,6 @@
+{
+  "self": "https://acme.atlassian.net/rest/api/3/user?accountId=qm:bot",
+  "accountId": "qm:bot",
+  "emailAddress": "bot@example.test",
+  "displayName": "Payments bot"
+}

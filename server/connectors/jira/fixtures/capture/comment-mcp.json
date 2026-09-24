@@ -1,0 +1,7 @@
+{
+  "title": "jira_add_comment",
+  "server": "mcp-atlassian",
+  "input": "{\"issueKey\":\"PAY-123\",\"comment\":\"Started the refund fix\"}",
+  "output": "Comment added to PAY-123 (id 10001)",
+  "ok": true
+}

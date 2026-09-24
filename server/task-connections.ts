@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { LinkKind } from "../shared/work-links.ts";
 import { connectorById, CONNECTORS } from "./connectors/registry.ts";
-import type { ConnectionContext, ConnectionListing, StoredConnection } from "./connectors/types.ts";
+import { linkId, observedLink, type ConnectionContext, type ConnectionListing, type StoredConnection } from "./connectors/types.ts";
 
 const idSchema = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/);
 const settingValue = z.union([z.string().max(2_000), z.number().finite(), z.boolean()]);
@@ -103,6 +103,61 @@ export function resolveIdentityLink(connections: StoredConnection[], section: st
   const parsed = connector?.parseRef(externalId, connectionContext(connection));
   if (!parsed) return null;
   return { connection, kind: parsed.kind, externalId: parsed.externalId };
+}
+
+const SOURCE_FETCH_MS = 8_000;
+
+/** Resolve `jira:<connection>:PAY-123` and fetch the live item when the connector can. */
+export async function sourceLinkedItem(
+  connections: StoredConnection[],
+  section: string,
+  identity: string,
+  fetchImpl?: typeof fetch,
+): Promise<ReturnType<typeof observedLink> | null> {
+  const resolved = resolveIdentityLink(connections, section, identity);
+  if (!resolved) return null;
+  const connector = connectorById(resolved.connection.connectorId);
+  if (!connector) return null;
+  const ctx = connectionContext(resolved.connection, fetchImpl);
+  const claimed = observedLink({
+    id: linkId(resolved.connection.id, resolved.kind, resolved.externalId),
+    kind: resolved.kind,
+    title: resolved.externalId,
+    externalId: resolved.externalId,
+    connectorId: resolved.connection.connectorId,
+    connectionId: resolved.connection.id,
+    role: "source",
+    provenance: "claimed",
+    at: Date.now(),
+  });
+  try {
+    const items = await Promise.race([
+      connector.fetch(ctx, [{ kind: resolved.kind, externalId: resolved.externalId }]),
+      new Promise<never>((_, reject) => {
+        const timer = setTimeout(() => reject(new Error("timed out")), SOURCE_FETCH_MS);
+        timer.unref?.();
+      }),
+    ]);
+    const synced = items[0];
+    if (!synced?.state && !synced?.url) return claimed;
+    return observedLink({
+      id: claimed.id,
+      kind: synced.kind,
+      title: synced.title || resolved.externalId,
+      externalId: synced.externalId ?? resolved.externalId,
+      url: synced.url,
+      connectorId: resolved.connection.connectorId,
+      connectionId: resolved.connection.id,
+      details: synced.details,
+      state: synced.state,
+      role: "source",
+      provenance: "synced",
+      syncedAt: Date.now(),
+      at: Date.now(),
+    });
+  } catch {
+    return claimed;
+  }
 }
 
 export function manifests() {

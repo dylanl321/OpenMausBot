@@ -525,7 +525,7 @@ import { createWorkItemLinkRoutes } from "./routes/work-item-links.ts";
 import { WorkCapture } from "./connectors/capture.ts";
 import { linkId, observedLink } from "./connectors/types.ts";
 import { connectorById } from "./connectors/registry.ts";
-import { connectionContext, parseStoredConnections, resolveIdentityLink } from "./task-connections.ts";
+import { connectionContext, parseStoredConnections, sourceLinkedItem } from "./task-connections.ts";
 import { WorkEvents } from "./work-events.ts";
 import { describeBedrockSettings } from "./drivers/bedrock.ts";
 import { mergeBedrockConfig, publicBedrockSettings } from "./bedrock-config.ts";
@@ -3577,16 +3577,7 @@ const workCoordination: WorkCoordination = new WorkCoordination(join(DATA_DIR, "
     (peerReviewRequired(store.bot(source.botId)!, source.threadId) ? "Peer approval is required; ask the user to create the shared task or change the existing peer permission setting." : undefined),
   isUnattended: source => isUnattended(source.botId, source.threadId),
   markUnattended,
-  sourceLink: (scope, identity) => {
-    const resolved = resolveIdentityLink(taskConnectionList(), scope, identity);
-    if (!resolved) return null;
-    return observedLink({
-      id: linkId(resolved.connection.id, resolved.kind, resolved.externalId),
-      kind: resolved.kind, title: resolved.externalId, externalId: resolved.externalId,
-      connectorId: resolved.connection.connectorId, connectionId: resolved.connection.id,
-      role: "source", provenance: "claimed", at: Date.now(),
-    });
-  },
+  sourceLink: (scope, identity) => sourceLinkedItem(taskConnectionList(), scope, identity),
   resolveRef: (scope, ref) => {
     for (const connection of taskConnectionList()) {
       if (!connection.enabled || (connection.sections.length && !connection.sections.includes(scope))) continue;
@@ -12996,7 +12987,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           }
           if ((internalCapability.createdRooms ?? 0) >= 4) return json(res, 429, { error: "At most four shared tasks can be started in one turn" });
           const requestIdentity = [...store.messagesFor(workSource.threadId)].reverse().find(message => message.role === "user")?.id ?? internalCapability.generation;
-          const result = workCoordination.ensure(body, workSource, requestIdentity);
+          const result = await workCoordination.ensure(body, workSource, requestIdentity);
           if (result.started) internalCapability.createdRooms = (internalCapability.createdRooms ?? 0) + 1;
           return json(res, 200, result);
         }
@@ -15578,7 +15569,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (typeof body.groupId === "string" && !visible.group(body.groupId)) return json(res, 404, { error: "no such channel" });
       const existing = typeof body.workItemId === "string" ? workCoordination.items.records.get(body.workItemId) : undefined;
       if (existing && !workItemVisible(existing, visible)) return json(res, 404, { error: "No such shared task" });
-      return json(res, 200, workCoordination.ensure(body, { botId: bot.id, threadId, groupId: store.groupByThread(threadId)?.id },
+      return json(res, 200, await workCoordination.ensure(body, { botId: bot.id, threadId, groupId: store.groupByThread(threadId)?.id },
         `user:${threadId}:${body.identity ?? body.title}`, true));
     }
     const workMatch = path.match(/^\/api\/work-items\/([\w-]+)$/);
