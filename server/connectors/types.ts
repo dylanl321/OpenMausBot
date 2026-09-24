@@ -1,27 +1,7 @@
 import type { LinkKind, LinkedItem, Provenance, StatusCategory, SyncedItem } from "../../shared/work-links.ts";
+import type { SourceChange, SourceChangeType, WatchScope } from "../../shared/watches.ts";
 
-export type { SyncedItem };
-
-/** Watch scope fields come from `manifest.watch.scopes`. Connectors read the keys they declared. */
-export type WatchScope = Record<string, string | number | boolean | undefined>;
-
-export type SourceChangeType =
-  | "item.created" | "item.updated" | "item.state_changed" | "item.assigned"
-  | "item.labeled" | "comment.added"
-  | "change_request.opened" | "change_request.updated" | "change_request.merged" | "change_request.closed"
-  | "review.requested" | "review.submitted"
-  | "commit.pushed" | "build.failed" | "build.succeeded" | "branch.created";
-
-export interface SourceChange {
-  id: string;
-  type: SourceChangeType;
-  connectionId: string;
-  item: SyncedItem;
-  before?: { state?: StatusCategory; stateLabel?: string; assignee?: string; labels?: string[] };
-  actor?: { name: string; isBot: boolean };
-  fields: Record<string, string | number | boolean | string[]>;
-  at: number;
-}
+export type { SourceChange, SourceChangeType, SyncedItem, WatchScope };
 
 export interface SettingField {
   key: string;
