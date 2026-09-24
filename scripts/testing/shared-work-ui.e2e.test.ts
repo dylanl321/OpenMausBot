@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { expect, it } from "vitest";
+import type { Bot } from "../../src/state/store.ts";
+import type { WorkItem } from "../../shared/work-item.ts";
+import { compactTaskRowModel, matchesSidebarWorkFilter } from "../../src/lib/shared-work-sidebar.ts";
 import { runControlOmb } from "../control-omb.ts";
 import { removeTempDir, waitForExit } from "../../server/testing/cleanup.ts";
 import { sessionEnv, type UiHandle } from "./control-omb-ui.ts";
@@ -12,6 +15,35 @@ import { REPO_ROOT } from "./preview-fixture.ts";
 
 const enabled = process.env.OMB_UI_E2E === "1";
 const evidenceDir = join(REPO_ROOT, ".omb-scratch", "verify-evidence", "shared-work");
+
+it("keeps 10+ tasks across 3 topics as compact unexpanded rows", () => {
+  const bots: Bot[] = [{
+    id: "chief", name: "Manager", threadId: "chief-chat", title: "", description: "", color: "blue",
+    notifications: true, unread: false, modelSelection: { instanceId: "fake", model: "fake" }, messages: [], tasks: [],
+  }];
+  const rows = ["payments", "onboarding", "pricing"].flatMap((topic) =>
+    [0, 1, 2, 3].map((index) => {
+      const item: WorkItem = {
+        id: `${topic}-${index}`, groupId: topic, threadId: `hub-${topic}-${index}`, title: `${topic} ${index + 1}`,
+        objective: "Scan", acceptanceCriteria: ["Done"], coordinatorBotId: "chief", revision: 1,
+        status: index === 2 ? "completed" : index === 1 ? "needs-input" : "active", detail: "", decisions: [],
+        artifacts: [], evidence: [], assignments: [], createdAt: 1, updatedAt: 2,
+        links: [{ id: `${topic}-${index}-src`, kind: "work_item", role: "source", title: topic, externalId: `${topic.slice(0, 3).toUpperCase()}-${index}`,
+          provenance: "synced", updatedAt: 2 }],
+        criteria: [{ id: "c1", text: "Done", state: index === 2 ? "checked" : "pending", evidence: [] }],
+      };
+      return compactTaskRowModel(item, bots, false);
+    }));
+  expect(rows).toHaveLength(12);
+  expect(new Set(rows.map(row => row.groupId)).size).toBe(3);
+  expect(rows.every(row => row.expanded === false && row.liveStep === undefined)).toBe(true);
+  expect(rows.filter(row => matchesSidebarWorkFilter({
+    id: row.id, groupId: row.groupId, threadId: `hub-${row.id}`, title: row.id, objective: "", acceptanceCriteria: ["x"],
+    coordinatorBotId: "chief", revision: 1, status: row.status, detail: "", decisions: [], artifacts: [], evidence: [],
+    assignments: [], createdAt: 1, updatedAt: 2,
+  }, bots, "needs_you"))).toHaveLength(3);
+  expect(rows.some(row => row.key && row.criteria.total === 1)).toBe(true);
+});
 
 (enabled ? it : it.skip)("groups a shared hub and its exact worker under a distinct topic folder with tool calls hidden", async () => {
   const temporary = mkdtempSync(join(tmpdir(), "omb-shared-work-ui-"));
@@ -61,7 +93,9 @@ const evidenceDir = join(REPO_ROOT, ".omb-scratch", "verify-evidence", "shared-w
         { steps: [{ arguments: { intent: "work", bot_ids: [engineer.id], request_key: "implement", message: "Implement and check the refund correction" } }], reply: "Assigned" },
         { steps: [{ tool: "update_work_item", arguments: { work_item_id: "$current", expected_revision: "$current", status: "completed", detail: "Refund correction checked", evidence: ["Worker result: boundary cases checked"], completed_criteria: "$current" } }], reply: "Refund correction checked" },
       ] },
-      [engineer.id]: { gateFile: gate, reply: "Refund boundary cases checked in the linked worker thread" },
+      [engineer.id]: { gateFile: gate, progress: "Check refund boundary cases, then confirm.",
+        shell: { command: "git commit", output: "[fix-refunds abc123] Refund boundaries" },
+        reply: "Refund boundary cases checked in the linked worker thread" },
     }));
     await ui("flag", "--set", "features.showToolCalls=false");
     await screenshot("before-task");
@@ -74,6 +108,8 @@ const evidenceDir = join(REPO_ROOT, ".omb-scratch", "verify-evidence", "shared-w
     await expect.poll(async () => (await api("/api/work-items")).workItems[0]?.assignments[0]?.status, { timeout: 25_000 }).toBe("running");
     const item = (await api("/api/work-items")).workItems[0];
     await expect.poll(snapshot, { timeout: 15_000 }).toContain("Work topic");
+    const compactRow = await ui("eval", "--js", `(() => { const row = document.querySelector('[data-sidebar-task-row]'); return { id: row?.getAttribute('data-sidebar-task-row'), tree: row?.getAttribute('data-work-item-tree') }; })()`);
+    expect(compactRow.result).toMatchObject({ id: item.id, tree: item.id });
     await click("Open Engineer's work on Refund correction");
     await expect.poll(async () => (await api("/api/bots")).bots.find((bot: any) => bot.id === engineer.id)?.threadId, { timeout: 15_000 }).toBe(item.assignments[0].threadId);
     const workerLocation = () => ui("eval", "--js", `(() => { const rows = [...document.querySelectorAll('[data-sidebar-thread-row="${item.assignments[0].threadId}"]')]; return { count: rows.length, topic: rows[0]?.closest('[data-work-topic]')?.getAttribute('data-work-topic'), current: rows[0]?.getAttribute('aria-current') }; })()`);
@@ -106,6 +142,12 @@ const evidenceDir = join(REPO_ROOT, ".omb-scratch", "verify-evidence", "shared-w
     await expect.poll(snapshot, { timeout: 10_000 }).toContain("Open Engineer's task work");
     await click("Open Engineer's task work");
     await expect.poll(snapshot, { timeout: 15_000 }).toContain("Refund boundary cases checked in the linked worker thread");
+    await expect.poll(snapshot, { timeout: 10_000 }).toContain("This turn");
+    expect(await snapshot()).toContain("Check refund boundary cases, then confirm.");
+    expect(await snapshot()).toContain("Raw reply");
+    expect(await snapshot()).toContain("Tool log");
+    const turnCard = await ui("eval", "--js", `(() => { const card = document.querySelector('[data-bot-turn]'); return { present: Boolean(card), plan: Boolean(card?.querySelector('[data-bot-turn-plan]')), steps: Boolean(card?.querySelector('[data-bot-turn-steps]')) }; })()`);
+    expect(turnCard.result).toMatchObject({ present: true, plan: true, steps: true });
     const selected = (await api("/api/bots")).bots.find((bot: any) => bot.id === engineer.id);
     expect(selected.threadId).toBe(item.assignments[0].threadId);
     const settled = (await api("/api/work-items")).workItems[0];
