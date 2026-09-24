@@ -1,0 +1,18 @@
+{
+  "object_kind": "merge_request",
+  "event_type": "merge_request",
+  "project": {
+    "id": 99,
+    "path_with_namespace": "acme/payments",
+    "web_url": "https://gitlab.com/acme/payments"
+  },
+  "object_attributes": {
+    "id": 123456,
+    "iid": 482,
+    "title": "Round partial refunds",
+    "state": "opened",
+    "action": "open",
+    "url": "https://gitlab.com/acme/payments/-/merge_requests/482",
+    "head_pipeline_id": 9001
+  }
+}

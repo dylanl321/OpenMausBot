@@ -1,0 +1,10 @@
+{
+  "482": {
+    "id": 123456,
+    "iid": 482,
+    "approvals_required": 2,
+    "approvals_left": 1,
+    "approved": false,
+    "approved_by": [{ "user": { "name": "Ada", "username": "ada" } }]
+  }
+}
