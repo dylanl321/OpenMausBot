@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 
 import { writeFileAtomic } from "./atomic.ts";
 import { DATA_DIR } from "./config.ts";
+import { encodeChangeCursor } from "./connectors/change-cursor.ts";
 import { nextOccurrence, normalizeRoutineSchedule } from "./routines.ts";
 import type { RoutineRunOn, RoutineSchedule, RoutineScheduleInput } from "./routines.ts";
 import { diffGitHeads, parseLsRemote, type GitHeads } from "./watch-git.ts";
@@ -28,6 +29,8 @@ import {
   type Watch,
   type WatchAction,
   type WatchBatch,
+  type WatchDryRunOptions,
+  type WatchDryRunResult,
   type WatchFilter,
   type WatchInput,
   type WatchLimits,
@@ -35,6 +38,7 @@ import {
   type WatchStats,
 } from "../shared/watches.ts";
 import type { WatchScope } from "../shared/watches.ts";
+import type { SyncedItem } from "../shared/work-links.ts";
 
 const execFileAsync = promisify(execFile);
 const MAX_WATCHES = 500;
@@ -42,13 +46,10 @@ const MAX_RECEIPTS = 20_000;
 const RECEIPT_WINDOW_MS = 7 * 24 * 60 * 60_000;
 const MAX_PENDING = 200;
 const MAX_DATE_MS = 8_640_000_000_000_000;
+const MAX_DRY_RUN_MATCHES = 50;
 const GIT_EVENTS: SourceChangeType[] = ["commit.pushed", "branch.created"];
 
-export interface WatchDryRunResult {
-  matches: SourceChange[];
-  skipped: number;
-  error?: string;
-}
+export type { WatchDryRunOptions, WatchDryRunResult };
 
 export interface PortableWatch {
   name: string;
@@ -96,6 +97,7 @@ export interface WatchManagerOptions {
     scope: WatchScope,
     cursor: string | null,
   ) => Promise<{ changes: SourceChange[]; cursor: string }>;
+  connectionQuery?: (connectionId: string, query: string) => Promise<SyncedItem[]>;
 }
 
 type GitCursor = { kind: "git"; heads: GitHeads; baselined: boolean };
@@ -116,7 +118,21 @@ interface WatchFile {
   actionDays?: Record<string, ActionDay>;
 }
 
-const emptyStats = (): WatchStats => ({ checks: 0, matches: 0, actions: 0, runsAvoided: 0 });
+const emptyStats = (): WatchStats => ({ checks: 0, changesSeen: 0, matches: 0, actions: 0, runsAvoided: 0 });
+
+function syncedItemToChange(connectionId: string, item: SyncedItem): SourceChange {
+  const fields: SourceChange["fields"] = { ...item.details };
+  if (item.state?.category) fields.state = item.state.category;
+  if (item.state?.label) fields.stateLabel = item.state.label;
+  return {
+    id: `${item.externalId ?? item.title}@${item.updatedAt}`,
+    type: "item.updated",
+    connectionId,
+    item,
+    fields,
+    at: item.updatedAt,
+  };
+}
 
 async function defaultExecGit(args: string[], cwd?: string): Promise<string> {
   const { stdout } = await execFileAsync("git", args, {
@@ -384,6 +400,7 @@ function loadStats(value: unknown): WatchStats {
   };
   return {
     checks: number("checks"),
+    changesSeen: number("changesSeen"),
     matches: number("matches"),
     actions: number("actions"),
     runsAvoided: number("runsAvoided"),
@@ -605,25 +622,23 @@ export class WatchManager {
     return cloneWatch(watch);
   }
 
-  async dryRun(id: string, input: { payload?: unknown; eventName?: string } = {}): Promise<WatchDryRunResult | null> {
+  async dryRun(id: string, input: WatchDryRunOptions = {}): Promise<WatchDryRunResult | null> {
     const watch = this.watches.find((candidate) => candidate.id === id);
     if (!watch) return null;
-    try {
-      const raw = watch.source.type === "webhook"
-        ? [mapWebhookChange({
-            webhookId: watch.source.webhookId,
-            deliveryId: "dry-run",
-            eventName: input.eventName,
-            payload: input.payload ?? {},
-            fieldMap: watch.source.fieldMap,
-            at: this.now(),
-          })]
-        : (await this.poll(watch, this.now(), true))?.changes ?? [];
-      const filtered = this.filterChanges(watch, raw);
-      return { matches: filtered, skipped: raw.length - filtered.length };
-    } catch (error) {
-      return { matches: [], skipped: 0, error: error instanceof Error ? error.message : String(error) };
-    }
+    return this.preview(watch, input);
+  }
+
+  async dryRunInput(input: WatchInput, options: WatchDryRunOptions = {}): Promise<WatchDryRunResult> {
+    const at = this.now();
+    const clean = this.sanitize(input, at);
+    return this.preview({
+      id: "dry-run",
+      ...clean,
+      nextCheckAt: null,
+      createdAt: at,
+      updatedAt: at,
+      stats: emptyStats(),
+    }, options);
   }
 
   async ingestWebhook(input: {
@@ -831,21 +846,108 @@ export class WatchManager {
     return { changes: [], cursor: { kind: "webhook" } };
   }
 
-  private filterChanges(watch: Watch, raw: SourceChange[]): SourceChange[] {
+  private filterChanges(watch: Watch, raw: SourceChange[], ignoreReceipts = false): SourceChange[] {
     const events = watch.events.length ? new Set(watch.events) : null;
     return raw.filter((change) => {
       if (events && !events.has(change.type)) return false;
       if (ignoreOwnBotWrite(change, watch.filter)) return false;
       if (!matchWatchFilter(change, watch.filter)) return false;
-      if (this.hasReceipt(watch.id, change.id)) return false;
+      if (!ignoreReceipts && this.hasReceipt(watch.id, change.id)) return false;
       return true;
     });
+  }
+
+  private async preview(watch: Watch, input: WatchDryRunOptions): Promise<WatchDryRunResult> {
+    try {
+      const { raw, used } = await this.previewChanges(watch, input);
+      const filtered = this.filterChanges(watch, raw, true);
+      return {
+        matches: filtered.slice(0, MAX_DRY_RUN_MATCHES),
+        skipped: raw.length - filtered.length,
+        seen: raw.length,
+        matchCount: filtered.length,
+        used,
+      };
+    } catch (error) {
+      return {
+        matches: [],
+        skipped: 0,
+        seen: 0,
+        matchCount: 0,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  private async previewChanges(
+    watch: Watch,
+    input: WatchDryRunOptions,
+  ): Promise<{ raw: SourceChange[]; used: NonNullable<WatchDryRunResult["used"]> }> {
+    if (watch.source.type === "webhook") {
+      if (input.payload == null && !input.eventName) {
+        throw new Error("Paste a sample event to test this webhook watch.");
+      }
+      return {
+        raw: [mapWebhookChange({
+          webhookId: watch.source.webhookId,
+          deliveryId: "dry-run",
+          eventName: input.eventName,
+          payload: input.payload ?? {},
+          fieldMap: watch.source.fieldMap,
+          at: this.now(),
+        })],
+        used: "webhook",
+      };
+    }
+    if (watch.source.type === "git") {
+      const stdout = await (this.options.execGit ?? defaultExecGit)(
+        ["ls-remote", "--heads", "--", watch.source.remote],
+        watch.source.cwd,
+      );
+      return {
+        raw: diffGitHeads({}, parseLsRemote(stdout), this.now(), `git:${watch.id}`),
+        used: "git",
+      };
+    }
+    const sinceDays = input.sinceDays ?? 7;
+    const since = input.backfill ? 0 : this.now() - sinceDays * 86_400_000;
+    const connectionId = watch.source.connectionId;
+    if (this.options.connectionChanges) {
+      try {
+        const cursor = input.backfill ? null : encodeChangeCursor(since, new Map());
+        const result = await this.options.connectionChanges(connectionId, watch.source.scope ?? {}, cursor);
+        return {
+          raw: result.changes.map((change) => ({
+            ...change,
+            connectionId: change.connectionId || connectionId,
+          })),
+          used: "changes",
+        };
+      } catch (error) {
+        if (!this.options.connectionQuery) throw error;
+      }
+    }
+    if (this.options.connectionQuery) {
+      return { raw: await this.queryAsChanges(watch, since), used: "query" };
+    }
+    throw new Error("This connection has no change feed");
+  }
+
+  private async queryAsChanges(watch: Watch, since: number): Promise<SourceChange[]> {
+    if (watch.source.type !== "connection" || !this.options.connectionQuery) return [];
+    const source = watch.source;
+    const query = typeof source.scope?.query === "string" ? source.scope.query : "";
+    const items = await this.options.connectionQuery(source.connectionId, query);
+    return items
+      .filter((item) => !since || item.updatedAt >= since)
+      .map((item) => syncedItemToChange(source.connectionId, item));
   }
 
   private async acceptChanges(watch: Watch, raw: SourceChange[], now: number, cursor?: StoredCursor): Promise<void> {
     if (cursor) this.cursors.set(watch.id, cursor);
     const incoming = this.filterChanges(watch, raw);
     watch.stats.checks += 1;
+    watch.stats.changesSeen += raw.length;
     watch.stats.lastCheckAt = now;
     if (!incoming.length) {
       if (this.pending.get(watch.id)?.changes.length) await this.flushPending(watch, now);

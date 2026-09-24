@@ -55,7 +55,7 @@ function watch(overrides: Partial<Watch> = {}): Watch {
     nextCheckAt: 1,
     createdAt: 1,
     updatedAt: 1,
-    stats: { checks: 0, matches: 0, actions: 0, runsAvoided: 0 },
+    stats: { checks: 0, changesSeen: 0, matches: 0, actions: 0, runsAvoided: 0 },
     ...overrides,
   };
 }

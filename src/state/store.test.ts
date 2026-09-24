@@ -1186,6 +1186,35 @@ describe("routine receipt retention", () => {
     expect(ready.routines).toEqual([]);
   });
 
+  it("hydrates watches and folds live watch frames", () => {
+    expect(initialState.watchesLoadState).toBe("loading");
+    const failed = reducer(initialState, { type: "watchesLoadFailed" });
+    expect(failed.watchesLoadState).toBe("error");
+    const watch = {
+      id: "w1",
+      name: "Ready stories",
+      source: { type: "git" as const, remote: "/tmp/repo.git" },
+      events: ["commit.pushed" as const],
+      check: { type: "interval" as const, everyMinutes: 5, anchorAt: 1 },
+      action: { type: "record" as const },
+      startFrom: "now" as const,
+      enabled: true,
+      nextCheckAt: 2,
+      createdAt: 1,
+      updatedAt: 1,
+      stats: { checks: 1, changesSeen: 0, matches: 0, actions: 0, runsAvoided: 1 },
+    };
+    const ready = reducer(failed, { type: "watchesHydrated", watches: [watch] });
+    expect(ready.watchesLoadState).toBe("ready");
+    expect(ready.watches).toEqual([watch]);
+    const patched = reducer(ready, { type: "watchPatched", watch: { ...watch, stats: { ...watch.stats, runsAvoided: 4 } } });
+    expect(patched.watches[0]?.stats.runsAvoided).toBe(4);
+    const gone = reducer(patched, { type: "watchDeleted", watchId: "w1" });
+    expect(gone.watches).toEqual([]);
+    const convert = reducer(initialState, { type: "showRoutines", section: "watches", convertRoutineId: "brief" });
+    expect(convert.routinesFocus).toMatchObject({ section: "watches", convertRoutineId: "brief" });
+  });
+
   const run = (id: string, scheduledFor: number, status: RoutineRun["status"]): RoutineRun => ({
     id,
     routineId: "routine",

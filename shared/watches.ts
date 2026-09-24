@@ -64,10 +64,28 @@ export interface WatchStats {
   lastCheckAt?: number;
   lastMatchAt?: number;
   checks: number;
+  /** Raw source changes observed, before filters. */
+  changesSeen: number;
   matches: number;
   actions: number;
   runsAvoided: number;
   lastError?: string;
+}
+
+export interface WatchDryRunResult {
+  matches: SourceChange[];
+  skipped: number;
+  seen: number;
+  matchCount: number;
+  used?: "changes" | "query" | "webhook" | "git";
+  error?: string;
+}
+
+export interface WatchDryRunOptions {
+  payload?: unknown;
+  eventName?: string;
+  sinceDays?: number;
+  backfill?: boolean;
 }
 
 export interface Watch {

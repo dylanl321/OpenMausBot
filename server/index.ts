@@ -378,7 +378,7 @@ import * as vps from "./vps-computer.ts";
 import { RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { WatchManager } from "./watches.ts";
 import { summarizeChanges } from "../shared/watches.ts";
-import type { SourceChange, Watch } from "../shared/watches.ts";
+import type { SourceChange, Watch, WatchInput } from "../shared/watches.ts";
 import { applyWatchToWork, ensureTasksFromChanges } from "./watch-actions.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
@@ -531,7 +531,7 @@ import { createWorkItemLinkRoutes } from "./routes/work-item-links.ts";
 import { WorkCapture } from "./connectors/capture.ts";
 import { linkId, observedLink } from "./connectors/types.ts";
 import { connectorById } from "./connectors/registry.ts";
-import { connectionContext, parseStoredConnections, sourceLinkedItem } from "./task-connections.ts";
+import { connectionContext, parseStoredConnections, queryConnection, sourceLinkedItem } from "./task-connections.ts";
 import { WorkEvents } from "./work-events.ts";
 import { describeBedrockSettings } from "./drivers/bedrock.ts";
 import { mergeBedrockConfig, publicBedrockSettings } from "./bedrock-config.ts";
@@ -9436,6 +9436,12 @@ watches = new WatchManager({
     if (!connector?.changes) throw new Error("This connection has no change feed");
     return connector.changes(connectionContext(connection), scope, cursor);
   },
+  connectionQuery: async (connectionId, query) => {
+    const connection = taskConnectionList().find((candidate) => candidate.id === connectionId && candidate.enabled);
+    if (!connection) throw new Error("The assigned connection no longer exists");
+    const result = await queryConnection(connection, query);
+    return result.items;
+  },
   notify: (watch, changes, action) => {
     const bot = watchNotifyBot(watch);
     if (!bot) return;
@@ -15175,12 +15181,31 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     if (path === "/api/watches" && method === "POST") {
       return json(res, 201, { watch: watches!.create(await readBody(req)) });
     }
+    if (path === "/api/watches/dry-run" && method === "POST") {
+      const body = await readBody(req).catch(() => ({})) as Record<string, unknown>;
+      try {
+        return json(res, 200, await watches!.dryRunInput(body as unknown as WatchInput, {
+          payload: body.payload,
+          eventName: typeof body.eventName === "string" ? body.eventName : undefined,
+          sinceDays: typeof body.sinceDays === "number" ? body.sinceDays : undefined,
+          backfill: body.backfill === true,
+        }));
+      } catch (error) {
+        return json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
     let watchMatch = path.match(/^\/api\/watches\/([\w-]+)\/(dry-run|check)$/);
     if (watchMatch && method === "POST") {
       const existing = watches!.get(watchMatch[1]);
       if (!existing) return json(res, 404, { error: "no such watch" });
       if (watchMatch[2] === "dry-run") {
-        const result = await watches!.dryRun(watchMatch[1], await readBody(req).catch(() => ({})));
+        const body = await readBody(req).catch(() => ({})) as Record<string, unknown>;
+        const result = await watches!.dryRun(watchMatch[1], {
+          payload: body.payload,
+          eventName: typeof body.eventName === "string" ? body.eventName : undefined,
+          sinceDays: typeof body.sinceDays === "number" ? body.sinceDays : undefined,
+          backfill: body.backfill === true,
+        });
         return json(res, 200, result);
       }
       const checked = await watches!.check(watchMatch[1]);

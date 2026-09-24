@@ -35,6 +35,7 @@ import {
 } from "../../shared/skill-request";
 import type { Routine, RoutineInput, RoutineRun, RoutineRunStatusFilter } from "@/lib/routines";
 import type { WebhookAttempt, WebhookIngressStatus, WebhookTrigger } from "@/lib/webhooks";
+import type { Watch } from "@/lib/watches";
 import { answerResponse, dismissResponse } from "@/lib/card-answer";
 import { currentCall } from "@/lib/call";
 import { showNotification, type NotificationTarget } from "@/lib/notify";
@@ -857,10 +858,12 @@ export interface AppState {
   routines: Routine[];
   routineRuns: RoutineRun[];
   routinesLoadState: "loading" | "ready" | "error";
-  routinesFocus: { section?: "schedule" | "logs"; view?: "calendar" | "list"; botId?: string; routineId?: string; runStatus?: RoutineRunStatusFilter; nonce: number };
+  routinesFocus: { section?: "schedule" | "logs" | "watches"; view?: "calendar" | "list"; botId?: string; routineId?: string; runStatus?: RoutineRunStatusFilter; convertRoutineId?: string; nonce: number };
   webhooks: WebhookTrigger[];
   webhookAttempts: WebhookAttempt[];
   webhookIngress: WebhookIngressStatus | null;
+  watches: Watch[];
+  watchesLoadState: "loading" | "ready" | "error";
   settingsOpen: boolean;
   pluginsOpen: boolean;
   /** Which tab the Plugins panel opens on; "mcp" when a bot's tools
@@ -1016,7 +1019,7 @@ export type Action =
   | { type: "botQueues"; queues: AppState["pendingQueued"] }
   | { type: "sections"; sections: string[] }
   | { type: "sectionDeleted"; section: string; sections: string[] }
-  | { type: "showRoutines"; section?: "schedule" | "logs"; view?: "calendar" | "list"; botId?: string; routineId?: string; runStatus?: RoutineRunStatusFilter }
+  | { type: "showRoutines"; section?: "schedule" | "logs" | "watches"; view?: "calendar" | "list"; botId?: string; routineId?: string; runStatus?: RoutineRunStatusFilter; convertRoutineId?: string }
   | { type: "showTeamMap" }
   | { type: "showChat" }
   | { type: "routinesHydrated"; routines: Routine[]; runs: RoutineRun[] }
@@ -1028,6 +1031,10 @@ export type Action =
   | { type: "webhookPatched"; webhook: WebhookTrigger }
   | { type: "webhookAttempted"; attempt: WebhookAttempt }
   | { type: "webhookDeleted"; webhookId: string }
+  | { type: "watchesHydrated"; watches: Watch[] }
+  | { type: "watchesLoadFailed" }
+  | { type: "watchPatched"; watch: Watch }
+  | { type: "watchDeleted"; watchId: string }
   | { type: "createRoutine"; input: RoutineInput }
   | { type: "updateRoutine"; routineId: string; patch: Partial<RoutineInput> }
   | { type: "deleteRoutine"; routineId: string }
@@ -1436,7 +1443,15 @@ export function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         activeView: "routines",
-        routinesFocus: { section: action.section, view: action.view, botId: action.botId, routineId: action.routineId, runStatus: action.runStatus, nonce: state.routinesFocus.nonce + 1 },
+        routinesFocus: {
+          section: action.section,
+          view: action.view,
+          botId: action.botId,
+          routineId: action.routineId,
+          runStatus: action.runStatus,
+          ...(action.convertRoutineId ? { convertRoutineId: action.convertRoutineId } : {}),
+          nonce: state.routinesFocus.nonce + 1,
+        },
         settingsOpen: false,
         computerOpen: false,
         inspectorOpen: false,
@@ -1503,6 +1518,21 @@ export function reducer(state: AppState, action: Action): AppState {
         : [...state.webhookAttempts, action.attempt];
       return { ...state, webhookAttempts: attempts.slice(-2_000) };
     }
+    case "watchesHydrated":
+      return { ...state, watches: action.watches, watchesLoadState: "ready" };
+    case "watchesLoadFailed":
+      return { ...state, watchesLoadState: "error" };
+    case "watchPatched": {
+      const exists = state.watches.some((watch) => watch.id === action.watch.id);
+      return {
+        ...state,
+        watches: exists
+          ? state.watches.map((watch) => (watch.id === action.watch.id ? action.watch : watch))
+          : [action.watch, ...state.watches],
+      };
+    }
+    case "watchDeleted":
+      return { ...state, watches: state.watches.filter((watch) => watch.id !== action.watchId) };
     case "groupPatched": {
       // A payload carrying a transcript replaces what this client holds, so
       // pages asked for under the old one no longer describe it.
@@ -2273,6 +2303,8 @@ export const initialState: AppState = {
   webhooks: [],
   webhookAttempts: [],
   webhookIngress: null,
+  watches: [],
+  watchesLoadState: "loading",
   settingsOpen: false,
   pluginsOpen: false,
   pluginsSurface: "apps",
@@ -3444,7 +3476,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // ── initial load + SSE fold ──────────────────────────────────────────
   useEffect(() => {
     let alive = true;
-    type PeripheralKey = "instances" | "config" | "routines" | "webhooks";
+    type PeripheralKey = "instances" | "config" | "routines" | "webhooks" | "watches";
     type PeripheralPart = {
       key: PeripheralKey;
       request: () => Promise<() => void>;
@@ -3494,6 +3526,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             rawDispatch({ type: "webhooksHydrated", webhooks, attempts: attempts ?? [], ingress });
         },
       } satisfies PeripheralPart]),
+      {
+        key: "watches",
+        request: async () => {
+          const { watches } = await api("/api/watches");
+          return () => rawDispatch({ type: "watchesHydrated", watches: watches ?? [] });
+        },
+      },
     ];
     const partByKey = new Map(peripheralParts.map((part) => [part.key, part]));
     const schedulePeripheralRetry = (part: PeripheralPart, error?: Error) => {
@@ -3502,6 +3541,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (refresh.timer) return;
       if (error !== undefined) {
         if (part.key === "routines") rawDispatch({ type: "routinesLoadFailed" });
+        if (part.key === "watches") rawDispatch({ type: "watchesLoadFailed" });
         console.warn(`snapshot: ${part.key} refresh failed; retrying`, error);
       }
       const delay = Math.min(30_000, 1_000 * 2 ** Math.min(refresh.attempt, 5));
@@ -3616,6 +3656,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         frame.kind === "webhook.deleted"
       ) {
         bumpPeripheralVersion("webhooks");
+      } else if (frame.kind === "watch" || frame.kind === "watch.deleted") {
+        bumpPeripheralVersion("watches");
       }
       switch (frame.kind) {
         case "sections":
@@ -3731,7 +3773,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           rawDispatch({ type: "webhookDeleted", webhookId: frame.webhookId });
           break;
         case "watch":
+          rawDispatch({ type: "watchPatched", watch: frame.watch });
+          break;
         case "watch.deleted":
+          rawDispatch({ type: "watchDeleted", watchId: frame.watchId });
           break;
         case "runtime": {
           const event = frame.event;

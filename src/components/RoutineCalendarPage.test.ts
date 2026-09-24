@@ -96,6 +96,13 @@ describe("routine failure indicators", () => {
     expect(fixture.dispatch).toHaveBeenCalledExactlyOnceWith({ type: "showRoutines", section: "logs", runStatus: "problems" });
   });
 
+  it("exposes a Watches tab next to Webhooks", () => {
+    const markup = markupOf();
+    expect(markup).toContain("Watches");
+    expect(markup).toContain("Create a watch");
+    expect(markup).toContain("Watch a source and act only when something changes.");
+  });
+
   it("lands the focused problems filter on the logs instead of every status", () => {
     fixture.state = { ...initialState, bots: [bot], routineRuns: [failed, missed, completed],
       routinesFocus: { section: "logs", runStatus: "problems", nonce: 1 } };
