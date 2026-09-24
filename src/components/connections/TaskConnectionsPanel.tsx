@@ -15,7 +15,7 @@ export function TaskConnectionsPanel({
 }: {
   connectors?: TaskConnectorManifest[];
   connections?: TaskConnectionListing[];
-} = {}) {
+}) {
   const { state } = useStore();
   const [loadedConnectors, setConnectors] = useState<TaskConnectorManifest[]>(connectorsProp ?? []);
   const [loadedConnections, setConnections] = useState<TaskConnectionListing[]>(connectionsProp ?? []);

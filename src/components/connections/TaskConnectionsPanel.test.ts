@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { jiraConnector } from "../../../server/connectors/jira/index";
 import { planeConnector } from "../../../server/connectors/plane/index";
 import type { AppState } from "@/state/store";
-import { resetTaskConnectorsCache, type TaskConnectionListing } from "../work/model";
+import { resetTaskConnectorsCache, type TaskConnectionListing, type TaskConnectorManifest } from "../work/model";
 
 const fixture = vi.hoisted(() => ({
   state: undefined as AppState | undefined,
@@ -45,7 +45,10 @@ const connections: TaskConnectionListing[] = [
   },
 ];
 
-function markup(props?: Parameters<typeof TaskConnectionsPanel>[0]) {
+function markup(props: {
+  connectors?: TaskConnectorManifest[];
+  connections?: TaskConnectionListing[];
+} = {}) {
   return renderToStaticMarkup(createElement(TaskConnectionsPanel, props));
 }
 
