@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { RoutineManager } from "./routines.ts";
 import { WatchManager } from "./watches.ts";
 import { parseTeamBackup } from "../shared/team-backup.ts";
-import type { SourceChange } from "../shared/watches.ts";
+import { isSourceChangeType, type SourceChange } from "../shared/watches.ts";
+import type { PortableWatch } from "./watches.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -288,7 +289,10 @@ describe("watch backups", () => {
     });
     expect(document.watches?.[0]?.action).toEqual({ type: "run_routine", routineName: "Daily" });
     const dest = new WatchManager({ file: join(dir, "to.json"), now: () => 9_000 });
-    const imported = dest.importPortable(document.watches ?? [], (name) => name === "Daily" ? "r-new" : undefined);
+    const imported = dest.importPortable((document.watches ?? []).map((row): PortableWatch => ({
+      ...row,
+      events: row.events.filter(isSourceChangeType),
+    })), (name) => name === "Daily" ? "r-new" : undefined);
     expect(imported[0].id).not.toBe(watch.id);
     expect(imported[0].action).toEqual({ type: "run_routine", routineId: "r-new" });
     expect(imported[0].stats).toMatchObject({ checks: 0, matches: 0, actions: 0 });
