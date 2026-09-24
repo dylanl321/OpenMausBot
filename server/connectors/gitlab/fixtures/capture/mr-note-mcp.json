@@ -1,0 +1,7 @@
+{
+  "title": "create_merge_request_note",
+  "server": "gitlab",
+  "input": "{\"mergeRequestIid\":482,\"body\":\"Please check the rounding.\"}",
+  "output": "{\n  \"id\": 10001,\n  \"noteable_iid\": 482,\n  \"body\": \"Please check the rounding.\",\n  \"web_url\": \"https://gitlab.com/acme/payments/-/merge_requests/482#note_10001\"\n}",
+  "ok": true
+}

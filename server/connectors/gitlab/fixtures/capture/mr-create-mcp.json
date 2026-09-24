@@ -1,0 +1,7 @@
+{
+  "title": "create_merge_request",
+  "server": "gitlab",
+  "input": "{\"project\":\"acme/payments\",\"source_branch\":\"feat/refunds\",\"title\":\"Round partial refunds\"}",
+  "output": "{\n  \"iid\": 482,\n  \"title\": \"Round partial refunds\",\n  \"web_url\": \"https://gitlab.com/acme/payments/-/merge_requests/482\"\n}",
+  "ok": true
+}

@@ -1,0 +1,6 @@
+{
+  "id": 99,
+  "name": "payments",
+  "path_with_namespace": "acme/payments",
+  "web_url": "https://gitlab.com/acme/payments"
+}

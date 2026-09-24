@@ -1,0 +1,17 @@
+{
+  "object_kind": "note",
+  "event_type": "note",
+  "project": {
+    "id": 99,
+    "path_with_namespace": "acme/payments"
+  },
+  "object_attributes": {
+    "id": 10001,
+    "noteable_type": "MergeRequest",
+    "discussion_id": "d5c2a1b0e8f74c6a",
+    "url": "https://gitlab.com/acme/payments/-/merge_requests/482#note_10001"
+  },
+  "merge_request": {
+    "iid": 482
+  }
+}

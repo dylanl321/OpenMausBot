@@ -1,0 +1,7 @@
+{
+  "title": "Bash",
+  "summary": "glab mr create --fill --yes",
+  "input": "glab mr create --fill --yes",
+  "output": "!482\tRound partial refunds\nhttps://gitlab.com/acme/payments/-/merge_requests/482\n",
+  "ok": true
+}

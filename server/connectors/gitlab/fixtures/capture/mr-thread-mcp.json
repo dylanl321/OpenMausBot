@@ -1,0 +1,7 @@
+{
+  "title": "create_merge_request_thread",
+  "server": "gitlab",
+  "input": "{\"project\":\"acme/payments\",\"mergeRequestIid\":482,\"body\":\"Please check the rounding.\",\"position\":{\"new_path\":\"src/refunds.ts\",\"new_line\":42}}",
+  "output": "{\n  \"id\": \"d5c2a1b0e8f74c6a\",\n  \"notes\": [{\n    \"id\": 10001,\n    \"body\": \"Please check the rounding.\",\n    \"position\": {\"new_path\":\"src/refunds.ts\",\"new_line\":42}\n  }]\n}",
+  "ok": true
+}

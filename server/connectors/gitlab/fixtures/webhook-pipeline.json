@@ -1,0 +1,16 @@
+{
+  "object_kind": "pipeline",
+  "project": {
+    "id": 99,
+    "path_with_namespace": "acme/payments"
+  },
+  "object_attributes": {
+    "id": 9001,
+    "status": "running",
+    "ref": "feat/refunds"
+  },
+  "merge_request": {
+    "iid": 482,
+    "url": "https://gitlab.com/acme/payments/-/merge_requests/482"
+  }
+}
