@@ -92,7 +92,8 @@ function WebhookEditor({ webhook, bots, onClose, onCredential }: { webhook?: Web
   const dialogRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
-  const cloudReady = Boolean(state.config?.box.configured && cloudRunner(state.instances, bots.find(bot => bot.id === botId)?.modelSelection.instanceId)?.snapshot.state === "available");
+  const modelSelection = bots.find(bot => bot.id === botId)?.modelSelection;
+  const cloudReady = Boolean(state.config?.box.configured && cloudRunner(state.instances, modelSelection?.instanceId, modelSelection?.model)?.snapshot.state === "available");
 
   useEffect(() => {
     const dialog = dialogRef.current;

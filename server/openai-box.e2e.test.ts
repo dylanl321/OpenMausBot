@@ -1,8 +1,11 @@
 import { createServer } from "node:http";
 import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";
+import { foundation } from "./testing/fake-bedrock.ts";
 
-it("keeps the selected API model for direct, group and scheduled Box turns and preserves human control", async () => {
+it.each(["openaiCompat", "bedrock"] as const)("keeps the selected %s model for direct, group and scheduled Box turns and preserves human control", async (instanceId) => {
+  const selectedModel = instanceId === "bedrock" ? "openai.gpt-5.4" : "chosen-vision-model";
+  const defaultModel = instanceId === "bedrock" ? "openai.gpt-oss-20b-1:0" : "other-default";
   const rows: Array<{ id: string; name: string; state: string }> = [];
   const requests: any[] = [];
   const commands: string[] = [];
@@ -13,13 +16,17 @@ it("keeps the selected API model for direct, group and scheduled Box turns and p
     let raw = ""; for await (const part of req) raw += part;
     const body = raw ? JSON.parse(raw) : {};
     res.setHeader("content-type", "application/json");
-    if (path === "/v1/models") return res.end(JSON.stringify({ data: [{ id: "chosen-vision-model" }, { id: "other-default" }] }));
-    if (path === "/v1/chat/completions") {
+    if (path === "/v1/models") return res.end(JSON.stringify({ data: [{ id: selectedModel }, { id: defaultModel }] }));
+    if (path === "/foundation-models") return res.end(JSON.stringify({ modelSummaries: [foundation(selectedModel, "us-east-1", { inputModalities: ["TEXT", "IMAGE"] }), foundation(defaultModel)] }));
+    if (path === "/inference-profiles") return res.end(JSON.stringify({ inferenceProfileSummaries: [] }));
+    if (path.startsWith("/foundation-model-availability/")) return res.end(JSON.stringify({ regionAvailability: "AVAILABLE" }));
+    if (path === "/v1/chat/completions" || path === "/openai/v1/chat/completions") {
       requests.push(body);
       const completed = body.messages.some((message: any) => message.role === "tool");
       const tool = body.tools?.find((entry: any) => entry.function.name === "computer_screenshot");
       return res.end(JSON.stringify({ choices: [{ message: completed
-        ? { role: "assistant", content: "Fixture completed." }
+        ? { role: "assistant", content: body.messages.some((message: any) => message.role === "tool" && message.content.includes("NOT performed"))
+          ? "The computer is under human control; the screenshot was not taken." : "Fixture completed." }
         : { role: "assistant", content: null, tool_calls: [{ id: "capture", type: "function", function: { name: tool?.function.name ?? "missing_computer", arguments: "{}" } }] },
       finish_reason: completed ? "stop" : "tool_calls" }] }));
     }
@@ -54,10 +61,14 @@ it("keeps the selected API model for direct, group and scheduled Box turns and p
     return result;
   };
   const control = (args: string[]) => runControlOmb([...args, "--url", fixture.info.url]) as Promise<any>;
+  const configure = (key: string) => instanceId === "bedrock"
+    ? api("PATCH", "/api/instances/bedrock/bedrock", { apiKey: key, auth: "api-key", region: "us-east-1", url: origin, controlUrl: origin, model: defaultModel })
+    : api("PATCH", "/api/config", { openaiCompat: { key, url: origin + "/v1", model: defaultModel } });
   try {
-    await api("PATCH", "/api/config", { openaiCompat: { key: "synthetic-model-key", url: origin + "/v1", model: "other-default" } });
+    await configure("synthetic-model-key");
+    await api("POST", `/api/instances/${instanceId}/refresh-models`);
     const { bot } = await control(["new-bot", "--name", "Box API fixture"]);
-    await control(["set-model", "--bot", bot.id, "--instance", "openaiCompat", "--model", "chosen-vision-model"]);
+    await control(["set-model", "--bot", bot.id, "--instance", instanceId, "--model", selectedModel]);
     await api("PATCH", `/api/bots/${bot.id}`, { computer: "cloud", browser: false });
     let group: any;
     for (const scenario of ["direct", "held", "group"]) {
@@ -74,9 +85,9 @@ it("keeps the selected API model for direct, group and scheduled Box turns and p
       if (scenario === "held") await api("POST", `/api/bots/${bot.id}/computer/control`, { action: "take" });
       await api("POST", `/api/threads/${scenario === "group" ? group.threadId : bot.activeTaskId}/respond`, { requestId: card.requestId, behavior: "allow" });
       const settled = await control(["wait", ...destination, "--timeout", "20"]);
-      expect(settled.status).toBe(scenario === "held" ? "failed" : "settled");
+      expect(settled.status).toBe("settled");
       expect(requests.slice(before)).toHaveLength(2);
-      expect(requests.slice(before).every(request => request.model === "chosen-vision-model")).toBe(true);
+      expect(requests.slice(before).every(request => request.model === selectedModel)).toBe(true);
       const followup = requests[before + 1].messages;
       if (scenario === "held") {
         expect(followup.at(-1).content).toContain("NOT performed");
@@ -105,7 +116,7 @@ it("keeps the selected API model for direct, group and scheduled Box turns and p
     await api("POST", `/api/threads/${routineThread}/respond`, { requestId: card.requestId, behavior: "allow" });
     expect((await control(["wait", ...destination, "--timeout", "20"])).status).toBe("settled");
     expect(requests.slice(beforeRoutine)).toHaveLength(2);
-    expect(requests.slice(beforeRoutine).every(request => request.model === "chosen-vision-model")).toBe(true);
+    expect(requests.slice(beforeRoutine).every(request => request.model === selectedModel)).toBe(true);
     expect(nativePrompts).toBe(0);
     expect(commands.some(command => command.includes(".model.jpg"))).toBe(true);
     // Readiness is checked again at dispatch, after the routine was created.
@@ -120,9 +131,9 @@ it("keeps the selected API model for direct, group and scheduled Box turns and p
       expect(requests).toHaveLength(before);
       expect(nativePrompts).toBe(0);
     };
-    await api("PATCH", "/api/config", { openaiCompat: { key: "", url: origin + "/v1", model: "other-default" } });
+    await configure("");
     await expectBlockedRun(/target bot's model engine is not ready/i);
-    await api("PATCH", "/api/config", { openaiCompat: { key: "synthetic-model-key", url: origin + "/v1", model: "other-default" } });
+    await configure("synthetic-model-key");
     boxOffline = true;
     await expectBlockedRun(/cloud computer could not be checked/i);
   } finally {

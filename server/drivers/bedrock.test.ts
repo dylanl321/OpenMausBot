@@ -22,6 +22,7 @@ vi.mock("@aws-sdk/credential-provider-node", { spy: true });
 vi.mock("@aws-sdk/credential-provider-ini", { spy: true });
 
 const cleanups: Array<() => Promise<unknown>> = [];
+const PIXELS = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jBv0AAAAASUVORK5CYII=";
 afterEach(async () => {
   for (const close of cleanups.splice(0).reverse()) await close();
   vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.unstubAllGlobals();
@@ -437,13 +438,30 @@ describe("native agent turns", () => {
     expect(f.recorder.events.filter((event) => event.type === "content.delta").map((event) => event.delta).join("")).toBe("[redacted]");
   });
 
-  it("sends images as native content, and omits tools for legacy text models", async () => {
+  it.each([
+    ["converse", "amazon.nova-lite-v1:0"],
+    ["chat-completions", "openai.gpt-5.4"],
+    ["messages", "anthropic.claude-3-5-sonnet-20241022-v2:0"],
+  ] as const)("preserves text and validated images through the %s transport", async (api, model) => {
     const directory = mkdtempSync(join(tmpdir(), "bedrock-image-")); cleanups.push(() => removeTempDir(directory));
-    const path = join(directory, "image.png"); writeFileSync(path, Buffer.from("iVBORw0KGgo=", "base64"));
-    const f = await fixture();
-    await f.instance.adapter.sendTurn({ threadId: "vision", text: "Image?", model: "amazon.nova-lite-v1:0", images: [{ path, mime: "image/png", bytes: 8 }] });
-    expect(await f.recorder.until((event) => event.type === "turn.completed")).toMatchObject({ ok: true, usage: { input: 17, output: 3, cachedInput: 2 } });
-    expect(f.requests[0].body.messages[0].content).toContainEqual({ image: { format: "png", source: { bytes: "iVBORw0KGgo=" } } });
+    const bytes = Buffer.from(PIXELS, "base64");
+    const path = join(directory, "image.png"); writeFileSync(path, bytes);
+    const f = await fixture({ api, model });
+    await f.instance.adapter.sendTurn({ threadId: "vision", text: "Image?", model, images: [{ path, mime: "image/png", bytes: bytes.length }] });
+    const completed = await f.recorder.until((event) => event.type === "turn.completed");
+    expect(completed).toMatchObject({ ok: true });
+    const content = f.requests[0].body.messages[0].content;
+    if (api === "converse") {
+      expect(completed).toMatchObject({ usage: { input: 17, output: 3, cachedInput: 2 } });
+      expect(content).toEqual([{ text: "Image?" }, { image: { format: "png", source: { bytes: PIXELS } } }]);
+    } else {
+      expect(content).toEqual([{ type: "text", text: "Image?" }, api === "messages"
+        ? { type: "image", source: { type: "base64", media_type: "image/png", data: PIXELS } }
+        : { type: "image_url", image_url: { url: `data:image/png;base64,${PIXELS}` } }]);
+    }
+  });
+
+  it("omits tools and system instructions for legacy text models", async () => {
     const legacy = await fixture({ model: "amazon.titan-text-express-v1" });
     await legacy.instance.generateText!("Hello");
     expect(legacy.requests[0].body.toolConfig).toBeUndefined();
@@ -499,7 +517,7 @@ describe("native agent turns", () => {
 
   it("mounts remote MCP tools and returns image results without exposing authorization tokens", async () => {
     const credential = "synthetic-remote-mcp-credential";
-    const pixels = "iVBORw0KGgo=";
+    const pixels = PIXELS;
     let calls = 0;
     const f = await fixture({}, { handle(request, response) {
       if (request.path === "/mcp") {

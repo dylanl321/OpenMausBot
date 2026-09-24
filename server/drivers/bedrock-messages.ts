@@ -4,22 +4,24 @@ import type { BedrockConfig } from "../../shared/bedrock.ts";
 import type { ChatCompletion, ChatCompletionRequest } from "./openai-chat.ts";
 import { ChatProtocolError, ChatToolCalls, object } from "./openai-chat-protocol.ts";
 import { bedrockImages } from "./bedrock-converse.ts";
+import { chatTextContent } from "./chat-images.ts";
 import { BEDROCK_REQUEST_TIMEOUT_MS, type BedrockConnection } from "./bedrock-connection.ts";
 
 export async function messagesInput(request: ChatCompletionRequest, maxTokens = 4096) {
   const messages: Array<{ role: string; content: unknown[] }> = [];
   const system: string[] = [];
   for (const message of request.messages) {
-    if (message.role === "system") { if (message.content) system.push(message.content); continue; }
+    const text = chatTextContent(message.content);
+    if (message.role === "system") { if (text) system.push(text); continue; }
     const images = (await bedrockImages(message)).map((image) => ({ type: "image", source: { type: "base64", media_type: image.mime, data: image.data } }));
     let content: unknown[];
     if (message.role === "tool") {
-      const result = JSON.parse(message.content || "{}");
+      const result = JSON.parse(text || "{}");
       content = [{ type: "tool_result", tool_use_id: message.tool_call_id, is_error: result.ok === false,
-        content: [{ type: "text", text: message.content || "(empty result)" }, ...images],
+        content: [{ type: "text", text: text || "(empty result)" }, ...images],
       }];
     } else content = message.nativeContent ?? [
-      ...(message.content ? [{ type: "text", text: message.content }] : []), ...images,
+      ...(text ? [{ type: "text", text }] : []), ...images,
       ...(message.tool_calls ?? []).map((call) => ({ type: "tool_use", id: call.id, name: call.function.name, input: JSON.parse(call.function.arguments) })),
     ];
     if (!content.length) continue;

@@ -164,6 +164,24 @@ describe("ProviderRegistry", () => {
     expect((await registry.describe())[0].capabilities.approvalReview).toBe(true);
   });
 
+  it("keeps stable model views and disables computer routing for a model without tools", async () => {
+    const fake = makeFakeDriver();
+    const registry = new ProviderRegistry([fake.driver]);
+    await registry.load({ a: { driver: "fake" } });
+    const instance = registry.get("a")!;
+    Object.assign(instance.adapter.capabilities, { computerMcp: true, cloudComputerMcp: true, localComputerMcp: true, browserMcp: true });
+    Object.assign(instance, { models: { default: "agent", options: [
+      { id: "agent", label: "Agent", capabilities: { tools: true, images: true } },
+      { id: "reasoner", label: "Reasoner", capabilities: { tools: false, images: true } },
+    ] } });
+    const reasoner = registry.get("a", "reasoner")!;
+    expect(registry.get("a", "reasoner")).toBe(reasoner);
+    expect(reasoner.adapter.capabilities).toMatchObject({ computerMcp: false, cloudComputerMcp: false, localComputerMcp: false, browserMcp: false, images: true });
+    expect(registry.get("a", "agent")!.adapter.capabilities).toMatchObject({ computerMcp: true, cloudComputerMcp: true });
+    expect(instance.adapter.capabilities.cloudComputerMcp).toBe(true);
+    await registry.disposeAll();
+  });
+
   it("refreshes a live model catalog only on an explicit provider action", async () => {
     const fake = makeFakeDriver();
     const registry = new ProviderRegistry([fake.driver]);

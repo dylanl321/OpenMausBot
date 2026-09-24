@@ -4,6 +4,9 @@ import type { SendTurnInput } from "../contracts.ts";
 export interface ChatImagePart { type: "image_url"; image_url: { url: string } }
 export interface ChatTextPart { type: "text"; text: string }
 export type ChatContentPart = ChatTextPart | ChatImagePart;
+export function chatTextContent(content: string | ChatContentPart[] | null): string {
+  return Array.isArray(content) ? content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n") : content ?? "";
+}
 const IMAGE_BYTES = 20 * 1024 * 1024;
 const MIME = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 export const CHAT_IMAGE_BUDGET = 32 * 1024 * 1024;

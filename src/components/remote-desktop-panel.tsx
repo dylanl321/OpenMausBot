@@ -79,7 +79,7 @@ export function RemoteDesktopPanel({ bot }: { bot: Bot }) {
   );
   const cloudRoutineReady = Boolean(
     state.config?.box.configured &&
-      cloudRunner(state.instances, bot.modelSelection.instanceId)?.snapshot.state === "available",
+      cloudRunner(state.instances, bot.modelSelection.instanceId, bot.modelSelection.model)?.snapshot.state === "available",
   );
 
   useEffect(() => {

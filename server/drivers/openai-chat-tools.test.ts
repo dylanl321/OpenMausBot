@@ -170,8 +170,8 @@ describe("OpenAI-compatible computer images", () => {
       else answer(response, "Inspected the fixture screenshot.");
     });
     writeFileSync(join(f.directory, "mcp.mjs"), MCP_SCRIPT.replace(
-      'text: "Stored " + args.name + "=" + args.value',
-      `text: "Screenshot captured" }, { type: "image", mimeType: "image/png", data: ${JSON.stringify(png)}`,
+      '"Stored " + args.name + "=" + args.value',
+      `"Screenshot captured" }, { type: "image", mimeType: "image/png", data: ${JSON.stringify(png)}`,
     ));
     const imagePath = join(f.directory, "input.png");
     writeFileSync(imagePath, Buffer.from(png, "base64"));
@@ -201,8 +201,8 @@ describe("OpenAI-compatible computer images", () => {
       else answer(response);
     });
     writeFileSync(join(f.directory, "mcp.mjs"), MCP_SCRIPT.replace(
-      'text: "Stored " + args.name + "=" + args.value',
-      `text: "Screenshot captured" }, { type: "image", mimeType: "image/png", data: ${JSON.stringify(png)}`,
+      '"Stored " + args.name + "=" + args.value',
+      `"Screenshot captured" }, { type: "image", mimeType: "image/png", data: ${JSON.stringify(png)}`,
     ));
     const stop = f.instance.adapter.onEvent(event => {
       if (event.type === "request.opened") void f.instance.adapter.respondToRequest(f.threadId, event.requestId!, { behavior: "allow" });
@@ -228,9 +228,10 @@ describe("OpenAI-compatible computer images", () => {
     });
     await f.start({ integrations: { localComputer: f.integrations!.custom!.audit as NonNullable<SendTurnInput["integrations"]>["localComputer"] } });
     await f.decide("deny");
-    expect(await f.completed()).toMatchObject({ ok: false });
+    expect(await f.completed()).toMatchObject({ ok: true, denials: ["computer_write"] });
     expect(f.effects()).toEqual([]);
     expect(f.requests[1].messages.at(-1)).toMatchObject({ role: "tool", content: expect.stringContaining("Permission denied") });
+    expect(f.recorder.events).toContainEqual(expect.objectContaining({ type: "item.completed", itemType: "tool", ok: false }));
   });
 });
 

@@ -4,6 +4,7 @@ Run the permanent driver and server acceptance tests:
 
 ```sh
 pnpm exec vitest run server/drivers/bedrock.test.ts server/bedrock.e2e.test.ts
+pnpm exec vitest run server/openai-box.e2e.test.ts
 pnpm test:packaged-server
 ```
 
@@ -29,6 +30,11 @@ tool streams never execute a partial call.
 Host-computer tools retain the local approval scope even in Full Access mode;
 remote MCP tools return native image content without exposing their HTTP
 authorization credentials. Usage includes cache reads and cache writes.
+`server/openai-box.e2e.test.ts` also checks Bedrock's selected model through
+cloud-computer turns in direct chats, rooms, and routines. It verifies screenshot
+delivery, human-control refusal, and readiness failures without falling back to
+the Box model runner. Model capability checks keep models without tools from
+advertising the cloud-computer bridge.
 The packaged-server smoke also loads token and named-profile catalogs from
 the bundle after copying it outside the repository, with no `node_modules`
 available to the server. It uses the same loopback fixture.

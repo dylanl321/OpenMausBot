@@ -3,10 +3,20 @@ import { ConverseCommand, ConverseStreamCommand, type ContentBlock, type Convers
 import type { BedrockModelFeatures } from "../../shared/bedrock.ts";
 import type { ChatCompletion, ChatCompletionRequest, ChatUsage, OpenAIChatMessage } from "./openai-chat.ts";
 import { ChatProtocolError, ChatToolCalls, object } from "./openai-chat-protocol.ts";
+import { chatImage, chatTextContent } from "./chat-images.ts";
 import { BEDROCK_REQUEST_TIMEOUT_MS, withBedrockAbort, type BedrockConnection } from "./bedrock-connection.ts";
 
 export async function bedrockImages(message: OpenAIChatMessage) {
-  const images = [...message.toolImages ?? []];
+  const images: Array<{ mime: string; data: string }> = [];
+  const inline = [...(message.toolImages ?? []), ...(Array.isArray(message.content)
+    ? message.content.filter(part => part.type === "image_url") : [])];
+  for (const image of inline) {
+    const match = /^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(image.image_url.url);
+    if (!match) throw new ChatProtocolError("Bedrock images must be valid inline image data.");
+    if (match[2].length > 5_000_000) throw new ChatProtocolError("Bedrock images must be smaller than 3.75 MB. Resize the image and try again.");
+    chatImage({ mimeType: match[1], data: match[2] });
+    images.push({ mime: match[1], data: match[2] });
+  }
   for (const image of message.images ?? []) {
     const bytes = await readFile(image.path);
     if (bytes.length > 3_750_000) throw new ChatProtocolError("Bedrock images must be smaller than 3.75 MB. Resize the image and try again.");
@@ -23,20 +33,21 @@ export async function converseInput(request: ChatCompletionRequest, features: Be
   const messages: Message[] = [];
   const system: string[] = [];
   for (const message of request.messages) {
-    if (message.role === "system") { if (message.content) system.push(message.content); continue; }
+    const text = chatTextContent(message.content);
+    if (message.role === "system") { if (text) system.push(text); continue; }
     let content: ContentBlock[] = [];
     const images = await bedrockImages(message);
     if (images.length && !features.images) throw new ChatProtocolError("This Bedrock model does not support images.");
     if (message.role === "tool") {
-      const result = JSON.parse(message.content || "{}");
+      const result = JSON.parse(text || "{}");
       content = [{ toolResult: { toolUseId: message.tool_call_id!, status: result.ok === false ? "error" : "success",
-        content: [{ text: message.content || "(empty result)" }, ...images.map(imageBlock)],
+        content: [{ text: text || "(empty result)" }, ...images.map(imageBlock)],
       } }];
     } else if (message.nativeContent) {
       // Preserve signed reasoning blocks and their original order verbatim.
       content = message.nativeContent as ContentBlock[];
     } else {
-      if (message.content) content.push({ text: message.content });
+      if (text) content.push({ text });
       content.push(...images.map(imageBlock));
       for (const call of message.tool_calls ?? []) content.push({ toolUse: {
         toolUseId: call.id, name: call.function.name, input: JSON.parse(call.function.arguments),

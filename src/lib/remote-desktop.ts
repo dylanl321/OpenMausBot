@@ -1,5 +1,6 @@
 import type { InstanceInfo } from "@/state/store";
 import { isCloudComputerBusyMessage } from "../../shared/computer-contention";
+import { capabilitiesForModel } from "../../shared/model-capabilities";
 
 /** Older hosts return only a message/status pair. Do not hide unrelated
  * 409s such as missing configuration or an incompatible desktop image. */
@@ -32,8 +33,9 @@ export function remoteScreenshotSource(raw: unknown): string | null {
 }
 
 /** Match the server: selected bridge-capable engine, otherwise the Box runner. */
-export function cloudRunner(instances: readonly InstanceInfo[], selectedId?: string): InstanceInfo | undefined {
+export function cloudRunner(instances: readonly InstanceInfo[], selectedId?: string, model?: string): InstanceInfo | undefined {
   if (!selectedId) return undefined;
   const selected = instances.find(instance => instance.instanceId === selectedId);
-  return selected?.capabilities?.cloudComputerMcp ? selected : instances.find(instance => instance.driverKind === "boxAgent");
+  const capabilities = capabilitiesForModel(selected?.capabilities ?? {}, selected?.models?.options.find(option => option.id === model));
+  return capabilities.cloudComputerMcp ? selected : instances.find(instance => instance.driverKind === "boxAgent");
 }

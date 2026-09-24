@@ -133,6 +133,10 @@ it("moves a direct request into one shared hub, executes linked specialists and 
   const bots = (await fixture.api("/api/bots?messages=0")).bots;
   expect(bots.find((bot: any) => bot.id === chief.id).threadId).toBe(chief.activeTaskId);
   for (const assignment of item.assignments) expect(bots.find((bot: any) => bot.id === assignment.botId).tasks.find((task: any) => task.threadId === assignment.threadId).workItemId).toBe(item.id);
+  // The completion tool records the outcome before the coordinator's final
+  // provider frame. Its room must settle before the same bot can be sent a
+  // new direct request through the guarded external control surface.
+  expect((await fixture.cli("wait", "--channel", item.groupId, "--task", item.threadId, "--timeout", "15")).status).toBe("settled");
   await fixture.cli("send", "--bot", chief.id, "--task", chief.activeTaskId, "--text", "Check the same story again");
   await fixture.cli("wait", "--bot", chief.id, "--task", chief.activeTaskId, "--timeout", "15");
   expect(await fixture.items()).toHaveLength(1);

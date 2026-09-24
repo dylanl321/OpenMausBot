@@ -16,6 +16,16 @@ describe("remote VPS preview", () => {
     expect(cloudRunner([plain, { ...bridge, snapshot: { state: "unavailable" } }, box], "bridge")?.snapshot.state).toBe("unavailable");
     expect(cloudRunner([plain, bridge, box])).toBeUndefined();
   });
+  it("matches cloud routing to the selected Bedrock model's tool capabilities", () => {
+    const bedrock = { instanceId: "bedrock", driverKind: "bedrock", capabilities: { cloudComputerMcp: true }, models: {
+      default: "agent", options: [
+        { id: "agent", label: "Agent", capabilities: { tools: true } },
+        { id: "reasoner", label: "Reasoner", capabilities: { tools: false } },
+      ],
+    } } as InstanceInfo;
+    expect(cloudRunner([bedrock], "bedrock", "agent")).toBe(bedrock);
+    expect(cloudRunner([bedrock], "bedrock", "reasoner")).toBeUndefined();
+  });
   it("retries only known transient contention, not permanent 409 failures", () => {
     expect(isRemoteScreenshotContention({ status: 409, message: "this bot's cloud computer is being changed — wait for it to finish" })).toBe(true);
     expect(isRemoteScreenshotContention({ status: 409, message: "the VPS is being prepared — try again shortly" })).toBe(true);

@@ -7,6 +7,7 @@ import { createBedrockCatalog } from "./bedrock-catalog.ts";
 import { bedrockImages, completeConverse } from "./bedrock-converse.ts";
 import { completeMessages } from "./bedrock-messages.ts";
 import { redactSecretsInText } from "../redact.ts";
+import { chatTextContent } from "./chat-images.ts";
 
 /** Prefer native Converse. Closed-weight GPT and xAI catalogs also include
  * models available only through Chat Completions; Mantle Claude uses Messages.
@@ -27,13 +28,14 @@ async function chatMessages(messages: OpenAIChatMessage[]) {
   };
   for (const message of messages) {
     if (message.role !== "tool") flush();
+    const text = chatTextContent(message.content);
     const images = (await bedrockImages(message)).map((image) => ({ type: "image_url", image_url: { url: `data:${image.mime};base64,${image.data}` } }));
     if (message.role === "tool") toolImages.push(...images);
     result.push({
       role: message.role,
       content: images.length && message.role !== "tool" ? [
-        ...(message.content ? [{ type: "text", text: message.content }] : []), ...images,
-      ] : message.content,
+        ...(text ? [{ type: "text", text }] : []), ...images,
+      ] : text || null,
       ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
       ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
       ...(message.reasoning_content ? { reasoning_content: message.reasoning_content } : {}),

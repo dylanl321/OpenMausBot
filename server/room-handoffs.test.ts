@@ -140,20 +140,20 @@ describe("addressed room request tree", () => {
   }));
   it("deduplicates stable delivery state across roots until the state changes", () => fixture(engine => {
     const first = engine.enqueue(addr("A"), "turn-one", undefined, addr("B"), "review-one", "Review head abc",
-      false, false, "", "crux:29:abc:review:security").node;
+      false, false, "", undefined, "crux:29:abc:review:security").node;
     first.status = "completed";
     first.result = "approved";
     const source = { ...addr("A"), threadId: "another-A-thread" };
     const same = engine.enqueue(source, "turn-two", undefined, addr("B"), "different-request", "Review head abc again",
-      false, false, "", "crux:29:abc:review:security");
+      false, false, "", undefined, "crux:29:abc:review:security");
     expect(same.duplicate).toBe(true);
     expect(same.node.id).toBe(first.id);
     expect(same.node.result).toBe("approved");
     const changed = engine.enqueue(source, "turn-two", undefined, addr("B"), "new-head", "Review head def",
-      false, false, "", "crux:29:def:review:security");
+      false, false, "", undefined, "crux:29:def:review:security");
     expect(changed.duplicate).toBe(false);
     const recheck = engine.enqueue(source, "turn-three", undefined, addr("B"), "explicit-recheck", "Recheck head abc",
-      false, true, "", "crux:29:abc:review:security");
+      false, true, "", undefined, "crux:29:abc:review:security");
     expect(recheck.duplicate).toBe(false);
   }));
   it.each([
@@ -163,23 +163,23 @@ describe("addressed room request tree", () => {
     ["task revision", addr("A"), { workItemId: "one", workRevision: 2 }],
   ] as const)("does not reuse state-key results across a different %s", (_label, source, work) => fixture(engine => {
     const first = engine.enqueue(addr("A"), "turn-one", undefined, addr("B"), "review", "Review",
-      false, false, "", "same-state", { workItemId: "one", workRevision: 1 }).node;
+      false, false, "", undefined, "same-state", { workItemId: "one", workRevision: 1 }).node;
     first.status = "completed";
     first.result = "Original task's private result";
     const next = engine.enqueue(source, "turn-two", undefined, addr("B"), "review", "Review",
-      false, false, "", "same-state", work);
+      false, false, "", undefined, "same-state", work);
     expect(next.duplicate).toBe(false);
     expect(next.node.id).not.toBe(first.id);
     expect(next.node.result).toBe("");
   }));
   it("rechecks the original and current route before exposing a cached result", () => fixture((engine, hooks) => {
     const first = engine.enqueue(addr("A"), "turn-one", undefined, addr("B"), "review", "Review",
-      true, false, "", "same-state").node;
+      true, false, "", undefined, "same-state").node;
     first.status = "completed";
     first.result = "Confidential review";
     const source = { ...addr("A"), threadId: "new-thread" };
     const reuse = () => engine.enqueue(source, "turn-two", undefined, addr("B"), "review", "Review",
-      false, false, "", "same-state");
+      false, false, "", undefined, "same-state");
     for (const threadId of ["A-thread", "new-thread"]) {
       hooks.validate = (_node, parent) => parent?.threadId === threadId ? "Route revoked" : undefined;
       expect(reuse).toThrow("Route revoked");
