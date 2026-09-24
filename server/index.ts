@@ -520,6 +520,8 @@ import { ROUTES, dispatchRoutes } from "./routes/table.ts";
 import { createHostedSlackRoutes } from "./routes/hosted-slack.ts";
 import { createBedrockRoutes } from "./routes/bedrock.ts";
 import { createTaskConnectionRoutes } from "./routes/task-connections.ts";
+import { createGroupTaskBoardRoutes } from "./routes/group-task-board.ts";
+import { createWorkItemAnswerRoutes } from "./routes/work-item-answer.ts";
 import { createWorkEventRoutes } from "./routes/work-events.ts";
 import { createWorkItemLinkRoutes } from "./routes/work-item-links.ts";
 import { WorkCapture } from "./connectors/capture.ts";
@@ -3796,6 +3798,7 @@ function publicGroupState(group: GroupRecord): WireGroup {
   try { usage = groupUsageReader.forThread(group.threadId); } catch { /* accounting must not block chat */ }
   return {
     ...group,
+    taskBoard: group.taskBoard ?? null,
     usage: usage ?? null,
     busyThreadId: [...roomHandoffs.nodes.values()].find(node => node.groupId === group.id && node.status === "running" && node.botId === group.busyBotId)?.threadId,
     tasks: group.tasks?.map(task => {
@@ -12435,6 +12438,31 @@ ROUTES.push(createTaskConnectionRoutes({
   save: (connections) => {
     saveConfig({ taskConnections: connections });
     cfg.taskConnections = connections;
+  },
+  sectionForGroup: (groupId) => {
+    const group = store.group(groupId);
+    if (!group) return undefined;
+    return group.section ?? "";
+  },
+}));
+ROUTES.push(createGroupTaskBoardRoutes({
+  group: id => store.group(id),
+  connections: taskConnectionList,
+  save: (groupId, taskBoard) => {
+    const updated = store.patchGroup(groupId, { taskBoard });
+    if (updated && !taskBoard) delete updated.taskBoard;
+    if (updated) broadcast({ kind: "group", group: publicGroupState(updated) });
+    return updated;
+  },
+}));
+ROUTES.push(createWorkItemAnswerRoutes({
+  item: id => workCoordination.items.records.get(id),
+  canSee: (auth, item) => workItemVisible(item, visibleTo(viewerFor(auth))),
+  answer: (id, input) => {
+    const item = workCoordination.items.records.get(id);
+    if (!item) throw new Error("No such shared task");
+    store.appendMessage(item.threadId, { role: "user", kind: "text", text: input.text });
+    return { workItem: workCoordination.update(id, { expectedRevision: input.expectedRevision, reopen: true, detail: input.text }) };
   },
 }));
 ROUTES.push(createWorkEventRoutes({

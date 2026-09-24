@@ -75,6 +75,12 @@ export type TaskEvent = z.infer<typeof taskEventSchema>;
 /** Fields a connector returns. The server owns id, role, provenance, and createdBy. */
 export type SyncedItem = Omit<LinkedItem, "id" | "role" | "provenance" | "createdBy">;
 
+/** Identity `ensure_work_item` uses for a connector-sourced item. */
+export function sourceIdentity(item: Pick<SyncedItem, "connectorId" | "connectionId" | "externalId">): string | undefined {
+  if (!item.connectorId || !item.connectionId || !item.externalId) return undefined;
+  return `${item.connectorId}:${item.connectionId}:${item.externalId}`;
+}
+
 export function criterionId(index: number): string {
   return `c${index + 1}`;
 }

@@ -25,6 +25,7 @@ import {
 } from "./model";
 import { NowCard } from "./NowCard";
 import { ProgressStrip } from "./ProgressStrip";
+import { TaskAnswer } from "./TaskAnswer";
 
 export function TaskView({ item, events: eventsProp, connectors: connectorsProp }: {
   item: WorkItem; events?: TaskEvent[]; connectors?: TaskConnectorManifest[];
@@ -102,7 +103,8 @@ export function TaskView({ item, events: eventsProp, connectors: connectorsProp 
         {item.status === "active" ? t("work.stop") : t("work.reopen")}
       </button>
     </div>
-    <p className="mt-2 whitespace-pre-wrap text-ink-secondary">{item.detail || item.objective}</p>
+    {item.status === "needs-input" ? <TaskAnswer item={item} />
+      : <p className="mt-2 whitespace-pre-wrap text-ink-secondary">{item.detail || item.objective}</p>}
     {error && <p role="alert" className="mt-2 text-danger">{error}</p>}
     <ProgressStrip item={item} />
     <NowCard item={item} events={events} />

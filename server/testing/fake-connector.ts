@@ -14,6 +14,15 @@ const FIXTURES: Record<string, { title: string; kind: LinkKind; state?: SyncedIt
   "ref-1": { title: "Related note", kind: "link" },
 };
 
+const QUERY_EXTRAS: Record<string, { title: string; kind: LinkKind; state?: SyncedItem["state"] }> = {
+  "PAY-2": { title: "Untracked refunds", kind: "work_item", state: { label: "To Do", category: "todo" } },
+  "PAY-8": { title: "Ready story", kind: "work_item", state: { label: "To Do", category: "todo" } },
+};
+
+function catalog() {
+  return { ...FIXTURES, ...QUERY_EXTRAS };
+}
+
 function item(kind: LinkKind, externalId: string, ctx: ConnectionContext): SyncedItem {
   const known = FIXTURES[externalId];
   return {
@@ -51,6 +60,10 @@ export const fakeConnector: Connector = {
     if (keyed) return { kind: keyed[1] as LinkKind, externalId: keyed[2] };
     const url = /https:\/\/fake\.example\/(work_item|change_request|commit|build|comment|document|link)\/([A-Za-z0-9._-]+)/.exec(input);
     if (url) return { kind: url[1] as LinkKind, externalId: url[2] };
+    const bare = input.trim();
+    const known = catalog()[bare];
+    if (known) return { kind: known.kind, externalId: bare };
+    if (/^[A-Z]+-\d+$/.test(bare)) return { kind: "work_item", externalId: bare };
     return null;
   },
   urlPatterns() {
@@ -58,6 +71,12 @@ export const fakeConnector: Connector = {
   },
   async fetch(ctx, refs) {
     return refs.map(ref => item(ref.kind, ref.externalId, ctx));
+  },
+  async query(ctx, query) {
+    const needle = query.trim().toLowerCase();
+    const listed = Object.entries(catalog()).filter(([id, spec]) =>
+      !needle || needle === "*" || needle === "all" || id.toLowerCase().includes(needle) || spec.title.toLowerCase().includes(needle));
+    return { items: listed.map(([id, spec]) => item(spec.kind, id, ctx)) };
   },
   capture: [{
     match: { tool: /fake\.issue/i },

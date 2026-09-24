@@ -7,3 +7,5 @@ export { ProgressStrip } from "./ProgressStrip";
 export { NowCard } from "./NowCard";
 export { TaskView } from "./TaskView";
 export { BotTurnCard } from "./BotTurnCard";
+export { TopicBoard } from "./TopicBoard";
+export { TaskAnswer } from "./TaskAnswer";
