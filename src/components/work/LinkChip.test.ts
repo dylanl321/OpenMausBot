@@ -31,4 +31,11 @@ describe("LinkChip", () => {
     expect(html).toContain("In Progress");
     expect(html).toContain("https://fake.example/work_item/PAY-1");
   });
+
+  it("shows artifact revisions on claimed fallback links", () => {
+    const html = renderToStaticMarkup(createElement(LinkChip, {
+      item: item("link", { title: "Patch", details: { revision: "abc123" }, provenance: "claimed" }),
+    }));
+    expect(html).toContain("abc123");
+  });
 });

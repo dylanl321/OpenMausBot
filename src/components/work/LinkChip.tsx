@@ -11,6 +11,7 @@ export function LinkChip({ item, connectors = [] }: { item: LinkedItem; connecto
     <KindIcon kind={item.kind} size={12} />
     <span className="min-w-0 truncate">{item.title}</span>
     {item.state && <span className={cn("max-w-[8rem] truncate text-[10px]", statusCategoryClass(item.state.category))}>{item.state.label}</span>}
+    {item.details && Object.entries(item.details).map(([key, value]) => <span key={key} className="max-w-[8rem] truncate text-[10px] text-ink-secondary">{String(value)}</span>)}
     <ClaimedMarker provenance={item.provenance} />
     <ProviderMark connector={connector} />
   </>;
