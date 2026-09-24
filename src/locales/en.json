@@ -2045,6 +2045,7 @@
   "routines.trigger.schedule": "Scheduled",
   "routines.trigger.manual": "Manual",
   "routines.trigger.webhook": "Webhook",
+  "routines.trigger.watch": "Watch",
   "routines.status.queued": "Queued",
   "routines.status.running": "Running",
   "routines.status.waiting": "Waiting",
