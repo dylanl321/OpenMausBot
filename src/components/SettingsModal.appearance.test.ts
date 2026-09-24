@@ -124,6 +124,15 @@ describe("Settings → Appearance", () => {
     expect(html).not.toContain("settings.threadDisplay");
   });
 
+  it("puts the generic task-connection form on Settings → Connections", () => {
+    fixture.section = "connections";
+    const html = render();
+    expect(html).toContain("Task connections");
+    expect(html).toContain("Add connection");
+    expect(html).toContain("The same form is generated from each connector.");
+    expect(html).toContain("Connected apps work automatically");
+  });
+
   it("offers desktop connections as a top-level page without exposing the list remotely", () => {
     fixture.section = "desktopWorkspaces";
     vi.stubGlobal("window", { ogb: { environments: {} } });
