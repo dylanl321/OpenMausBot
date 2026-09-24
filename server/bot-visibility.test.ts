@@ -166,6 +166,8 @@ describe("VisibleSet", () => {
     expect(pathSubject("/api/bots")).toBeNull();
     expect(pathSubject("/api/groups")).toBeNull();
     expect(pathSubject("/api/work-items/work-1")).toEqual({ kind: "work-item", id: "work-1" });
+    expect(pathSubject("/api/work-items/work-1/events")).toEqual({ kind: "work-item", id: "work-1" });
+    expect(pathSubject("/api/work-items/work-1/links")).toEqual({ kind: "work-item", id: "work-1" });
     expect(pathSubject("/api/work-items/ensure")).toBeNull();
   });
 

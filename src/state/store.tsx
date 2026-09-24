@@ -26,6 +26,8 @@ import type { RoutineRequestCardData } from "../../shared/routine-request";
 import type { RoutineRunCardData } from "../../shared/routine-run";
 import type { GroupGoalRunCardData } from "../../shared/group-goal-run";
 import type { WorkItem } from "../../shared/work-item";
+import type { LinkedItem } from "../../shared/work-links";
+import { publishWorkLive } from "@/lib/work-live";
 import {
   reviewedSkillSha256,
   skillRequestBehavior,
@@ -492,6 +494,25 @@ function taskPatchFields(patch: TaskUpdatePatch): Partial<Task> {
 
 /** A snapshot must not move a thread backwards in the list. Local bumps can
  * race an older bot frame that was built before the message landed. */
+function upsertGroupWorkLink(state: AppState, groupId: string, threadId: string, link: LinkedItem): AppState {
+  let changed = false;
+  const groups = state.groups.map((group) => {
+    if (group.id !== groupId || !group.tasks) return group;
+    const tasks = group.tasks.map((task) => {
+      const item = task.workItem;
+      if (!item || (item.threadId !== threadId && task.threadId !== threadId)) return task;
+      const links = [...(item.links ?? [])];
+      const index = links.findIndex((existing) => existing.id === link.id);
+      if (index >= 0) links[index] = link;
+      else links.push(link);
+      changed = true;
+      return { ...task, workItem: { ...item, links } };
+    });
+    return { ...group, tasks };
+  });
+  return changed ? { ...state, groups } : state;
+}
+
 function mergeTaskStamps<T extends { threadId: string; updatedAt?: number }>(previous: T[] | undefined, incoming: T[] | undefined): T[] | undefined {
   if (!incoming) return previous;
   const prior = new Map((previous ?? []).map((task) => [task.threadId, task.updatedAt]));
@@ -1126,6 +1147,7 @@ export type Action =
   | { type: "toggleShortcuts"; open?: boolean }
   | { type: "toggleWelcome"; open?: boolean }
   | { type: "toggleTour"; open?: boolean }
+  | { type: "workLink"; groupId: string; threadId: string; link: LinkedItem }
   | {
       type: "updateBot";
       botId: string;
@@ -1498,6 +1520,8 @@ export function reducer(state: AppState, action: Action): AppState {
         : [{ ...(action.group as Group), messages: action.group.messages ?? [] }, ...fenced.groups];
       return { ...fenced, groups };
     }
+    case "workLink":
+      return upsertGroupWorkLink(state, action.groupId, action.threadId, action.link);
     case "groupDeleted": {
       const groups = state.groups.filter((g) => g.id !== action.groupId);
       const selectedId = state.selectedId === action.groupId ? (state.bots[0]?.id ?? "") : state.selectedId;
@@ -3675,6 +3699,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             stateRef.current.bots.find((bot) => bot.id === frame.notification.botId)?.avatarUrl,
             visibleNotificationThread(stateRef.current),
           );
+          break;
+        case "work.event":
+          publishWorkLive(frame);
+          break;
+        case "work.link":
+          publishWorkLive(frame);
+          rawDispatch({ type: "workLink", groupId: frame.workItem.groupId, threadId: frame.workItem.threadId, link: frame.link });
           break;
         case "group.deleted":
           rawDispatch({ type: "groupDeleted", groupId: frame.groupId });
