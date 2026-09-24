@@ -75,12 +75,13 @@ hub, selected specialist in its topic tree, mobile view and stopped task.
 The JSON includes the fixture URL, task records and selected thread.
 
 ```sh
-pnpm exec vitest run src/components/SharedWorkThreadTree.test.ts src/components/Sidebar.simple-mode.test.ts src/components/SidebarBotActivity.test.ts --maxWorkers=2
+pnpm exec vitest run src/components/SharedWorkThreadTree.test.ts src/components/work/TopicBoard.test.ts src/components/work/board.test.ts src/components/Sidebar.simple-mode.test.ts src/components/SidebarBotActivity.test.ts --maxWorkers=2
 ```
 
 Renderer unit cases also cover earlier revisions, missing-hub fallback,
-specialist-name/context search, pending approval indicators and the removal
-of duplicate bot-owned rows.
+specialist-name/context search, pending approval indicators, the removal
+of duplicate bot-owned rows, and a topic board that mixes sourced, repo-only
+and chat-started tasks with untracked query items.
 
 ## Limits of this proof
 

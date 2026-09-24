@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { LinkKind } from "../shared/work-links.ts";
+import type { LinkKind, SyncedItem } from "../shared/work-links.ts";
 import { connectorById, CONNECTORS } from "./connectors/registry.ts";
 import { linkId, observedLink, type ConnectionContext, type ConnectionListing, type StoredConnection } from "./connectors/types.ts";
 
@@ -90,6 +90,18 @@ export async function testConnection(connection: StoredConnection, fetchImpl?: t
   const connector = connectorById(connection.connectorId);
   if (!connector) return { ok: false as const, error: "Unknown connector." };
   return connector.test(connectionContext(connection, fetchImpl));
+}
+
+export async function queryConnection(
+  connection: StoredConnection,
+  query: string,
+  cursor?: string,
+  fetchImpl?: typeof fetch,
+): Promise<{ items: SyncedItem[]; cursor?: string }> {
+  const connector = connectorById(connection.connectorId);
+  if (!connector) throw new Error("Unknown connector.");
+  if (!connector.query || !connector.manifest.capabilities.query) throw new Error("This connection cannot list items.");
+  return connector.query(connectionContext(connection, fetchImpl), query, cursor);
 }
 
 export function resolveIdentityLink(connections: StoredConnection[], section: string, identity: string): { connection: StoredConnection; kind: LinkKind; externalId: string } | null {

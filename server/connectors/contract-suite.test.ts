@@ -1,4 +1,4 @@
-import { describe } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ConnectionContext } from "./types.ts";
 import { fakeConnector } from "../testing/fake-connector.ts";
 import { connectorContract } from "./contract-suite.ts";
@@ -24,4 +24,12 @@ describe("fake connector contract", () => {
     { ref: "link:ref-1", url: "https://fake.example/link/ref-1" },
     { ref: "change_request:482", url: "https://fake.example/change_request/482" },
   ]);
+});
+
+describe("fake connector query", () => {
+  it("lists untracked extras and accepts a bare issue key", async () => {
+    expect(fakeConnector.parseRef("PAY-2", ctx)).toEqual({ kind: "work_item", externalId: "PAY-2" });
+    const result = await fakeConnector.query!(ctx, "untracked");
+    expect(result.items.map(item => item.externalId)).toContain("PAY-2");
+  });
 });
