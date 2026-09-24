@@ -537,7 +537,8 @@ it("queues a recipient at capacity, preserving its existing task and resuming on
 // the work: the new turn runs now, the assignments stay out, and it is told
 // which ones — otherwise the model assumes its fan-out died and resends it.
 it("runs a message sent while a teammate works, keeps the assignment, and names it in that turn", () => fixture(async f => {
-  f.plan[f.lead.id] = { delayMs: 4000, reply: "CSV export implemented" };
+  const gate = join(f.session.info.dataDir, "steer-while-working.gate");
+  f.plan[f.lead.id] = { gateFile: gate, reply: "CSV export implemented" };
   f.plan[f.chief.id] = { turns: [
     { steps: structuredClone(f.plan[f.chief.id].steps), reply: "Assigned to Engineering" },
     { reply: "Noted; Engineering is still working on it" },
@@ -545,21 +546,25 @@ it("runs a message sent while a teammate works, keeps the assignment, and names 
   ] };
   await f.start();
   await expect.poll(() => f.nodes().find((node: any) => node.parentId)?.status, { timeout: 15_000 }).toBe("running");
+  await expect.poll(() => f.evidence().filter((turn: any) => turn.botId === f.chief.id).length, { timeout: 15_000 }).toBe(1);
   const assignment = f.nodes().find((node: any) => node.parentId);
+  try {
+    const receipt = await f.api(`/api/bots/${f.chief.id}/messages`, { text: "Also make sure the export is UTF-8.", threadId: f.chief.activeTaskId });
+    // It ran; it was not held behind the outstanding work.
+    expect(receipt.queued).toBeUndefined();
+    expect(receipt.message.text).toBe("Also make sure the export is UTF-8.");
+    await expect.poll(() => f.evidence().filter((turn: any) => turn.botId === f.chief.id).length, { timeout: 20_000 }).toBe(2);
 
-  const receipt = await f.api(`/api/bots/${f.chief.id}/messages`, { text: "Also make sure the export is UTF-8.", threadId: f.chief.activeTaskId });
-  // It ran; it was not held behind the outstanding work.
-  expect(receipt.queued).toBeUndefined();
-  expect(receipt.message.text).toBe("Also make sure the export is UTF-8.");
-  await expect.poll(() => f.evidence().filter((turn: any) => turn.botId === f.chief.id).length, { timeout: 20_000 }).toBe(2);
-
-  const steered = f.evidence().filter((turn: any) => turn.botId === f.chief.id)[1];
-  expect(steered.resumed).toBe(false);
-  expect(steered.system).toContain("Assignments you already sent are still outstanding");
-  expect(steered.system).toContain(assignment.id);
-  expect(steered.system).toContain("Engineering lead");
-  // The teammate was never touched: it finishes and still returns here.
-  expect(f.nodes().find((node: any) => node.id === assignment.id).status).not.toBe("cancelled");
+    const steered = f.evidence().filter((turn: any) => turn.botId === f.chief.id)[1];
+    expect(steered.resumed).toBe(false);
+    expect(steered.system).toContain("Assignments you already sent are still outstanding");
+    expect(steered.system).toContain(assignment.id);
+    expect(steered.system).toContain("Engineering lead");
+    // The teammate was never touched: it finishes and still returns here.
+    expect(f.nodes().find((node: any) => node.id === assignment.id).status).not.toBe("cancelled");
+  } finally {
+    writeFileSync(gate, "go");
+  }
   expect((await f.wait()).status).toBe("settled");
   expect(f.nodes().every((node: any) => node.status === "completed")).toBe(true);
   expect((await f.messages(f.chief.activeTaskId)).some((message: any) => message.tool?.name === "Engineering lead replied")).toBe(true);
