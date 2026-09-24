@@ -65,7 +65,7 @@ export interface RoutineContextAttachment {
 
 const persistedSourceThreadId = z.string().trim().min(1).optional().catch(undefined);
 
-export type RoutineRunTrigger = "schedule" | "manual" | "webhook";
+export type RoutineRunTrigger = "schedule" | "manual" | "webhook" | "watch";
 
 export type RoutineRunStatus =
   | "queued"
@@ -108,6 +108,8 @@ export interface Routine {
   sourceThreadId?: string;
   /** Stable visible report destination; execution still gets a fresh task. */
   resultsThreadId?: string;
+  /** Skip a scheduled run when this watch has seen no matching changes since the last run. */
+  onlyIfChanged?: string;
   nextRunAt: number | null;
   createdAt: number;
   updatedAt: number;
@@ -148,6 +150,7 @@ export interface RoutineRun {
   /** Why this receipt exists. Kept optional so version-1 files migrate in place. */
   triggerSource?: RoutineRunTrigger;
   webhookId?: string;
+  watchId?: string;
   deliveryId?: string;
   /** Snapshot the routine's reporting destination. Execution remains on the
    * separate `threadId` so recurring work never contaminates chat context. */
@@ -218,6 +221,8 @@ export interface RoutineInput {
   overlap?: "skip" | "queue";
   /** Omission preserves routing; null creates a new dedicated results task. */
   resultsThreadId?: string | null;
+  /** `null` clears the watch gate on update. */
+  onlyIfChanged?: string | null;
 }
 
 interface RoutineFile {
@@ -228,6 +233,7 @@ interface RoutineFile {
   routineRequestReceipts?: RoutineRequestReceipt[];
   /** Compact delivery identities outlive the independently trimmed run log. */
   webhookRunReceipts?: WebhookRunReceipt[];
+  watchRunReceipts?: WatchRunReceipt[];
 }
 
 const webhookRunReceiptSchema = z.object({
@@ -237,6 +243,13 @@ const webhookRunReceiptSchema = z.object({
   acceptedAt: z.number().finite().nonnegative(),
 });
 type WebhookRunReceipt = z.infer<typeof webhookRunReceiptSchema>;
+const watchRunReceiptSchema = z.object({
+  watchId: z.string().min(1).max(200),
+  deliveryId: z.string().min(1).max(200),
+  runId: z.string().min(1),
+  acceptedAt: z.number().finite().nonnegative(),
+});
+type WatchRunReceipt = z.infer<typeof watchRunReceiptSchema>;
 const WEBHOOK_RETRY_WINDOW_MS = 7 * 24 * 60 * 60_000;
 const MAX_WEBHOOK_RECEIPTS = 20_000;
 
@@ -293,6 +306,14 @@ export interface RoutineManagerOptions {
   /** A successful provider turn is intermediate while its peer work or
    * queued continuation still belongs to this detached execution. */
   hasPendingDelegations?: (threadId: string) => boolean;
+  /** Same clock as scheduled routines: watches check due sources here. */
+  onScheduleTick?: (now: number) => void | Promise<void>;
+  /** `onlyIfChanged` gate. Missing hook means the gate is off. */
+  watchHasUnconsumedMatches?: (watchId: string, consumerId: string) => boolean;
+  watchConsumeMatches?: (watchId: string, consumerId: string) => void;
+  onWatchUnchanged?: (watchId: string) => void;
+  /** Soonest enabled watch check, so the existing wake hold covers both clocks. */
+  nextDueWatch?: () => number | undefined;
 }
 
 const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
@@ -375,6 +396,23 @@ function loadAttachments(value: unknown): RoutineContextAttachment[] {
     return cleanAttachments(value);
   } catch {
     return [];
+  }
+}
+
+function cleanOnlyIfChanged(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  if (typeof value !== "string") throw new Error("Choose a valid watch id");
+  const id = value.trim();
+  if (!id) return undefined;
+  if (id.length > 80) throw new Error("Watch id is too long");
+  return id;
+}
+
+function loadOnlyIfChanged(value: unknown): string | undefined {
+  try {
+    return cleanOnlyIfChanged(value);
+  } catch {
+    return undefined;
   }
 }
 
@@ -594,6 +632,11 @@ function cleanSchedule(schedule: RoutineScheduleInput, after: number): RoutineSc
   catch (error) { throw new RoutineScheduleError((error as Error).message); }
 }
 
+/** Trust-boundary schedule parse for watches and other callers that share the clock. */
+export function normalizeRoutineSchedule(schedule: RoutineScheduleInput, after = Date.now()): RoutineSchedule {
+  return cleanSchedule(schedule, after);
+}
+
 function loadSchedule(value: unknown, after: number): RoutineSchedule | null {
   try {
     return cleanSchedule(value as RoutineScheduleInput, after);
@@ -729,6 +772,7 @@ function sanitizeInput(input: RoutineInput, after: number): Omit<Routine, "id" |
   if (continuity && target === "room-goal") {
     throw new Error("Room goals do not carry continuity yet");
   }
+  const onlyIfChanged = cleanOnlyIfChanged(input.onlyIfChanged);
   return {
     name,
     prompt,
@@ -743,6 +787,7 @@ function sanitizeInput(input: RoutineInput, after: number): Omit<Routine, "id" |
     attachments,
     ...(continuity ? { continuity: true } : {}),
     ...(input.overlap === "queue" ? { overlap: "queue" as const } : {}),
+    ...(onlyIfChanged ? { onlyIfChanged } : {}),
   };
 }
 
@@ -754,6 +799,7 @@ export class RoutineManager {
   private runs: RoutineRun[] = [];
   private routineRequestReceipts: RoutineRequestReceipt[] = [];
   private webhookRunReceipts: WebhookRunReceipt[] = [];
+  private watchRunReceipts: WatchRunReceipt[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
 
@@ -781,6 +827,7 @@ export class RoutineManager {
               overlap: routine.overlap === "queue" ? "queue" : undefined,
               skippedRuns: Number.isSafeInteger(routine.skippedRuns) && routine.skippedRuns! > 0 ? routine.skippedRuns : undefined,
               lastSkippedAt: Number.isSafeInteger(routine.lastSkippedAt) && routine.lastSkippedAt! >= 0 && routine.lastSkippedAt! <= MAX_DATE_MS ? routine.lastSkippedAt : undefined,
+              onlyIfChanged: loadOnlyIfChanged(routine.onlyIfChanged),
             };
             if (loaded.timeoutMinutes === undefined) delete loaded.timeoutMinutes;
             delete loaded.failureStreak;
@@ -824,6 +871,12 @@ export class RoutineManager {
             return parsed.success ? [parsed.data] : [];
           })
         : [];
+      this.watchRunReceipts = Array.isArray(disk.watchRunReceipts)
+        ? disk.watchRunReceipts.flatMap((receipt) => {
+            const parsed = watchRunReceiptSchema.safeParse(receipt);
+            return parsed.success ? [parsed.data] : [];
+          })
+        : [];
       // Upgrade old run logs before history pruning can discard their IDs.
       const known = new Set(this.webhookRunReceipts.map((r) => JSON.stringify([r.webhookId, r.deliveryId])));
       for (const run of this.runs) {
@@ -833,11 +886,20 @@ export class RoutineManager {
         this.webhookRunReceipts.push({ webhookId: run.webhookId, deliveryId: run.deliveryId, runId: run.id, acceptedAt: run.createdAt });
         known.add(key);
       }
+      const knownWatch = new Set(this.watchRunReceipts.map((r) => JSON.stringify([r.watchId, r.deliveryId])));
+      for (const run of this.runs) {
+        if (!run.watchId || !run.deliveryId || run.createdAt < this.now() - WEBHOOK_RETRY_WINDOW_MS) continue;
+        const key = JSON.stringify([run.watchId, run.deliveryId]);
+        if (knownWatch.has(key)) continue;
+        this.watchRunReceipts.push({ watchId: run.watchId, deliveryId: run.deliveryId, runId: run.id, acceptedAt: run.createdAt });
+        knownWatch.add(key);
+      }
     } catch {
       this.routines = [];
       this.runs = [];
       this.routineRequestReceipts = [];
       this.webhookRunReceipts = [];
+      this.watchRunReceipts = [];
     }
     // A local process cannot still own these turns after a full restart.
     const recovered: RoutineRun[] = [];
@@ -882,10 +944,12 @@ export class RoutineManager {
   wakeHold(horizonMs = WAKE_HORIZON_MS): { hold: boolean; reason?: "running" | "due"; at?: number } {
     const now = this.now();
     if (this.runs.some((run) => ["queued", "running", "waiting"].includes(run.status))) return { hold: true, reason: "running" };
-    const due = this.routines
+    const dueTimes = this.routines
       .filter((routine) => routine.enabled && routine.nextRunAt != null && routine.nextRunAt <= now + horizonMs)
-      .map((routine) => routine.nextRunAt!)
-      .sort((a, b) => a - b)[0];
+      .map((routine) => routine.nextRunAt!);
+    const watchDue = this.options.nextDueWatch?.();
+    if (watchDue != null && watchDue <= now + horizonMs) dueTimes.push(watchDue);
+    const due = dueTimes.sort((a, b) => a - b)[0];
     return due === undefined ? { hold: false } : { hold: true, reason: "due", at: due };
   }
 
@@ -1043,6 +1107,7 @@ export class RoutineManager {
       attachments: patch.attachments ?? routine.attachments,
       continuity: patch.continuity ?? routine.continuity,
       overlap: Object.hasOwn(patch, "overlap") ? patch.overlap : routine.overlap,
+      onlyIfChanged: Object.hasOwn(patch, "onlyIfChanged") ? patch.onlyIfChanged : routine.onlyIfChanged,
     }, now);
     if (this.targetState(clean) === "missing") throw new Error(this.missingTargetMessage(clean.target));
     const scheduleChanged = JSON.stringify(clean.schedule) !== JSON.stringify(routine.schedule);
@@ -1070,6 +1135,7 @@ export class RoutineManager {
       // rather than false, so switching continuity off has to delete it.
       if (!clean.continuity) delete routine.continuity;
       if (clean.overlap !== "queue") delete routine.overlap;
+      if (!clean.onlyIfChanged) delete routine.onlyIfChanged;
       if (Object.hasOwn(patch, "timeoutMinutes") && patch.timeoutMinutes == null) {
         delete routine.timeoutMinutes;
       }
@@ -1212,6 +1278,81 @@ export class RoutineManager {
     const active = this.runs.find((run) => run.webhookId === webhookId && run.deliveryId === deliveryId &&
       ["queued", "running", "waiting"].includes(run.status));
     return active ? { id: active.id } : null;
+  }
+
+  /** Look up an accepted watch delivery independently of run-log retention. */
+  watchRunReceipt(watchId: string, deliveryId: string): { id: string } | null {
+    const receipt = this.watchRunReceipts.find((candidate) =>
+      candidate.watchId === watchId && candidate.deliveryId === deliveryId &&
+      candidate.acceptedAt >= this.now() - WEBHOOK_RETRY_WINDOW_MS);
+    if (receipt) return { id: receipt.runId };
+    const active = this.runs.find((run) => run.watchId === watchId && run.deliveryId === deliveryId &&
+      ["queued", "running", "waiting"].includes(run.status));
+    return active ? { id: active.id } : null;
+  }
+
+  /** Queue watch work through the same dispatcher as scheduled routines. */
+  enqueueWatch(input: {
+    watchId: string;
+    watchName: string;
+    routineId: string;
+    routineName: string;
+    prompt: string;
+    botId: string;
+    runOn: RoutineRunOn;
+    deliveryId: string;
+    receivedAt: number;
+  }): { id: string } {
+    const existing = this.watchRunReceipt(input.watchId, input.deliveryId);
+    if (existing) return existing;
+    const routine = this.routines.find((candidate) => candidate.id === input.routineId);
+    if (!routine) {
+      throw Object.assign(new Error("The assigned routine no longer exists"), { status: 410 });
+    }
+    if (this.targetState(routine) === "missing") {
+      throw Object.assign(new Error(this.missingTargetMessage(routine.target)), { status: 410 });
+    }
+    const run: RoutineRun = {
+      id: randomUUID(),
+      routineId: routine.id,
+      routineName: input.routineName || routine.name,
+      prompt: input.prompt,
+      durationMinutes: routine.durationMinutes,
+      ...(routine.timeoutMinutes === undefined ? {} : { timeoutMinutes: routine.timeoutMinutes }),
+      attachments: cloneAttachments(routine.attachments),
+      target: routine.target,
+      groupId: routine.groupId,
+      botId: routine.botId,
+      runOn: routine.runOn ?? input.runOn,
+      scheduledFor: input.receivedAt,
+      status: "queued",
+      manual: false,
+      triggerSource: "watch",
+      watchId: input.watchId,
+      deliveryId: input.deliveryId,
+      sourceThreadId: routine.sourceThreadId,
+      resultsThreadId: routine.resultsThreadId,
+      createdAt: this.now(),
+    };
+    const previousReceipts = this.watchRunReceipts;
+    const receipts = previousReceipts.filter((receipt) =>
+      receipt.acceptedAt >= this.now() - WEBHOOK_RETRY_WINDOW_MS);
+    if (receipts.length >= MAX_WEBHOOK_RECEIPTS) {
+      throw Object.assign(new Error("Watch retry history is full; try again later"), { status: 429 });
+    }
+    receipts.push({ watchId: input.watchId, deliveryId: input.deliveryId, runId: run.id, acceptedAt: this.now() });
+    const previousRuns = this.runs.slice();
+    this.runs.push(run);
+    this.watchRunReceipts = receipts;
+    try { this.save(); }
+    catch (error) {
+      this.runs = previousRuns;
+      this.watchRunReceipts = previousReceipts;
+      throw error;
+    }
+    this.emitRun(run);
+    queueMicrotask(() => void this.tick());
+    return cloneRun(run);
   }
 
   /** Queue webhook work through the same dispatcher as scheduled routines. */
@@ -1389,6 +1530,11 @@ export class RoutineManager {
     this.ticking = true;
     try {
       const now = this.now();
+      try {
+        await this.options.onScheduleTick?.(now);
+      } catch (error) {
+        console.error("routine: watch schedule tick failed", error);
+      }
       for (const run of this.runs) {
         if (
           !["running", "waiting"].includes(run.status) ||
@@ -1431,13 +1577,24 @@ export class RoutineManager {
             const scheduledQueued = this.runs.some(run => run.routineId === routine.id && run.status === "queued" &&
               (run.triggerSource ?? (run.manual ? "manual" : "schedule")) === "schedule");
             if (!overlapping || (routine.overlap === "queue" && !scheduledQueued)) {
-              const run = this.newRun(routine, scheduledFor, false, allocations);
-              if (late > CATCH_UP_MS) {
-                run.status = "missed";
-                run.finishedAt = now;
-                run.error = "This computer was offline for more than 12 hours after the scheduled time";
+              const gated = Boolean(
+                routine.onlyIfChanged
+                && this.options.watchHasUnconsumedMatches
+                && late <= CATCH_UP_MS,
+              );
+              const hasChanges = !gated || this.options.watchHasUnconsumedMatches!(routine.onlyIfChanged!, routine.id);
+              if (!hasChanges) {
+                this.options.onWatchUnchanged?.(routine.onlyIfChanged!);
+              } else {
+                if (gated) this.options.watchConsumeMatches?.(routine.onlyIfChanged!, routine.id);
+                const run = this.newRun(routine, scheduledFor, false, allocations);
+                if (late > CATCH_UP_MS) {
+                  run.status = "missed";
+                  run.finishedAt = now;
+                  run.error = "This computer was offline for more than 12 hours after the scheduled time";
+                }
+                scheduledRuns.push(run);
               }
-              scheduledRuns.push(run);
             } else {
               routine.skippedRuns = Math.min(Number.MAX_SAFE_INTEGER, (routine.skippedRuns ?? 0) + 1);
               routine.lastSkippedAt = scheduledFor;
@@ -1926,6 +2083,7 @@ export class RoutineManager {
       runs: this.runs,
       routineRequestReceipts: this.routineRequestReceipts,
       webhookRunReceipts: this.webhookRunReceipts,
+      watchRunReceipts: this.watchRunReceipts,
     } satisfies RoutineFile, null, 2), { mode: 0o600 });
   }
 }
