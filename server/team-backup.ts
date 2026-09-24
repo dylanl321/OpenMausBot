@@ -132,12 +132,14 @@ export function createTeamBackup(store: Store, routines: Routine[], name: string
     })),
     ...(extras?.watches?.length ? {
       watches: extras.watches.filter((watch) => {
-        if (watch.action.type !== "run_routine") return true;
-        return validRoutines.some((routine) => routine.id === watch.action.routineId);
+        const action = watch.action;
+        if (action.type !== "run_routine") return true;
+        return validRoutines.some((routine) => routine.id === action.routineId);
       }).map((watch) => {
-        const action = watch.action.type === "run_routine"
-          ? { type: "run_routine" as const, routineName: routines.find((routine) => routine.id === watch.action.routineId)?.name ?? watch.action.routineId }
-          : watch.action;
+        const action = watch.action;
+        const exported = action.type === "run_routine"
+          ? { type: "run_routine" as const, routineName: routines.find((routine) => routine.id === action.routineId)?.name ?? action.routineId }
+          : action;
         return {
           name: watch.name,
           source: watch.source,
@@ -145,7 +147,7 @@ export function createTeamBackup(store: Store, routines: Routine[], name: string
           filter: watch.filter,
           check: watch.check,
           batch: watch.batch,
-          action,
+          action: exported,
           limits: watch.limits,
           startFrom: "now" as const,
           enabled: watch.enabled,
@@ -283,11 +285,12 @@ export function importTeamBackup(store: Store, routines: RoutineManager, input: 
         groupId: source.target === "room-goal" ? groupIds.get(source.groupId!) : undefined, enabled: false }));
     }
     for (const source of options.watches ? backup.watches ?? [] : []) {
-      const action: WatchAction = source.action.type === "run_routine"
-        ? { type: "run_routine", routineId: createdRoutines.find((routine) => routine.name === source.action.routineName)?.id ?? source.action.routineName }
-        : source.action.type === "notify"
-          ? { type: "notify", botId: source.action.botId ? botIds.get(source.action.botId) : undefined, threadId: source.action.threadId }
-          : source.action;
+      const sourceAction = source.action;
+      const action: WatchAction = sourceAction.type === "run_routine"
+        ? { type: "run_routine", routineId: createdRoutines.find((routine) => routine.name === sourceAction.routineName)?.id ?? sourceAction.routineName }
+        : sourceAction.type === "notify"
+          ? { type: "notify", botId: sourceAction.botId ? botIds.get(sourceAction.botId) : undefined, threadId: sourceAction.threadId }
+          : sourceAction;
       createdWatches.push(options.watches!.create({
         name: source.name,
         source: source.source,
