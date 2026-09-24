@@ -133,8 +133,8 @@ JSON object; fall back to `#140`, `PAY-123`, or a recognised URL.
 Existing connectors:
 
 - **Jira** — `jira_add_comment` / Composio comment, transition, create, assign.
-- **GitLab** — `create_merge_request`, `glab mr create`, review notes, `glab issue create`.
-- **Plane** — `workitem` create / update, `workitem_comment` create.
+- **GitLab** — `create_merge_request`, `glab mr create`, review notes, `GITLAB_CREATE_ISSUE` / `glab issue create`, or `create_issue` on a GitLab MCP server. Do not match a bare `/create[_-]?issue/`.
+- **Plane** — `workitem` create / update, `plane_*` / `PLANE_*` updates, `workitem_comment` create. Not the built-in `update_work_item` coordinator tool.
 - **Built-in git / url** — `git commit` / `git push` and bare URLs, in
   `server/connectors/builtin/`.
 

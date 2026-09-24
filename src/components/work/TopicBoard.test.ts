@@ -27,7 +27,7 @@ const group: Group = {
         connectorId: "fake", connectionId: "fake-acme", state: { label: "In Progress", category: "in_progress" } })],
     }) },
     { threadId: "hub-repo", title: "MR work", createdAt: 1, workItem: work("repo", "Round refunds", {
-      links: [link({ id: "cr", kind: "change_request", title: "Round partial refunds", externalId: "482",
+      links: [link({ id: "cr", kind: "change_request", title: "Round partial refunds", externalId: "acme/payments!482",
         connectorId: "fake", state: { label: "opened", category: "in_review" } }),
       link({ id: "cmt", kind: "commit", title: "commit 3f2a1c9", externalId: "3f2a1c9" })],
     }) },
@@ -53,7 +53,8 @@ describe("TopicBoard", () => {
     expect(html).toContain("PAY-1");
     expect(html).toContain('data-board-card="repo"');
     expect(html).toContain('data-board-kind="change_request"');
-    expect(html).toContain("!482");
+    expect(html).toContain("acme/payments!482");
+    expect(html).not.toContain("!acme/payments!482");
     expect(html).toContain('data-board-card="chat"');
     expect(html).toContain("Triage notes");
     expect(html).toContain('data-task-answer="ask"');

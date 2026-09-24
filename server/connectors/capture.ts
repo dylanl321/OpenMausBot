@@ -27,13 +27,23 @@ function line(value: string | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim().slice(0, SUMMARY_LIMIT);
 }
 
-function toolCall(event: RuntimeEvent & { type: "item.completed" }, started?: { title?: string; summary?: string; input?: string }): CaptureCall {
+const MCP_SERVER = /^mcp__([^_]+)__/;
+const LABELED_SERVER = /^([a-z][\w-]{0,63}):/i;
+
+export function serverFromTitle(title: string | undefined): string | undefined {
+  const mcp = MCP_SERVER.exec(title ?? "");
+  if (mcp) return mcp[1];
+  return LABELED_SERVER.exec(title ?? "")?.[1];
+}
+
+function toolCall(event: RuntimeEvent & { type: "item.completed" }, started?: { title?: string; summary?: string; input?: string; server?: string }): CaptureCall {
   return {
     title: started?.title ?? "tool",
     summary: started?.summary,
     input: started?.input,
     output: "output" in event ? event.output : undefined,
     ok: "ok" in event ? event.ok : undefined,
+    server: started?.server ?? serverFromTitle(started?.title),
   };
 }
 
@@ -56,7 +66,7 @@ function matches(rule: CaptureRule, call: CaptureCall): boolean {
 }
 
 export class WorkCapture {
-  private readonly open = new Map<string, { title?: string; summary?: string; input?: string }>();
+  private readonly open = new Map<string, { title?: string; summary?: string; input?: string; server?: string }>();
   private readonly hooks: CaptureHooks;
 
   constructor(hooks: CaptureHooks) {
@@ -73,7 +83,12 @@ export class WorkCapture {
     if (event.type === "item.started") {
       const summary = line(event.summary || event.title || "Working");
       if (summary) this.hooks.items.setCurrentStep(item, event.threadId, { summary, since: atOf(event.createdAt), ...(event.itemId ? { itemId: event.itemId } : {}) });
-      if (event.itemId) this.open.set(event.itemId, { title: event.title, summary: event.summary, input: event.input });
+      if (event.itemId) {
+        this.open.set(event.itemId, {
+          title: event.title, summary: event.summary, input: event.input,
+          server: event.server ?? serverFromTitle(event.title),
+        });
+      }
       const running = this.hooks.events.append({
         id: randomUUID(), workItemId: item.id, revision: item.revision, at: atOf(event.createdAt), actor,
         kind: "tool", summary: summary || "Working", state: "running", provenance: "observed",

@@ -382,6 +382,14 @@ function extractComment(call: CaptureCall): ReturnType<CaptureRule["extract"]> {
   };
 }
 
+const planeUpdate = {
+  on: "completed" as const,
+  produce: { kind: "work_item" as const },
+  eventKind: "state_change" as const,
+  extract: (call: CaptureCall) => actionOf(call) === "update" ? extractWorkItem(call) : null,
+  event: (item: { externalId?: string; title: string }) => `updated ${item.externalId ?? item.title}`,
+};
+
 const captureRules: CaptureRule[] = [
   {
     match: { tool: /workitem(?!_comment)|create[_-]?work[_-]?item\b/i },
@@ -399,12 +407,12 @@ const captureRules: CaptureRule[] = [
     event: item => `commented on ${String(item.details?.issue ?? item.externalId ?? item.title).split(":")[0]}`,
   },
   {
-    match: { tool: /workitem|plane[_-]?(?:update|transition)|update[_-]?work[_-]?item/i },
-    on: "completed",
-    produce: { kind: "work_item" },
-    eventKind: "state_change",
-    extract: call => actionOf(call) === "update" ? extractWorkItem(call) : null,
-    event: item => `updated ${item.externalId ?? item.title}`,
+    match: { tool: /workitem(?!_comment)|plane[_-]?(?:update|transition)/i },
+    ...planeUpdate,
+  },
+  {
+    match: { server: /\bplane\b/i, tool: /^(?:update|transition)[_-]?work[_-]?item\b/i },
+    ...planeUpdate,
   },
 ];
 
