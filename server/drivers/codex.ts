@@ -121,6 +121,7 @@ function codexAstraUpdate(
 export interface CodexConfig {
   cli: string;
   fullAuto: boolean;
+  inheritBedrockToken?: boolean;
   /** Optional picker allowlist. Values remain provider-qualified selections. */
   models?: string[];
   /** Ephemeral Company routing, supplied by the trusted desktop parent. */
@@ -145,9 +146,16 @@ function decodeConfig(raw: unknown): CodexConfig {
   )) {
     throw new Error("Codex models must be a non-empty list of model selections.");
   }
+  if (o.inheritBedrockToken === true && (
+    o.managed || !Array.isArray(o.models) ||
+    o.models.some((model) => typeof model !== "string" || !/^bedrock-[\w-]+::[\w./+-]+$/.test(model))
+  )) {
+    throw new Error("Inheriting the Bedrock token requires only provider-qualified Bedrock models.");
+  }
   return {
     cli: typeof o.cli === "string" ? o.cli : "codex",
     fullAuto: o.fullAuto === true,
+    ...(o.inheritBedrockToken === true ? { inheritBedrockToken: true } : {}),
     ...(Array.isArray(o.models) ? { models: [...new Set(o.models as string[])] } : {}),
     ...(o.managed && typeof o.managed === "object" ? { managed: decodeManagedCodex(o.managed) } : {}),
   };
@@ -619,6 +627,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       for (const key of ["OMB_BEDROCK_API_KEY", "AWS_BEARER_TOKEN_BEDROCK", "BEDROCK_API_KEY"]) {
         if (Object.hasOwn(input.environment, key)) env[key] = input.environment[key];
       }
+      if (config.inheritBedrockToken && !Object.hasOwn(input.environment, "AWS_BEARER_TOKEN_BEDROCK")) {
+        env.AWS_BEARER_TOKEN_BEDROCK = process.env.AWS_BEARER_TOKEN_BEDROCK;
+      }
       return env;
     };
     const catalogEnv = childEnv();
@@ -704,6 +715,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         }
       }
       let autoAcceptPermissions = approvalMode === "full";
+      let nativeReviewerInactive = false;
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
       const turnId = newId();
       // a retry relaunches the whole app-server; the backoff is scaled down in
@@ -1056,6 +1068,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           type: "request.opened",
           requestId,
           requestType: isQuestion ? "question" : "permission",
+          nativeReview: nativeReviewerInactive && isPermission ? "inactive" : undefined,
           tool,
           summary,
           choices,
@@ -1441,7 +1454,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           approvalParams = customApprovalParams(effectiveConfig);
         } else {
           const provider = config.managed ? "openmaus_company" : decodeCodexSelection(turn.model).modelProvider;
-          approvalParams = namedApprovalParams(approvalMode, Boolean(provider && provider !== "openai"));
+          nativeReviewerInactive = approvalMode === "auto" && Boolean(provider && provider !== "openai");
+          approvalParams = namedApprovalParams(approvalMode, nativeReviewerInactive);
         }
         // Codex's `never` means "do not ask to escalate", not "grant every
         // requested permission". Only explicit Full access may synthesize

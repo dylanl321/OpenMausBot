@@ -248,6 +248,14 @@ const toolDefinitions = (externalRuntime: boolean) => [
     }, required: ["work_item_id", "expected_revision"] },
   },
   {
+    name: "retry_goal_work",
+    description: "In a shared-task hub only: request one new revision of a settled blocked task under an explicitly authorized ongoing goal. Requires a concrete remediation and the current task revision. Never retry an uncertain external write or change requirements.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      goal_id: { type: "string" }, work_item_id: { type: "string" },
+      expected_revision: { type: "integer", minimum: 1 }, remediation: { type: "string", maxLength: 2000 },
+    }, required: ["goal_id", "work_item_id", "expected_revision", "remediation"] },
+  },
+  {
     name: "link_item",
     description: "Record a link for work done outside your tools. Prefer ids already captured from tool calls. Resolved connector refs stay claimed until a later sync confirms them.",
     inputSchema: { type: "object", additionalProperties: false, properties: {

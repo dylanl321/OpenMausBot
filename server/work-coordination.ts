@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { redactSecretsInText } from "./redact.ts";
 import type { RoomAddress, RoomHandoff, RoomHandoffs } from "./room-handoffs.ts";
-import { sectionKey, type Store } from "./store.ts";
+import { sectionKey, type Store, type TaskRecord } from "./store.ts";
 import type { LinkedItem, Provenance, TaskEvent } from "../shared/work-links.ts";
+import type { WorkAssignment } from "../shared/work-item.ts";
 import { ensureWorkItemSchema, publicWorkItem, updateWorkItemSchema, WorkItems, type WorkRecord, type WorkSource } from "./work-items.ts";
 
 const linkItemSchema = z.object({
@@ -17,6 +18,8 @@ interface WorkCoordinationHooks {
   validate(address: RoomAddress, parent?: RoomAddress): string | undefined;
   creationProblem(source: WorkSource): string | undefined;
   publish(item: WorkRecord): void;
+  goalScope?(source: WorkSource, identity: string): string | undefined;
+  onEnsure?(item: WorkRecord, source: WorkSource, created: boolean): void;
   isUnattended(source: WorkSource): boolean;
   markUnattended(botId: string, threadId: string): void;
   sourceLink?(scope: string, identity: string): LinkedItem | null | Promise<LinkedItem | null>;
@@ -81,6 +84,8 @@ export class WorkCoordination {
     if (attached && input.workItemId !== attached.id) throw new Error("This conversation already belongs to a shared task. Reuse its work_item_id instead of starting another coordinator.");
     const scope = sectionKey(bot.section);
     const identity = input.identity ?? `request:${requestIdentity}`;
+    const goalProblem = this.hooks.goalScope?.(source, identity);
+    if (goalProblem) throw new Error(goalProblem);
     const existing = input.workItemId ? this.items.records.get(input.workItemId) : this.items.find(scope, identity);
     if (input.workItemId && !existing) throw new Error("No such shared task");
     if (existing && (!this.accessible(existing, source) || existing.coordinatorBotId !== source.botId)) {
@@ -128,6 +133,7 @@ export class WorkCoordination {
       if (this.hooks.isUnattended(source)) this.hooks.markUnattended(bot.id, item.threadId);
       this.start(item);
     }
+    this.hooks.onEnsure?.(item, source, result.created);
     this.publish(item);
     console.info(JSON.stringify({ event: "work.resolved", workItemId: item.id, revision: item.revision,
       sourceThreadId: source.threadId, disposition: result.started ? "started" : "reused", status: item.status }));
@@ -151,12 +157,12 @@ export class WorkCoordination {
     }
   }
 
-  update(id: string, raw: unknown, source?: WorkSource) {
+  update(id: string, raw: unknown, source?: WorkSource, authorizedGoalRetry = false) {
     const item = this.items.records.get(id);
     if (!item || (source && !this.accessible(item, source))) throw new Error("No accessible shared task");
     if (source && source.threadId !== item.threadId) throw new Error("Record decisions and outcomes in the shared hub, not a source or worker thread");
     const input = updateWorkItemSchema.parse(raw);
-    if (input.reopen && source) throw new Error("Only the user can explicitly reopen unchanged work; report the blocker instead");
+    if (input.reopen && source && !authorizedGoalRetry) throw new Error("Only the user can explicitly reopen unchanged work; report the blocker instead");
     if (source && (input.objective !== undefined || input.acceptanceCriteria !== undefined)) throw new Error("Requirement changes need the user's explicit update or changed source inputs");
     const safeInput = { ...input, ...(input.detail ? { detail: redactSecretsInText(input.detail) } : {}),
       ...(input.decision ? { decision: redactSecretsInText(input.decision) } : {}),
@@ -196,29 +202,44 @@ export class WorkCoordination {
 
   assignment(item: WorkRecord, botId: string, message: string, assignmentId?: string, rework?: boolean) {
     const existing = item.assignments.find(assignment => assignment.botId === botId && assignment.revision === item.revision);
+    const previous = existing ? structuredClone(existing) : undefined;
     let task = this.store.tasks(botId).find(candidate => candidate.workItemId === item.id);
+    const previousClosedBy = task?.closedBy;
     let created = false;
     if (!task && existing) throw new Error("This task's worker conversation was deleted; inspect its results before explicitly reopening");
-    if (!task) {
-      const owner = this.store.bot(item.coordinatorBotId)!;
-      task = this.store.createTask(botId, item.title, false, undefined, { botId: owner.id, name: owner.name, at: Date.now() }) ?? undefined;
-      if (!task) throw new Error("The specialist no longer exists");
-      created = true;
-      this.store.patchTask(botId, task.threadId, { workItemId: item.id });
-      this.store.appendMessage(task.threadId, { role: "bot", kind: "activity", tool: { name: `Shared task: ${item.title}`, ok: true },
-        comm: { groupId: item.groupId, threadId: item.threadId, withBotId: owner.id, withName: owner.name, withColor: owner.color } });
-    }
-    let claimed: ReturnType<WorkItems["claim"]>;
+    let claimed: ReturnType<WorkItems["claim"]> | undefined;
     try {
+      if (!task) {
+        const owner = this.store.bot(item.coordinatorBotId)!;
+        task = this.store.createTask(botId, item.title, false, undefined, { botId: owner.id, name: owner.name, at: Date.now() }) ?? undefined;
+        if (!task) throw new Error("The specialist no longer exists");
+        created = true;
+        this.store.patchTask(botId, task.threadId, { workItemId: item.id });
+        this.store.appendMessage(task.threadId, { role: "bot", kind: "activity", tool: { name: `Shared task: ${item.title}`, ok: true },
+          comm: { groupId: item.groupId, threadId: item.threadId, withBotId: owner.id, withName: owner.name, withColor: owner.color } });
+      }
       claimed = this.items.claim(item, { botId, threadId: task.threadId, message: redactSecretsInText(message), assignmentId, rework });
+      console.info(JSON.stringify({ event: "work.assignment", workItemId: item.id, revision: item.revision, assignmentId: claimed.assignment.id,
+        threadId: task.threadId, botId, disposition: claimed.duplicate ? "reused" : "claimed", attempt: claimed.assignment.attempts }));
+      if (task.closedBy && !claimed.duplicate) this.store.setTaskClosedBy(botId, task.threadId, null);
+      return { ...claimed, previous, previousClosedBy, createdThread: created ? task.threadId : undefined };
     } catch (error) {
-      if (created) this.store.deleteTask(botId, task.threadId);
+      if (claimed && !claimed.duplicate) this.rollbackAssignment(item, claimed.assignment, previous, created ? task?.threadId : undefined, previousClosedBy);
+      else if (created && task) this.store.deleteTask(botId, task.threadId);
       throw error;
     }
-    console.info(JSON.stringify({ event: "work.assignment", workItemId: item.id, revision: item.revision, assignmentId: claimed.assignment.id,
-      threadId: task.threadId, botId, disposition: claimed.duplicate ? "reused" : "claimed", attempt: claimed.assignment.attempts }));
-    if (task.closedBy && !claimed.duplicate) this.store.setTaskClosedBy(botId, task.threadId, null);
-    return claimed;
+  }
+
+  rollbackAssignment(item: WorkRecord, assignment: WorkAssignment, previous?: WorkAssignment, createdThread?: string, previousClosedBy?: TaskRecord["closedBy"]) {
+    if (assignment.requestId) return;
+    const index = item.assignments.findIndex(candidate => candidate.id === assignment.id);
+    if (index !== -1) {
+      if (previous) item.assignments[index] = previous;
+      else item.assignments.splice(index, 1);
+      this.items.changed(item);
+    }
+    if (createdThread) this.store.deleteTask(assignment.botId, createdThread);
+    else if (previousClosedBy) this.store.setTaskClosedBy(assignment.botId, assignment.threadId, previousClosedBy);
   }
 
   context(node: RoomHandoff) {

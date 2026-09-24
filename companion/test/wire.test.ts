@@ -8,6 +8,11 @@ import { describe, expect, it } from "vitest";
 import { createSseScrubber, isJson, MAX_SSE_EVENT_BYTES, scrub } from "../src/wire.ts";
 
 describe("scrub", () => {
+  it("withholds browser-only viewer capabilities from paired devices", () => {
+    expect(scrub({ joinUrl: "https://desktop.example/vnc.html", remoteJoinUrl: "/api/desktop-viewer/secret/vnc.html", remote_viewer_url: "/api/desktop-viewer/other/vnc.html" }))
+      .toEqual({ joinUrl: "https://desktop.example/vnc.html" });
+  });
+
   it("removes resumeCursors wherever it is nested", () => {
     const bot = {
       id: "b1",

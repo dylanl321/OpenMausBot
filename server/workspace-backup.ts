@@ -729,6 +729,15 @@ function prepareRestore(dataDir: string, id: string, manifest: Manifest): string
       }
     }
   });
+  changeJson("ongoing-goals.json", (value) => {
+    if (!Array.isArray(value)) throw new Error("Invalid ongoing goals in workspace backup.");
+    for (const goal of value) if (record(goal) && ["working", "waiting"].includes(String(goal.status))) {
+      goal.status = "paused";
+      goal.detail = "Restored from a workspace backup; inspect linked work before resuming.";
+      delete goal.inFlightAt;
+      delete goal.nextWakeAt;
+    }
+  });
   changeJson("webhooks.json", (value) => {
     if (!record(value)) throw new Error("Invalid webhook definitions in workspace backup.");
     const destination = existsSync(join(dataDir, "webhooks.json")) ? privateJson(join(dataDir, "webhooks.json")) : {};

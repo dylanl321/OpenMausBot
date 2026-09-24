@@ -2,6 +2,7 @@ import { track } from "@/lib/analytics";
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { ArrowUp, BookOpen, Clock, Mic, Paperclip, Square, Target, Users, X } from "lucide-react";
 import { useStore, visibleMessages, currentTaskBot, type Bot, type Group, type Message } from "@/state/store";
+import { OngoingGoalPanel } from "./OngoingGoalPanel";
 import { cn } from "@/lib/cn";
 import { activeLocale, t } from "@/lib/i18n";
 import {
@@ -111,6 +112,8 @@ export function Composer({
   locked?: boolean;
 }) {
   const bot = profile ? currentTaskBot(profile) : undefined;
+  const [pursuitOpen, setPursuitOpen] = useState(false);
+  const [pursuitObjective, setPursuitObjective] = useState("");
   const locked = setupLocked || Boolean(bot?.awaitingThreadSnapshot);
   const { state, dispatch } = useStore();
   const { threads, currentBotId } = useThreadRefs();
@@ -260,6 +263,7 @@ export function Composer({
     if (!slash || slash.start === dismissedSlashAt) return [];
     const supportsAgents = (candidate?: Bot) => selectedModelCapabilities(state.instances, candidate?.modelSelection).agentsMcp === true;
     const available: ComposerSlashCommand[] = [];
+    if (!group || !group.dm) available.push({ id: "pursue", label: "/pursue", description: t("composer.command.pursueDesc") });
     if (group && !group.dm) available.push({
       id: "goal",
       label: "/goal",
@@ -337,7 +341,7 @@ export function Composer({
 
   const pickCommand = (command: ComposerSlashCommand) => {
     if (!slash) return;
-    const replacement = command.id === "learn" ? "/learn " : command.id === "setup" ? "/setup " : "";
+    const replacement = command.id === "learn" ? "/learn " : command.id === "setup" ? "/setup " : command.id === "pursue" ? "/pursue " : "";
     const next = replaceComposerSlashTrigger(text, slash, replacement);
     editText(next.text);
     setCaret(next.caret);
@@ -522,6 +526,13 @@ export function Composer({
   };
   const send = () => {
     if (locked || attachmentPending) return;
+    const pursuit = /^\/pursue(?:\s+([\s\S]*))?$/i.exec(text);
+    if (pursuit && !attachments.length) {
+      setPursuitObjective((pursuit[1] ?? "").trim());
+      setPursuitOpen(true);
+      setText("");
+      return;
+    }
     if (
       attachments.some((attachment) => attachment.kind === "image") &&
       !imageTargetsSupport(effectiveText, effectiveChannelMode)
@@ -835,6 +846,14 @@ export function Composer({
             />
           </div>
         )}
+        {(!group || !group.dm) && <OngoingGoalPanel
+          ownerBots={group ? (members ?? []).filter(member => !member.hidden) : bot ? [bot] : []}
+          sourceThreadId={threadId}
+          open={pursuitOpen}
+          onClose={() => setPursuitOpen(false)}
+          onOpen={() => setPursuitOpen(true)}
+          initialObjective={pursuitObjective}
+        />}
         {replyTo && (
           <div className="mb-2 px-1">
             <ReplyQuote
@@ -933,6 +952,10 @@ export function Composer({
                   {effectiveChannelMode === "goal" ? "/goal" : t("composer.goal.chip")}
                 </button>
               )}
+              {(!group || !group.dm) && <button type="button" onClick={() => setPursuitOpen(value => !value)}
+                aria-label={t("goal.panel.title")} className="flex h-8 items-center gap-1 rounded-full border border-hairline/30 px-2 text-xs text-accent">
+                <Target size={13} aria-hidden="true" /> {t("goal.panel.chip")}
+              </button>}
               {modeBot && approvalEngine && !remoteClient && (
                 <ApprovalModeSelector
                   approvalMode={modeBot.approvalMode}

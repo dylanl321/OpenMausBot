@@ -70,9 +70,11 @@ host is unknown simply fails until you have done this once.
 
 ## Security
 
-- **No public ports.** The managed container is created with no published ports, and OpenMausBot refuses to
+- **No public VNC ports.** The managed container is created with no published ports, and OpenMausBot refuses to
   use a container that publishes any — the check runs before every attach, not just at creation. Live view
-  reaches the container's private bridge address through SSH and is loopback-only on your computer.
+  reaches the container's private bridge address through SSH to a loopback-only tunnel on the host. When using
+  the web app from another machine, its existing origin relays noVNC assets and WebSockets through a short-lived
+  viewer link; the VNC port itself remains private. Keep the web app behind a trusted network or HTTPS login.
 - **Firewall the VPS to SSH only**, ideally from your IP. Nothing OpenMausBot does needs any other inbound
   port open, so anything else open is pure attack surface.
 - **Nothing sensitive is stored.** The only thing OpenMausBot persists is the alias name itself

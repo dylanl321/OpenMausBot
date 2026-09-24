@@ -14,6 +14,7 @@
 // reply carries the FULL prompt and whose gate file gives a deterministic
 // busy window — no sleeps anywhere.
 import { spawn, type ChildProcess } from "node:child_process";
+import { createConnection } from "node:net";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -186,12 +187,14 @@ posixOnly("VPS turn routing e2e (fake ACP fleet + fake docker over SSH)", () => 
     chmodSync(join(fakeBin, "docker"), 0o755);
     // Only the viewer's local listening socket is simulated; no SSH network
     // or real VPS is contacted. The provider owns and closes this child.
-    writeFileSync(join(fakeBin, "ssh"), `#!${process.execPath}
-import { createServer } from 'node:net';
+    writeFileSync(join(fakeBin, "ssh"), String.raw`#!${process.execPath}
+import { createServer } from 'node:http';
 const args = process.argv.slice(2);
 const forward = args[args.indexOf('-L') + 1];
 const port = Number(forward.split(':')[1]);
-createServer(socket => socket.end()).listen(port, '127.0.0.1');
+const viewer = createServer((request, response) => response.end('fixture:' + request.url));
+viewer.on('upgrade', (_request, socket) => socket.end('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: test\r\n\r\nfixture-viewer'));
+viewer.listen(port, '127.0.0.1');
 `, { mode: 0o755 });
     writeFileSync(join(fakeBin, "image.json"), imageInspectJson());
     writeFileSync(join(fakeBin, "container.json.tpl"), containerInspectTemplate());
@@ -290,6 +293,27 @@ createServer(socket => socket.end()).listen(port, '127.0.0.1');
       const joined = await api("POST", `${path}/join`, {});
       expect(joined.status, JSON.stringify(joined.body)).toBe(200);
       expect(joined.body.joinUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/vnc\.html#/);
+      expect(joined.body.remoteJoinUrl).toMatch(/^\/api\/desktop-viewer\/[A-Za-z0-9_-]{32}\/vnc\.html#/);
+      const viewerPath = joined.body.remoteJoinUrl.split("#")[0];
+      const viewer = await fetch(`${BASE}${viewerPath}`);
+      expect(viewer.status).toBe(200);
+      expect(viewer.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(await viewer.text()).toBe("fixture:/vnc.html");
+      const socket = createConnection({ host: "127.0.0.1", port: PORT });
+      const upgraded = await new Promise<string>((resolve, reject) => {
+        socket.on("data", (chunk: Buffer) => {
+          if (chunk.toString().includes("fixture-viewer")) resolve(chunk.toString());
+        });
+        socket.once("error", reject);
+        socket.setTimeout(3_000, () => reject(new Error("viewer WebSocket timed out")));
+        socket.once("connect", () => socket.write(
+          `GET ${viewerPath.replace("/vnc.html", "/websockify")} HTTP/1.1\r\n`
+          + `Host: 127.0.0.1:${PORT}\r\nOrigin: http://127.0.0.1:${PORT}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n`
+          + "Sec-WebSocket-Key: dGVzdA==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        ));
+      });
+      expect(upgraded).toContain("fixture-viewer");
+      socket.destroy();
       expect(captures() - before).toBe(1);
       rmSync(hold, { force: true });
       for (const result of await Promise.all(retries)) {
@@ -305,6 +329,8 @@ createServer(socket => socket.end()).listen(port, '127.0.0.1');
       expect(failure.body.error).toMatch(/fixture capture failed/);
       rmSync(failed, { force: true });
       expect((await api("POST", `${path}/screenshot`, {})).status).toBe(200);
+      expect((await api("POST", `${path}/viewer-close`, {})).status).toBe(200);
+      expect((await fetch(`${BASE}${viewerPath}`)).status).toBe(404);
     } finally {
       rmSync(hold, { force: true });
       rmSync(failed, { force: true });

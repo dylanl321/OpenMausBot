@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, GripVertical, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Crown, GripVertical, Trash2 } from "lucide-react";
 import type { DragEvent, KeyboardEvent, MouseEvent } from "react";
 
 import { cn } from "@/lib/cn";
@@ -12,6 +12,7 @@ export function SidebarSectionHeader({
   name,
   collapsed,
   attention,
+  chiefName,
   onToggle,
   reorderable,
   dragging,
@@ -24,6 +25,7 @@ export function SidebarSectionHeader({
   name: string;
   collapsed: boolean;
   attention?: SidebarSectionAttention;
+  chiefName?: string;
   onToggle?: () => void;
   reorderable: boolean;
   dragging: boolean;
@@ -69,6 +71,7 @@ export function SidebarSectionHeader({
           <span className="truncate text-[12px] font-semibold text-ink-secondary">
             {name}
           </span>
+          {collapsed && chiefName && <Crown size={12} className="shrink-0 text-accent" aria-label={`${chiefName} · ${t("sidebar.bot.chiefOfStaff")}`} />}
           <Chevron size={13} className="shrink-0 text-ink-secondary" aria-hidden="true" />
           {attention && attention.waiting > 0 && (
             <span

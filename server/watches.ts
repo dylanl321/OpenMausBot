@@ -85,6 +85,7 @@ export interface WatchManagerOptions {
   notify?: (watch: Watch, changes: SourceChange[], action: Extract<WatchAction, { type: "notify" }>) => void;
   record?: (watch: Watch, changes: SourceChange[]) => void;
   taskUpdate?: (watch: Watch, changes: SourceChange[]) => void;
+  matched?: (watch: Watch, changes: SourceChange[]) => void;
   ensureTask?: (
     watch: Watch,
     changes: SourceChange[],
@@ -974,6 +975,8 @@ export class WatchManager {
     this.scheduleNext(watch, now);
     this.save();
     this.emit(watch);
+    try { this.options.matched?.(watch, incoming); }
+    catch (error) { console.error("watch match notification:", error); }
   }
 
   private async flushPending(watch: Watch, now: number): Promise<void> {

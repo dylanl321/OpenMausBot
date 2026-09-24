@@ -51,6 +51,7 @@ interface JiraComment {
   created?: string;
   updated?: string;
   body?: unknown;
+  author?: JiraPerson;
 }
 
 interface JiraPerson {
@@ -58,6 +59,7 @@ interface JiraPerson {
   accountId?: string;
   emailAddress?: string;
   accountType?: string;
+  timeZone?: string;
 }
 
 interface JiraChangelogItem {
@@ -376,18 +378,27 @@ interface JiraAccount {
   email?: string;
   displayName?: string;
   bot?: boolean;
+  timeZone?: string;
 }
 
-function jqlDate(ms: number): string {
-  const date = new Date(ms);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
+function jqlDate(ms: number, timeZone?: string): string {
+  if (!timeZone) return jqlDate(ms - 14 * 60 * 60_000, "UTC");
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }).formatToParts(new Date(ms));
+    const part = (type: string) => parts.find(value => value.type === type)!.value;
+    return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")}`;
+  } catch {
+    return jqlDate(ms);
+  }
 }
 
-function watchJql(scope: WatchScope, since: number): string {
+function watchJql(scope: WatchScope, since: number, timeZone?: string): string {
   const query = typeof scope.query === "string" && scope.query.trim() ? `(${scope.query.trim()})` : "updated is not EMPTY";
   if (!since) return `${query} ORDER BY updated ASC`;
-  return `${query} AND updated > "${jqlDate(since)}" ORDER BY updated ASC`;
+  return `${query} AND updated >= "${jqlDate(since, timeZone)}" ORDER BY updated ASC`;
 }
 
 function splitLabels(value: string | null | undefined): string[] {
@@ -492,7 +503,7 @@ function changesFromIssue(
       type: "comment.added",
       connectionId: ctx.connectionId,
       item: syncedComment(issue, comment.id, ctx, `${key}:${comment.id}`),
-      actor: actorOf(issue.fields?.assignee, account),
+      actor: actorOf(comment.author ?? issue.fields?.assignee, account),
       fields: changeFields(item, { issue: key }),
       at,
     });
@@ -520,12 +531,13 @@ async function loadMyself(ctx: ConnectionContext): Promise<JiraAccount | undefin
   const path = editionOf(ctx) === "datacenter" ? "/rest/api/2/myself" : "/rest/api/3/myself";
   const result = await jiraRequest(ctx, path);
   if (!result.ok || !result.body || typeof result.body !== "object") return undefined;
-  const me = result.body as JiraPerson & { accountType?: string };
+  const me = result.body as JiraPerson;
   return {
     accountId: me.accountId,
     email: me.emailAddress,
     displayName: me.displayName,
     bot: me.accountType === "app",
+    timeZone: me.timeZone,
   };
 }
 
@@ -777,7 +789,7 @@ export const jiraConnector: Connector = {
       query: typeof scope.query === "string" && scope.query.trim() ? scope.query : project,
     };
     const account = await loadMyself(ctx);
-    const issues = await searchChanges(ctx, watchJql(scoped, parsed.since));
+    const issues = await searchChanges(ctx, watchJql(scoped, parsed.since, account?.timeZone));
     const seen = new Map(parsed.seen);
     const changes = issues.flatMap(issue => {
       const item = syncedIssue(issue, ctx);

@@ -64,14 +64,15 @@ existing browser session. See [the UI harness](chat-ui.md) for prerequisites.
 The recipe drives the real renderer through `control-omb ui`: send from the
 composer, open the shared hub while tool calls are hidden, observe the
 running/completed task panel, and open the exact linked specialist thread
-from the topic folder. It asserts that the worker appears once in the
-sidebar, belongs to that topic, and stays selected when opened. It switches
-back to the shared chat and also exercises the task panel's worker link.
+from the topic board. It asserts that the sidebar stays shallow, the topic
+navigator shows a flat task row (without worker links), Escape closes it,
+and worker links remain in the main pane. It switches back to the shared chat.
 It also reopens the completed task, stops the running coordinator, checks a
 390-pixel mobile viewport for overflow, and requires a clean browser console.
 Screenshots and `shared-task.json` are retained in
-`.omb-scratch/verify-evidence/shared-work`: before task creation, completed
-hub, selected specialist in its topic tree, mobile view and stopped task.
+`.omb-scratch/verify-evidence/shared-work`: before task creation, docked and
+overlaid topic navigators, selected hub, the 390px mobile navigator and the
+stopped task.
 The JSON includes the fixture URL, task records and selected thread.
 
 ```sh

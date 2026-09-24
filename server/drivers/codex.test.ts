@@ -64,6 +64,14 @@ describe("CodexDriver.decodeConfig", () => {
     expect(() => CodexDriver.decodeConfig({ models: [""] })).toThrow("Codex models must be a non-empty list");
   });
 
+  it("allows ambient Bedrock token inheritance only for an explicit Bedrock-only instance", () => {
+    const models = ["bedrock-us-east-1::us.openai.gpt-6-sol"];
+    expect(CodexDriver.decodeConfig({ models, inheritBedrockToken: true }).inheritBedrockToken).toBe(true);
+    expect(() => CodexDriver.decodeConfig({ inheritBedrockToken: true })).toThrow("only provider-qualified Bedrock models");
+    expect(() => CodexDriver.decodeConfig({ models: ["gpt-6-sol"], inheritBedrockToken: true })).toThrow("only provider-qualified Bedrock models");
+    expect(() => CodexDriver.decodeConfig({ models, managed: { url: "https://company.example/v1", models: ["m"] }, inheritBedrockToken: true })).toThrow("only provider-qualified Bedrock models");
+  });
+
   it("shows provider-qualified Bedrock models with readable region labels", async () => {
     const instance = await CodexDriver.create({
       instanceId: "codex-bedrock-labels",
@@ -133,7 +141,7 @@ describe("CodexDriver turns (fake app-server)", () => {
   let scratch: string;
 
   const create = async (
-    opts: { mode?: string; fullAuto?: boolean; environment?: Record<string, string>; managed?: boolean } = {},
+    opts: { mode?: string; fullAuto?: boolean; environment?: Record<string, string>; managed?: boolean; models?: string[]; inheritBedrockToken?: boolean } = {},
   ) => {
     if (opts.mode) process.env.FAKE_CODEX_MODE = opts.mode;
     instance = await CodexDriver.create({
@@ -147,6 +155,8 @@ describe("CodexDriver turns (fake app-server)", () => {
       config: {
         cli: FAKE_CLI,
         fullAuto: opts.fullAuto ?? false,
+        ...(opts.models ? { models: opts.models } : {}),
+        ...(opts.inheritBedrockToken ? { inheritBedrockToken: true } : {}),
         ...(opts.managed ? { managed: { url: "http://127.0.0.1:1/v1", models: ["company-codex-model"] } } : {}),
       },
     });
@@ -674,6 +684,21 @@ describe("CodexDriver turns (fake app-server)", () => {
       await recorder.until(event => event.type === "turn.completed");
       const seen = JSON.parse(readFileSync(dump, "utf8"));
       for (const name of names) expect(seen.env[name]).toBe(granted ? environment[name] : undefined);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("inherits only the Bedrock bearer token for an opted-in Bedrock instance", async () => {
+    vi.stubEnv("AWS_BEARER_TOKEN_BEDROCK", "ambient-fixture-token");
+    vi.stubEnv("OMB_BEDROCK_API_KEY", "other-ambient-token");
+    try {
+      await create({ models: ["bedrock-us-east-1::us.openai.gpt-6-sol"], inheritBedrockToken: true });
+      const dump = join(scratch, "inherited-bedrock-environment.json");
+      process.env.FAKE_CODEX_DUMP = dump;
+      await instance.adapter.sendTurn({ threadId: "t-inherited-bedrock", model: "bedrock-us-east-1::us.openai.gpt-6-sol", text: "hi" });
+      await recorder.until(event => event.type === "turn.completed");
+      const seen = JSON.parse(readFileSync(dump, "utf8"));
+      expect(seen.env.AWS_BEARER_TOKEN_BEDROCK).toBe("ambient-fixture-token");
+      expect(seen.env.OMB_BEDROCK_API_KEY).toBeUndefined();
     } finally { vi.unstubAllEnvs(); }
   });
 
@@ -1575,6 +1600,7 @@ describe("CodexDriver turns (fake app-server)", () => {
       model: "bedrock-us-west-2::us.openai.gpt-6-astra" });
     const opened = await recorder.until(event => event.type === "request.opened");
     expect(recorder.events.some(event => event.type === "turn.completed")).toBe(false);
+    expect(opened).toMatchObject({ nativeReview: "inactive" });
     await instance.adapter.respondToRequest("t-per-turn-auto", opened.requestId!, { behavior: "allow" });
     await recorder.until(event => event.type === "turn.completed");
     const report = JSON.parse(readFileSync(dump, "utf8"));

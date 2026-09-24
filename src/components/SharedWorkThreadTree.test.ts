@@ -14,7 +14,7 @@ vi.mock("@/state/store", async importOriginal => {
 vi.mock("./DesktopCapabilities", () => ({ useDesktopCapabilities: () => ({}) }));
 
 import { SharedWorkThreadTree } from "./SharedWorkThreadTree";
-import { BotThreadList, GroupListItem, GroupThreadList } from "./Sidebar";
+import { BotThreadList, GroupListItem, GroupThreadList, SidebarDirectResults, SidebarNavigator } from "./Sidebar";
 import { SidebarBotActivity } from "./SidebarBotActivity";
 
 const link = (partial: Partial<LinkedItem> & Pick<LinkedItem, "id" | "kind" | "title">): LinkedItem => ({
@@ -46,15 +46,20 @@ const group: Group = { id: "product", name: "Product discovery", threadId: item.
 beforeEach(() => { fixture.state = { activeView: "chat", selectedId: chief.id, bots: [chief, analyst, historical], groups: [group], pendingQueued: {} }; });
 
 describe("outcome-centered sidebar", () => {
-  it("renders a compact task row in a distinct topic folder without expanding an active task", () => {
+  it("keeps topic rows shallow while the navigator lists only tasks", () => {
     const html = renderToStaticMarkup(createElement(GroupListItem, { group, density: "comfortable", onMenu: vi.fn() }));
-    for (const text of ['data-work-topic="product"', "Work topic", 'data-work-item-tree="onboarding"', 'data-sidebar-task-row="onboarding"', "Customer onboarding findings", "PAY-9", "acme/payments!482", "0/1 criteria"])
+    for (const text of ['data-work-topic="product"', "Work topic", "Browse Product discovery tasks"])
       expect(html).toContain(text);
-    expect(html).not.toContain("!acme/payments!482");
-    expect(html).toContain("All");
-    expect(html).toContain("Needs you");
-    expect(html).toContain("In review");
-    expect(html).toContain("Done");
+    expect(html).not.toContain('data-sidebar-task-row="onboarding"');
+    expect(html).not.toContain("Customer onboarding findings");
+    const navigator = renderToStaticMarkup(createElement(SidebarNavigator, {
+      target: { kind: "group", id: group.id }, density: "comfortable", docked: true, onClose: vi.fn(), onNavigate: vi.fn(),
+    }));
+    for (const text of ['data-sidebar-task-row="onboarding"', "Customer onboarding findings", "Filter Product discovery tasks", "All", "Needs you", "In review", "Done"])
+      expect(navigator).toContain(text);
+    expect(navigator).toContain('role="dialog" aria-modal="false"');
+    expect(navigator).not.toContain("acme/payments!482");
+    expect(navigator).not.toContain('data-work-item-tree=');
     expect(html).not.toContain("Shared chat");
     expect(html).not.toContain("3 chats");
     expect(html).not.toContain('data-sidebar-thread-row="hub-onboarding"');
@@ -63,17 +68,19 @@ describe("outcome-centered sidebar", () => {
     expect(html).not.toContain("reading interview notes");
   });
 
-  it("keeps selection and its topic expanded when a specialist rather than the hub is selected", () => {
+  it("leaves specialist links in the main pane when the topic navigator is opened", () => {
     fixture.state.selectedId = analyst.id;
     fixture.state.bots = [chief, { ...analyst, threadId: "analysis-thread" }];
     const completed = { ...item, status: "completed" as const };
     fixture.state.groups = [{ ...group, tasks: [{ ...group.tasks![0], workItem: completed }] }];
     const html = renderToStaticMarkup(createElement(GroupListItem, { group: fixture.state.groups[0], density: "compact", onMenu: vi.fn() }));
-    expect(html).toContain('data-sidebar-thread-row="analysis-thread" aria-current="page"');
-    expect(html).not.toContain('data-sidebar-thread-row="hub-onboarding" aria-current="page"');
-    expect(html).toContain('aria-label="Collapse Customer onboarding findings task"');
-    expect(html).toContain("Shared chat");
-    expect(html).toContain("Research Analyst");
+    const navigator = renderToStaticMarkup(createElement(SidebarNavigator, {
+      target: { kind: "group", id: group.id }, density: "compact", docked: false, onClose: vi.fn(), onNavigate: vi.fn(),
+    }));
+    expect(html).not.toContain('data-sidebar-thread-row="analysis-thread"');
+    expect(navigator).toContain('data-sidebar-task-row="onboarding"');
+    expect(navigator).not.toContain("Research Analyst");
+    expect(navigator).not.toContain('data-sidebar-thread-row="analysis-thread"');
   });
 
   it("shows the selected task's live step on the compact row", () => {
@@ -118,6 +125,19 @@ describe("outcome-centered sidebar", () => {
     expect(compactTaskRowModel(item, [chief, analyst], true).liveStep).toBe("reading interview notes");
   });
 
+  it("lands on direct, type-labeled work, conversation, and folder matches", () => {
+    const onLanded = vi.fn();
+    const onBrowse = vi.fn();
+    const renderResults = (query: string) => renderToStaticMarkup(createElement(SidebarDirectResults, { query, onLanded, onBrowse }));
+    const workResults = renderResults("PAY-9");
+    expect(workResults).toContain("Work topic · Product discovery");
+    expect(workResults).toContain("Customer onboarding findings");
+    expect(workResults).not.toContain("Research Analyst");
+    fixture.state.bots = [{ ...chief, projects: [{ id: "folder", name: "Quiet desk" }] }, analyst];
+    expect(renderResults("Quiet desk")).toContain("Folder · Manager");
+    expect(renderResults("Ordinary chat")).toContain("Threads · Manager");
+  });
+
   it("filters topic tasks and keeps ten-plus rows across three topics scannable", () => {
     const topics = ["payments", "onboarding", "pricing"] as const;
     const statuses = ["active", "needs-input", "completed", "active"] as const;
@@ -138,15 +158,16 @@ describe("outcome-centered sidebar", () => {
     fixture.state.groups = groups;
     fixture.state.selectedId = chief.id;
     const html = groups.map(candidate => renderToStaticMarkup(createElement(GroupListItem, { group: candidate, density: "comfortable", onMenu: vi.fn() }))).join("\n");
-    expect(html.match(/data-work-item-tree="/g)?.length).toBe(12);
+    expect(html).not.toContain('data-sidebar-task-row=');
     expect(html.match(/data-work-topic="/g)?.length).toBe(3);
     expect(html).not.toContain("data-sidebar-thread-row=");
     expect(html).not.toContain("Shared chat");
-    expect(html).toContain("PAY-01");
-    expect(html).toContain("payments task 1");
-    expect(html).toContain("pricing task 4");
-    expect(html).toContain("acme/payments!00");
-    expect(html).not.toContain("!acme/payments!00");
+    const navigators = groups.map(candidate => renderToStaticMarkup(createElement(SidebarNavigator, {
+      target: { kind: "group", id: candidate.id }, density: "comfortable", docked: true, onClose: vi.fn(), onNavigate: vi.fn(),
+    }))).join("\n");
+    expect(navigators.match(/data-sidebar-task-row=/g)).toHaveLength(12);
+    expect(navigators).toContain("payments task 1");
+    expect(navigators).toContain("pricing task 4");
     const review = renderToStaticMarkup(createElement(GroupThreadList, { group: groups[0]!, selected: false, filter: "in_review" }));
     expect(review).toContain("payments task 1");
     expect(review).not.toContain("payments task 2");

@@ -192,6 +192,14 @@ export class RoomHandoffs {
     this.trackExecutionPauses();
   }
 
+  assertNoAncestor(source: RoomAddress, parentId: string | undefined, target: Pick<RoomAddress, "groupId" | "botId">) {
+    const parent = parentId ? this.nodes.get(parentId) : undefined;
+    const path = parent ? this.path(parent) : [source];
+    if (path.some(node => node.botId === target.botId && (!node.groupId || !target.groupId || node.groupId === target.groupId))) {
+      throw new Error("Cannot assign work back to an ancestor; results return automatically");
+    }
+  }
+
   enqueue(source: RoomAddress, generation: string, parentId: string | undefined,
     target: RoomAddress, key: string, text: string, approvalGranted = false,
     rework = false, sourceText = "", requestBatchKey?: string, stateKey?: string,
@@ -206,9 +214,7 @@ export class RoomHandoffs {
     parent ??= { ...source, id: generation, rootId: generation, key: "root", text: sourceText.slice(0, 12_000), createdAt: this.now(), status: "source", result: "", reported: true, executions: 0, approvalGranted: false, kind: "work" };
     const kind = target.groupId && target.groupId === source.groupId ? "assignment" : "work";
     const path = this.path(parent);
-    if (path.some(n => n.botId === target.botId && (!n.groupId || !target.groupId || n.groupId === target.groupId))) {
-      throw new Error("Cannot assign work back to an ancestor; results return automatically");
-    }
+    this.assertNoAncestor(source, parentId, target);
     const existing = this.children(parent.id).find(n => n.key === key);
     if (existing) {
       if (existing.groupId !== target.groupId || existing.botId !== target.botId || existing.text !== text ||

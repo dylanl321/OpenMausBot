@@ -247,6 +247,45 @@ it("keeps nested specialist work in the same task using the immediate lead's pee
   expect(fixture.evidence().filter((entry: any) => entry.botId === reviewer.id)).toHaveLength(1);
 }), 55_000);
 
+it("refuses an ancestor handoff and its retry without claiming required work or opening a thread", () => fixture(async fixture => {
+  const { chief, engineer, plan } = fixture;
+  const chiefThreads = (await fixture.api("/api/bots")).bots.find((bot: any) => bot.id === chief.id).tasks.map((task: any) => task.threadId);
+  plan[chief.id] = { steps: [{ arguments: { intent: "work", bot_ids: [engineer.id], request_key: "lead", message: "Check the deliverable" } }],
+    reply: "Assigned", resumeSteps: [complete], resumeReply: "Checked the worker result" };
+  plan[engineer.id] = { steps: [
+    { arguments: { intent: "work", bot_ids: [chief.id], request_key: "return", message: "Return work to the coordinator" }, expectError: true },
+    { arguments: { intent: "work", bot_ids: [chief.id], request_key: "return", message: "Return work to the coordinator" }, expectError: true },
+  ], reply: "Checked the deliverable; the ancestor handoff was rejected twice" };
+  fixture.save();
+  await fixture.api("/api/work-items/ensure", { coordinatorBotId: chief.id, topic: "Delivery", identity: "generic:ancestor-retry", title: "Ancestor retry",
+    objective: "Check a rejected ancestor handoff", acceptanceCriteria: brief.acceptance_criteria });
+  await expect.poll(async () => (await fixture.items())[0]?.status, { timeout: 35_000 }).toBe("completed");
+  const [item] = await fixture.items();
+  expect(item.assignments).toMatchObject([{ botId: engineer.id, status: "completed" }]);
+  expect((await fixture.api("/api/bots")).bots.find((bot: any) => bot.id === chief.id).tasks.map((task: any) => task.threadId)).toEqual(chiefThreads);
+  const rejections = fixture.evidence().filter((entry: any) => entry.botId === engineer.id).flatMap((entry: any) => entry.evidence ?? [])
+    .filter((entry: any) => entry.step?.arguments?.request_key === "return");
+  expect(rejections).toHaveLength(2);
+  expect(rejections.every((entry: any) => JSON.stringify(entry.response).includes("Cannot assign work back to an ancestor"))).toBe(true);
+}), 55_000);
+
+it("keeps dispatched worker failures required instead of rolling them back", () => fixture(async fixture => {
+  const { chief, engineer, plan } = fixture;
+  plan[chief.id] = { steps: [{ arguments: { intent: "work", bot_ids: [engineer.id], request_key: "failure", message: "Check the deliverable" } }],
+    reply: "Assigned", resumeSteps: [
+      { ...complete, expectError: true },
+      { tool: "update_work_item", arguments: { work_item_id: "$current", expected_revision: "$current", status: "blocked", detail: "Dispatched worker failed" } },
+    ], resumeReply: "Blocked on the failed worker" };
+  plan[engineer.id] = { fail: true };
+  fixture.save();
+  await fixture.api("/api/work-items/ensure", { coordinatorBotId: chief.id, topic: "Delivery", identity: "generic:worker-failure", title: "Worker failure",
+    objective: "Check failure accounting", acceptanceCriteria: brief.acceptance_criteria });
+  await expect.poll(async () => (await fixture.items())[0]?.status, { timeout: 35_000 }).toBe("blocked");
+  const [item] = await fixture.items();
+  expect(item.assignments).toMatchObject([{ botId: engineer.id, status: "failed", result: "error" }]);
+  expect(item.assignments[0].requestId).toBeTruthy();
+}), 55_000);
+
 it("captures a worker git commit and completes from that observed link", () => fixture(async fixture => {
   const { chief, engineer, plan } = fixture;
   plan[chief.id] = { steps: [{ arguments: { intent: "work", bot_ids: [engineer.id], request_key: "commit", message: "Commit the refund fix" } }],

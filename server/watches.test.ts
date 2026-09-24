@@ -36,6 +36,27 @@ function gitHeads(map: Record<string, string>): string {
 }
 
 describe("watch cursors and dedupe", () => {
+  it("wakes matching goals once after the match is recorded, even if notification fails", async () => {
+    const dir = tempDir();
+    let heads = { "refs/heads/main": "a".repeat(40) };
+    const matched: string[][] = [];
+    const watches = new WatchManager({
+      file: join(dir, "watches.json"), now: () => 1_000,
+      execGit: async () => gitHeads(heads),
+      record: () => undefined,
+      matched: (_watch, changes) => { matched.push(changes.map(change => change.id)); throw new Error("wake unavailable"); },
+    });
+    const watch = watches.create({ name: "Goal wake", source: { type: "git", remote: "/tmp/repo.git" },
+      check: { type: "interval", everyMinutes: 5, anchorAt: 0 }, action: { type: "record" }, startFrom: "now" });
+    await watches.check(watch.id);
+    expect(matched).toEqual([]);
+    heads = { "refs/heads/main": "b".repeat(40) };
+    await watches.check(watch.id);
+    await watches.check(watch.id);
+    expect(matched).toEqual([[`refs/heads/main@${"b".repeat(40)}`]]);
+    expect(watches.get(watch.id)?.stats).toMatchObject({ matches: 1, actions: 1 });
+  });
+
   it("baselines startFrom now, then acts once per new head and ignores idle polls", async () => {
     const dir = tempDir();
     let heads = { "refs/heads/main": "a".repeat(40) };

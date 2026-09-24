@@ -9,6 +9,7 @@ import { removeTempDir } from "../../testing/cleanup.ts";
 import { WorkEvents } from "../../work-events.ts";
 import { WorkItems } from "../../work-items.ts";
 import { WorkCapture } from "../capture.ts";
+import { ignoreOwnBotWrite } from "../../../shared/watches.ts";
 import { connectorContract } from "../contract-suite.ts";
 import type { CaptureCall, ConnectionContext, StoredConnection } from "../types.ts";
 import { jiraConnector, jiraWebhookSignature, verifyJiraWebhook } from "./index.ts";
@@ -260,6 +261,100 @@ describe("jira connector", () => {
       type: "item.state_changed",
       actor: { isBot: true },
     });
+  });
+
+  it("uses minute-resolution inclusive JQL while filtering by the exact cursor", async () => {
+    let queriedJql = "";
+    const connection = ctx({
+      settings: { site: "https://jira.example.test", edition: "datacenter" },
+      fetch: (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith("/myself")) return Promise.resolve(jsonResponse({ ...myself, timeZone: "UTC" }));
+        if (url.pathname.endsWith("/rest/api/2/search")) {
+          queriedJql = url.searchParams.get("jql") ?? "";
+          if (!queriedJql.includes('updated >= "2026-09-23 14:00"')) {
+            return Promise.resolve(jsonResponse({ errorMessages: ["Invalid Jira date"] }, 400));
+          }
+          const sameMinute = structuredClone(searchChanges.issues[0]);
+          sameMinute.fields.updated = "2026-09-23T14:00:45.000+0000";
+          return Promise.resolve(jsonResponse({ issues: [sameMinute, ...searchChanges.issues.slice(1)] }));
+        }
+        return fixtureFetch(input, init);
+      },
+    });
+    const cursor = "2026-09-23T14:00:31.000Z";
+    const result = await jiraConnector.changes!(connection, { project: "PAY" }, cursor);
+    expect(queriedJql).toContain('updated >= "2026-09-23 14:00"');
+    expect(queriedJql).not.toContain("14:00:31");
+    expect(result.changes.some(change => change.type === "item.updated" && change.item.externalId === "PAY-140")).toBe(true);
+    expect(result.changes.every(change => change.at > Date.parse(cursor))).toBe(true);
+  });
+
+  it("uses the Jira account timezone to catch updates missed by a UTC JQL date", async () => {
+    let queriedJql = "";
+    const updatedIssue = structuredClone(searchChanges.issues[0]);
+    updatedIssue.fields.updated = "2026-09-24T19:40:55.000+0000";
+    updatedIssue.fields.comment = { comments: [{ id: "2031542", created: updatedIssue.fields.updated, body: "PO disposition" }] };
+    const connection = ctx({
+      settings: { site: "https://jira.example.test", edition: "datacenter" },
+      fetch: (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith("/myself")) return Promise.resolve(jsonResponse({ ...myself, timeZone: "America/New_York" }));
+        if (url.pathname.endsWith("/rest/api/2/search")) {
+          queriedJql = url.searchParams.get("jql") ?? "";
+          return Promise.resolve(jsonResponse({ issues: queriedJql.includes('updated >= "2026-09-24 15:35"') ? [updatedIssue] : [] }));
+        }
+        return fixtureFetch(input, init);
+      },
+    });
+    const result = await jiraConnector.changes!(connection, { project: "PAY" }, "2026-09-24T19:35:00.000Z");
+    expect(queriedJql).toContain('updated >= "2026-09-24 15:35"');
+    expect(result.changes).toMatchObject([{ id: "PAY-140@comment:2031542", type: "comment.added" }]);
+  });
+
+  it("attributes a Jira comment to its author rather than the issue assignee", async () => {
+    const updatedIssue = structuredClone(searchChanges.issues[0]);
+    updatedIssue.fields.updated = "2026-09-24T19:40:55.000+0000";
+    updatedIssue.fields.assignee = { ...myself };
+    updatedIssue.fields.comment = { comments: [
+      { id: "201", created: updatedIssue.fields.updated, author: { displayName: "Decision owner", accountId: "person:other" } },
+      { id: "202", created: updatedIssue.fields.updated, author: { ...myself } },
+    ] };
+    const connection = ctx({
+      settings: { site: "https://jira.example.test", edition: "datacenter" },
+      fetch: (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith("/myself")) return Promise.resolve(jsonResponse({ ...myself, timeZone: "America/New_York" }));
+        if (url.pathname.endsWith("/rest/api/2/search")) return Promise.resolve(jsonResponse({ issues: [updatedIssue] }));
+        return fixtureFetch(input, init);
+      },
+    });
+    const result = await jiraConnector.changes!(connection, { project: "PAY" }, "2026-09-24T19:35:00.000Z");
+    const people = result.changes.filter(change => !ignoreOwnBotWrite(change));
+    expect(people).toMatchObject([{ id: "PAY-140@comment:201", actor: { name: "Decision owner", isBot: false } }]);
+    expect(result.changes.find(change => change.id === "PAY-140@comment:202")?.actor?.isBot).toBe(true);
+  });
+
+  it.each([
+    { timeZone: "America/New_York", cursor: "2026-01-24T19:35:00.000Z", expected: "2026-01-24 14:35" },
+    { timeZone: undefined, cursor: "2026-09-24T19:35:00.000Z", expected: "2026-09-24 05:35" },
+    { timeZone: "invalid/timezone", cursor: "2026-09-24T19:35:00.000Z", expected: "2026-09-24 05:35" },
+  ])("bounds Jira JQL dates in $timeZone at $cursor", async ({ timeZone, cursor, expected }) => {
+    let queriedJql = "";
+    const connection = ctx({
+      settings: { site: "https://jira.example.test", edition: "datacenter" },
+      fetch: (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith("/myself")) return Promise.resolve(jsonResponse({ ...myself, timeZone }));
+        if (url.pathname.endsWith("/rest/api/2/search")) {
+          queriedJql = url.searchParams.get("jql") ?? "";
+          return Promise.resolve(jsonResponse({ issues: [] }));
+        }
+        return fixtureFetch(input, init);
+      },
+    });
+    await jiraConnector.changes!(connection, { project: "PAY" }, cursor);
+    expect(queriedJql).toContain(`updated >= "${expected}"`);
   });
 
   it("keeps tokens and basic credentials out of connector logs", async () => {

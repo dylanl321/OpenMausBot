@@ -148,6 +148,11 @@ escalation requests to the user; they do not approve every permission request.
 Standard Bedrock token variables are passed to Codex only when explicitly set
 in the instance's `environment` map. The server's ambient token belongs to its
 Bedrock connection and is not automatically shared with another engine.
+To grant a Codex instance the server's existing `AWS_BEARER_TOKEN_BEDROCK` without
+copying the secret into `config.json`, set `"inheritBedrockToken": true` in that
+instance's `config` alongside a `models` list containing only `bedrock-*::` routes.
+Other Codex instances keep the token stripped, and an explicit instance environment
+value takes precedence over the inherited one.
 
 ## Notes
 

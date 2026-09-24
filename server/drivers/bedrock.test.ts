@@ -383,6 +383,28 @@ describe("regional catalogs and access controls", () => {
 });
 
 describe("native agent turns", () => {
+  it("executes tools without a permission card in Full access", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "bedrock-full-")); cleanups.push(() => removeTempDir(directory));
+    const helper = join(directory, "tool.mjs"); const artifact = join(directory, "receipt.txt"); writeFileSync(helper, BEDROCK_MCP_FIXTURE);
+    const f = await fixture({}, { handle(request, response) {
+      if (!request.path.endsWith("/converse-stream")) return false;
+      if (request.body.messages.some((message: any) => message.content.some((block: any) => block.toolResult))) {
+        converseAnswer(response, "Tool completed."); return true;
+      }
+      converseStream(response, [
+        ["contentBlockStart", { contentBlockIndex: 0, start: { toolUse: { toolUseId: "full-1", name: request.body.toolConfig.tools[0].toolSpec.name } } }],
+        ["contentBlockDelta", { contentBlockIndex: 0, delta: { toolUse: { input: '{"value":"verified"}' } } }],
+        ["contentBlockStop", { contentBlockIndex: 0 }], ["messageStop", { stopReason: "tool_use" }],
+      ]); return true;
+    } });
+    await f.instance.adapter.sendTurn({ threadId: "bedrock-full", text: "Write receipt", model: "amazon.nova-lite-v1:0", approvalMode: "full", integrations: {
+      localComputer: { command: process.execPath, args: [helper], env: { FIXTURE_ARTIFACT: artifact } },
+    } });
+    expect(await f.recorder.until((event) => event.type === "turn.completed")).toMatchObject({ ok: true });
+    expect(f.recorder.events.some((event) => event.type === "request.opened")).toBe(false);
+    expect(readFileSync(artifact, "utf8")).toBe("verified");
+  });
+
   it.each(["allow", "deny", "cancel"] as const)("preserves signed reasoning and %s approval before executing a native tool call", async (behavior) => {
     const directory = mkdtempSync(join(tmpdir(), "bedrock-tools-")); cleanups.push(() => removeTempDir(directory));
     const helper = join(directory, "tool.mjs"); const artifact = join(directory, "receipt.txt"); writeFileSync(helper, BEDROCK_MCP_FIXTURE);

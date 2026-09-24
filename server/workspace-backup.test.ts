@@ -7,6 +7,7 @@ import { gzipSync } from "node:zlib";
 import { Header } from "tar";
 import { afterEach, describe, expect, it } from "vitest";
 import { WorkItems } from "./work-items.ts";
+import { OngoingGoals } from "./ongoing-goals.ts";
 import {
   applyPendingWorkspaceRestore, commitPendingWorkspaceRestore, createWorkspaceBackup,
   readLastWorkspaceRestore, readPendingWorkspaceRestoreMetadata, readStagedWorkspaceBackup,
@@ -87,6 +88,10 @@ describe("encrypted full workspace backups", () => {
     const { assignment } = workItems.claim(sharedTask, { botId: "bot", threadId: "thread", message: "Check retained state" });
     assignment.status = "running";
     workItems.changed(sharedTask);
+    const goals = new OngoingGoals(join(source, "ongoing-goals.json"));
+    const goal = goals.create({ ownerBotId: "bot", sourceThreadId: "thread", kind: "deliverable",
+      objective: "Restore safely", acceptanceCriteria: ["Verified"], scope: "generic:" }, "thread");
+    goals.link(goal, sharedTask.id, true);
     // Production closes its sole live message handle after draining writes,
     // while the maintenance gate is held. No server mutation can reopen it.
     db.close();
@@ -135,6 +140,9 @@ describe("encrypted full workspace backups", () => {
       expect(restoredWork.records.get(sharedTask.id)).toMatchObject({ id: sharedTask.id, groupId: "room", threadId: "hub", status: "blocked",
         assignments: [{ id: assignment.id, threadId: "thread", status: "failed" }] });
       expect(restoredWork.ensure(workInput).started).toBe(false);
+      const restoredGoal = new OngoingGoals(join(target, "ongoing-goals.json")).records.get(goal.id);
+      expect(restoredGoal).toMatchObject({ status: "paused", workItemIds: [sharedTask.id], ownedWorkItemIds: [sharedTask.id] });
+      expect(restoredGoal?.detail).toContain("Restored from a workspace backup");
       expect(readJson(join(target, "config.json"))).toEqual({ ...connections, language: "ja" });
       expect(readFileSync(join(target, "task-workspaces", "bot", "thread", "binary.bin"))).toEqual(Buffer.alloc(2 * 1024 * 1024, 0xa5));
       expect(readJson(join(target, "sessions.json"))).toEqual({ identity: "target-session" });

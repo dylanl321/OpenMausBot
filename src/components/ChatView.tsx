@@ -1240,7 +1240,9 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
             </span>
           )}
           {bot.busy && <WorkingDots className="text-ink-secondary" />}
-          {!bot.busy && bot.waitingForTeammates && <span className="truncate text-[12px] text-ink-secondary" role="status">Teammates working</span>}
+          {!bot.busy && bot.activity !== "waiting-on-you" && bot.waitingForTeammates && <span className="flex min-w-0 items-center gap-1.5 truncate text-[12px] text-accent" role="status">
+            <WorkingDots size={3.5} /> {t("chat.waitingTeammates")}
+          </span>}
         </div>
         <div
           className="flex shrink-0 items-center gap-2"
@@ -1463,6 +1465,12 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
             answering={popping !== null}
             since={busySince}
           />
+          {!bot.busy && bot.activity !== "waiting-on-you" && bot.waitingForTeammates && (
+            <div data-waiting-teammates role="status" className="flex max-w-[440px] items-start gap-2 rounded-lg border border-accent/20 bg-accent/5 px-3 py-2 text-[12px] text-ink-secondary">
+              <WorkingDots size={3.5} className="mt-1 shrink-0 text-accent" />
+              <span><span className="font-medium text-ink">{t("chat.waitingTeammates")}</span> · {t("chat.waitingTeammatesDetail")}</span>
+            </div>
+          )}
         </div>
       </div>
 

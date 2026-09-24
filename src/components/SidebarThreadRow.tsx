@@ -6,9 +6,10 @@ import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import { nextRename } from "@/lib/rename";
 import { threadRefUrl } from "@/lib/thread-refs";
+import { WorkingDots } from "./WorkingIndicator";
 import { ConfirmDialog } from "./ConfirmDialog";
 
-type ThreadRowTask = Pick<Task, "threadId" | "title" | "projectId" | "busy" | "activity" | "unread" | "openedBy" | "closedBy" | "archivedAt"> & {
+type ThreadRowTask = Pick<Task, "threadId" | "title" | "projectId" | "busy" | "activity" | "unread" | "openedBy" | "closedBy" | "archivedAt" | "waitingForTeammates"> & {
   queued?: boolean;
   pinned?: boolean;
   createdAt?: number;
@@ -77,7 +78,7 @@ const isWorking = (task: Pick<Task, "activity" | "busy">): boolean => task.activ
 /** Whether a row must stay on screen regardless of age or closed state:
  * the person is looking at it, it needs them, or it has something new. */
 const demandsAttention = (task: ThreadRowTask, activeId: string) =>
-  task.threadId === activeId || task.activity === "waiting-on-you" || isWorking(task) || Boolean(task.queued) || Boolean(task.unread);
+  task.threadId === activeId || task.activity === "waiting-on-you" || isWorking(task) || Boolean(task.waitingForTeammates) || Boolean(task.queued) || Boolean(task.unread);
 
 /** The default list is the six most recently updated OPEN threads, plus
  * anything pinned or demanding attention. Pins and attention rows do not
@@ -86,7 +87,7 @@ const demandsAttention = (task: ThreadRowTask, activeId: string) =>
  * behind — but it is never gone: "show all" and search still list it, a
  * closed thread that becomes busy or unread is back at once, and a pin
  * keeps a closed or archived thread in the list. */
-export function visibleSidebarThreads<T extends ThreadRowTask>(tasks: T[], activeId: string, query = "", folders: BotProject[] = [], showAll = false): T[] {
+export function visibleSidebarThreads<T extends ThreadRowTask>(tasks: T[], activeId: string, query = "", folders: BotProject[] = [], showAll = false, inactiveBefore = 0, selectedThreadId = activeId): T[] {
   const needle = query.trim().toLowerCase();
   if (needle) {
     return tasks.filter((task) => task.title.toLowerCase().includes(needle) || folders.some((folder) => folder.id === task.projectId && folder.name.toLowerCase().includes(needle)));
@@ -95,6 +96,11 @@ export function visibleSidebarThreads<T extends ThreadRowTask>(tasks: T[], activ
   let open = 0;
   return orderedThreadList(tasks).filter((task) => {
     if (task.pinned === true) return true;
+    if (inactiveBefore > 0 && !demandsAttention(task, selectedThreadId)) {
+      const updated = typeof task.updatedAt === "number" && Number.isFinite(task.updatedAt) && task.updatedAt > 0 ? task.updatedAt : undefined;
+      const created = typeof task.createdAt === "number" && Number.isFinite(task.createdAt) && task.createdAt > 0 ? task.createdAt : undefined;
+      if ((updated ?? created ?? Number.POSITIVE_INFINITY) < inactiveBefore) return false;
+    }
     return task.closedBy || isArchived(task)
       ? demandsAttention(task, activeId)
       : open++ < 6 || demandsAttention(task, activeId);
@@ -109,9 +115,10 @@ const attentionRank = (task: ThreadRowTask, activeId: string): number => {
   if (task.activity === "waiting-on-you") return 0;
   if (task.busy || task.activity === "working") return 1;
   if (task.queued) return 2;
-  if (task.unread) return 3;
-  if (task.threadId === activeId) return 4;
-  return 5;
+  if (task.waitingForTeammates) return 3;
+  if (task.unread) return 4;
+  if (task.threadId === activeId) return 5;
+  return 6;
 };
 
 /** Order, never filter: whatever the caller passes stays visible, only the
@@ -146,7 +153,7 @@ export function SidebarThreadRow({ task, ownerId, current, compact, folders, onS
   const finishing = useRef(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const actionRef = useRef<HTMLButtonElement>(null);
-  const status = task.activity === "waiting-on-you" ? t("task.waiting") : isWorking(task) ? t("chat.activity.working") : task.queued ? t("task.queued") : null;
+  const status = task.activity === "waiting-on-you" ? t("task.waiting") : isWorking(task) ? t("chat.activity.working") : task.waitingForTeammates ? t("chat.waitingTeammates") : task.queued ? t("task.queued") : null;
   const byline = threadByline(task);
   const updatedAt = threadRecency(task);
   const updatedLabel = formatUpdatedAt(updatedAt);
@@ -194,7 +201,7 @@ export function SidebarThreadRow({ task, ownerId, current, compact, folders, onS
         </span>
         {updatedLabel && <time dateTime={new Date(updatedAt).toISOString()} className="shrink-0 tabular-nums text-[10px] text-ink-secondary">{updatedLabel}</time>}
         {task.pinned === true && <Pin size={11} className="shrink-0 text-ink-secondary" aria-label={t("sidebar.bot.pin")} />}
-        {task.activity === "waiting-on-you" ? <span className="shrink-0 text-[10px] font-medium text-warning">{t("task.waiting")}</span> : isWorking(task) ? <Loader2 size={11} className="shrink-0 animate-spin text-success" aria-label={t("chat.activity.working")} /> : task.queued ? <span className="shrink-0 text-[10px] text-ink-secondary">{t("task.queued")}</span> : null}
+        {task.activity === "waiting-on-you" ? <span className="shrink-0 text-[10px] font-medium text-warning">{t("task.waiting")}</span> : isWorking(task) ? <Loader2 size={11} className="shrink-0 animate-spin text-success" aria-label={t("chat.activity.working")} /> : task.waitingForTeammates ? <span className="flex shrink-0 items-center gap-1 text-[10px] text-accent"><WorkingDots size={3} />{t("chat.waitingTeammates")}</span> : task.queued ? <span className="shrink-0 text-[10px] text-ink-secondary">{t("task.queued")}</span> : null}
         {task.unread && <span className="size-1.5 shrink-0 rounded-full bg-accent" aria-label={t("task.unread")} />}
       </button>}
       <button ref={actionRef} type="button" aria-label={t("task.actions", { title: task.title })} aria-expanded={Boolean(menu)}

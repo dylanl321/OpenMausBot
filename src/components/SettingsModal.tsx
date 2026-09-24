@@ -43,6 +43,7 @@ import { WorkspaceBackupSettings } from "./WorkspaceBackupSettings";
 import { CompanyBackupSettings } from "./CompanyBackupSettings";
 import { cn } from "@/lib/cn";
 import { setShowThreads, useShowThreads } from "@/lib/thread-preferences";
+import { setThreadInactivityDays, useThreadInactivityDays, type ThreadInactivityDays } from "@/lib/thread-inactivity-preference";
 
 // `labelKey`, not a label: t() reads the active pack when it is called, so a
 // label resolved here at module scope would freeze the language the app booted
@@ -360,6 +361,23 @@ function ShowThreadsRow() {
         aria-label={t("settings.threadDisplay.show")}
         onClick={() => setShowThreads(!enabled)}
       />
+    </SettingRow>
+  );
+}
+
+function ThreadInactivityRow() {
+  const days = useThreadInactivityDays();
+  return (
+    <SettingRow title={t("settings.threadInactivity.title")} subtitle={t("settings.threadInactivity.subtitle")}>
+      <select value={days} aria-label={t("settings.threadInactivity.aria")}
+        onChange={(event) => setThreadInactivityDays(Number(event.target.value) as ThreadInactivityDays)}
+        className="min-h-8 w-full max-w-[240px] rounded-lg border border-hairline/40 bg-inset px-2.5 py-1.5 text-[13px] text-ink focus:border-focus"
+      >
+        <option value={0}>{t("settings.threadInactivity.off")}</option>
+        <option value={14}>{t("settings.threadInactivity.days", { count: 14 })}</option>
+        <option value={30}>{t("settings.threadInactivity.days", { count: 30 })}</option>
+        <option value={90}>{t("settings.threadInactivity.days", { count: 90 })}</option>
+      </select>
     </SettingRow>
   );
 }
@@ -728,6 +746,7 @@ export function SettingsModal() {
                 </Card>
                 <div>
                   <ShowThreadsRow />
+                  <ThreadInactivityRow />
                   {!remoteActive && <ToolCallsRow />}
                 </div>
               </>

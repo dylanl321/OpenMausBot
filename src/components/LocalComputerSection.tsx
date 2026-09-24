@@ -44,6 +44,7 @@ interface Status {
   workspace_path: string;
   workspace_guest_path: string;
   viewer_url: string;
+  remote_viewer_url?: string | null;
   idle_timeout_ms: number;
   mode: "shared" | "per-bot";
   max_instances: number;
@@ -1296,7 +1297,7 @@ export function LocalComputerSection() {
           </button>
           {ready && !perBot && (
             <a
-              href={status?.viewer_url ?? c?.view}
+              href={window.ogb?.desktopViewer ? status?.viewer_url ?? c?.view : status?.remote_viewer_url ?? status?.viewer_url ?? c?.view}
               target="_blank"
               rel="noreferrer"
               className="flex items-center gap-1.5 rounded-lg border border-hairline/40 px-2.5 py-1 text-[12.5px] text-ink hover:bg-control"

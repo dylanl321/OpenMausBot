@@ -15,14 +15,36 @@ Access, OMB also applies its own configuration tools without another approval.
 | **Full access** | Enables the provider's permissive mode for commands, edits, and selected-computer actions, including potentially destructive or sensitive work. Residual native permission prompts are answered for you. OMB profile changes, routine actions, team setup, bot deletion, and enabled skill authoring apply without a second approval. Peer-review prompts are skipped within the bot's authorized scope. Delegation uses the receiving bot's setting, never the sender's — except from a Chief of Staff with Full access (below). Actual questions and missing credentials still need your input. |
 | **Custom (`config.toml`)** | Codex only. OpenMausBot reads and reapplies the effective approval and sandbox settings from your Codex configuration. |
 
-Full access is an elevated-risk standing approval. Full and Custom can only be
+Full access is an elevated-risk standing approval. Full and Custom can normally be
 enabled from a packaged local desktop app, where the choice crosses a private
 process channel rather than the bot-accessible HTTP API. They are hidden in
-development, standalone web, and remote pages. Full access does not bypass operating
+development, standalone web, and remote pages. A standalone server's owner can
+also use the offline host command below to explicitly grant or revoke Full
+access. Full access does not bypass operating
 system privacy controls, authentication, CAPTCHA or MFA, service permissions,
 or workspace/team ownership and computer-sharing grants. Full Access controls
 approval prompts; it does not sign in for you, enable a feature you disabled,
 or grant another bot access to a different workspace.
+
+### Standalone host opt-in
+
+Stop the standalone server first. From a shell owned by the server's operating
+system user, select one bot or the whole fleet (including existing conversations
+and future defaults):
+
+```sh
+node --experimental-strip-types scripts/host-approval.ts --data-dir /absolute/path/to/data --bot BOT_ID --mode full --confirm-full-access
+node --experimental-strip-types scripts/host-approval.ts --data-dir /absolute/path/to/data --all-bots --mode full --confirm-full-access
+```
+
+Restart the server after the command succeeds. To restore Ask for the same
+scope, stop it again and run the same command with `--mode ask`, omitting the
+confirmation flag. The command acquires the server's exclusive data-directory
+lease: it refuses a running server, pending grant, missing or unsupported
+provider, wrong file owner, or ambiguous bot name. It does not add an HTTP
+grant endpoint. Only people who already own the server's data directory can
+use it. Questions, missing credentials, and external service permissions
+remain outside Full access.
 
 The effective setting belongs to the source conversation. An existing Ask
 thread remains Ask even if the bot default is Full; a Full thread works without
@@ -70,6 +92,14 @@ in every level but Full.
 
 ### When the native reviewer never starts
 
+Codex via a custom model provider (including Bedrock) does not run Codex's
+automatic reviewer in Approve for me. Its permission requests go to the
+person instead; the conversation shows a notice when the first one arrives.
+Switch to an OpenAI-backed Codex model for automatic review, or use Full access
+in the packaged local desktop app if you intend to bypass permission prompts.
+Launching a separate Codex CLI with `--yolo` does not change the bot's
+conversation-level permission mode.
+
 Claude Code accepts `--permission-mode auto` for every model and, when auto
 mode is unavailable to the session, starts in Manual without an error. On
 Claude Code 2.1.266 that is the case for Claude Haiku 4.5 and Sonnet 4.5,
@@ -103,6 +133,7 @@ teammate can delegate work to this bot without downgrading its explicit Auto
 | Provider | Ask | Auto-accept edits | Auto | Full access |
 | --- | --- | --- | --- | --- |
 | Codex | `on-request` approvals, `workspace-write` sandbox, you review | not offered (Ask already writes in the workspace) | same sandbox, native `auto_review` reviewer | `never` approvals, `danger-full-access` sandbox |
+| Bedrock | Ask | not offered | Ask (no native reviewer) | Harness answers permission requests, not questions |
 | Claude | Native `default` | Native `acceptEdits` | Native `auto` | Native `bypassPermissions` |
 | Cursor | Native default | not offered | Native `--auto-review` | Native `--force` |
 | Antigravity | Native `default` | Native `auto_edit` | Legacy `auto` behaves as Ask; UI Auto selects Full access | Native `yolo` plus automatic approval of remaining tool-permission requests; shown as Auto |

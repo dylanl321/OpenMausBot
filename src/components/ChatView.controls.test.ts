@@ -46,6 +46,18 @@ const bot: Bot = {
 };
 
 describe("thread control placement", () => {
+  it("shows background teammate work in the header and transcript only while this thread is waiting", () => {
+    const waiting = { ...bot, busy: false, waitingForTeammates: true, tasks: bot.tasks!.map(task => ({ ...task, waitingForTeammates: true })) };
+    const markup = renderToStaticMarkup(createElement(ChatView, { bot: waiting }));
+    expect(markup).toContain('data-waiting-teammates="true"');
+    expect(markup).toContain("Waiting for teammates");
+    expect(markup).toContain("They’re working in the background");
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain('title="Stop this turn"');
+    expect(renderToStaticMarkup(createElement(ChatView, { bot: { ...waiting, tasks: bot.tasks } }))).not.toContain('data-waiting-teammates="true"');
+    expect(renderToStaticMarkup(createElement(ChatView, { bot: { ...waiting, busy: true, tasks: waiting.tasks!.map(task => ({ ...task, busy: true })) } }))).not.toContain('data-waiting-teammates="true"');
+    expect(renderToStaticMarkup(createElement(ChatView, { bot: { ...waiting, tasks: waiting.tasks!.map(task => ({ ...task, activity: "waiting-on-you" as const })) } }))).not.toContain('data-waiting-teammates="true"');
+  });
   it("keeps the composer inert until the deleted thread's replacement transcript arrives", () => {
     const markup = renderToStaticMarkup(createElement(ChatView, { bot: { ...bot, awaitingThreadSnapshot: true } }));
     expect(markup).toMatch(/<textarea[^>]*disabled=""[^>]*aria-busy="true"/);

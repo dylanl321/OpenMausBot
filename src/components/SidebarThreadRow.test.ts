@@ -142,6 +142,51 @@ describe("threads a bot closed", () => {
   });
 });
 
+describe("inactive thread visibility", () => {
+  const cutoff = 30 * 86_400_000;
+  const thread = (threadId: string, stamp: number, extra: Record<string, unknown> = {}) => ({
+    threadId, title: threadId, updatedAt: stamp, ...extra,
+  });
+
+  it("filters inactive threads before counting the six most recent and never loses undated threads", () => {
+    const fresh = Array.from({ length: 7 }, (_, index) => thread(`fresh-${index}`, cutoff + 100 - index));
+    const rows = [thread("old", cutoff - 1), ...fresh, thread("no-stamp", Number.NaN), thread("created-old", Number.NaN, { createdAt: cutoff - 1 })];
+    expect(visibleSidebarThreads(rows, "", "", [], false, cutoff).map((task) => task.threadId))
+      .toEqual(["fresh-0", "fresh-1", "fresh-2", "fresh-3", "fresh-4", "fresh-5"]);
+    expect(visibleSidebarThreads([thread("old", cutoff - 1), thread("no-stamp", 0), thread("fallback", 0, { createdAt: cutoff + 1 })], "", "", [], false, cutoff)
+      .map((task) => task.threadId)).toEqual(["no-stamp", "fallback"]);
+    expect(visibleSidebarThreads([thread("old", cutoff - 1)], "", "", [], false, 0)).toHaveLength(1);
+  });
+
+  it("retains pinned, selected, unread, queued, busy, working, and waiting threads", () => {
+    const old = cutoff - 1;
+    const rows = [thread("pinned", old, { pinned: true }), thread("selected", old), thread("unread", old, { unread: true }),
+      thread("queued", old, { queued: true }), thread("busy", old, { busy: true }), thread("working", old, { activity: "working" }),
+      thread("waiting", old, { activity: "waiting-on-you" }), thread("idle", old)];
+    expect(visibleSidebarThreads(rows, "selected", "", [], false, cutoff).map((task) => task.threadId))
+      .toEqual(["pinned", "selected", "unread", "queued", "busy", "working", "waiting"]);
+    expect(visibleSidebarThreads([thread("selected", old)], "selected", "", [], false, cutoff, "")).toEqual([]);
+  });
+
+  it("keeps a background teammate reply visible even when its parent thread is old or closed", () => {
+    const waiting = { threadId: "other", title: "Other agent's response", updatedAt: cutoff - 1, waitingForTeammates: true, closedBy: { botId: "chief", name: "Chief", at: 1 } };
+    expect(visibleSidebarThreads([waiting], "", "", [], false, cutoff, "")).toEqual([waiting]);
+    const markup = renderToStaticMarkup(createElement(SidebarThreadRow, {
+      task: waiting, ownerId: "chief", current: false, onSelect: vi.fn(), onRename: vi.fn(), onDelete: vi.fn(),
+    }));
+    expect(markup).toContain(' · Waiting for teammates"');
+    expect(markup).toContain("Waiting for teammates</span>");
+  });
+
+  it("reveals hidden threads through search, folder search, and Show all", () => {
+    const old = thread("old", cutoff - 1, { projectId: "folder" });
+    const folders = [{ id: "folder", name: "Archives" }] as Parameters<typeof visibleSidebarThreads>[3];
+    expect(visibleSidebarThreads([old], "", "old", folders, false, cutoff)).toEqual([old]);
+    expect(visibleSidebarThreads([old], "", "archives", folders, false, cutoff)).toEqual([old]);
+    expect(visibleSidebarThreads([old], "", "", folders, true, cutoff)).toEqual([old]);
+  });
+});
+
 describe("formatUpdatedAt", () => {
   it("uses the runtime locale and timezone, and skips a missing stamp", () => {
     const at = Date.UTC(2026, 0, 15, 0, 30);

@@ -9,6 +9,8 @@ import { SettingsModal } from "./SettingsModal";
 const fixture = vi.hoisted(() => ({
   section: "appearance" as AppSettingsSection,
   showThreads: true,
+  inactivityDays: 0,
+  setThreadInactivityDays: vi.fn(),
   setShowThreads: vi.fn(),
   api: vi.fn(),
   dispatch: vi.fn(),
@@ -24,6 +26,10 @@ vi.mock("@/state/store", async (importOriginal) => ({
 vi.mock("@/lib/thread-preferences", () => ({
   useShowThreads: () => fixture.showThreads,
   setShowThreads: fixture.setShowThreads,
+}));
+vi.mock("@/lib/thread-inactivity-preference", () => ({
+  useThreadInactivityDays: () => fixture.inactivityDays,
+  setThreadInactivityDays: fixture.setThreadInactivityDays,
 }));
 vi.mock("@/lib/analytics", () => ({ analyticsEnabled: () => false, setAnalyticsEnabled: vi.fn() }));
 vi.mock("./SettingsPrimitives", async (importOriginal) => {
@@ -41,6 +47,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   fixture.section = "appearance";
   fixture.showThreads = true;
+  fixture.inactivityDays = 0;
   fixture.switches = [];
   vi.stubGlobal("window", {});
   vi.stubGlobal("document", { documentElement: { dataset: {} } });
@@ -60,6 +67,9 @@ describe("Settings → Appearance", () => {
     expect(html).toContain('<option value="appearance" selected="">Appearance</option>');
     expect(html).toContain("Midnight");
     expect(html).toContain('aria-label="Show threads"');
+    expect(html).toContain('aria-label="Hide inactive threads after"');
+    expect(html).toContain('<option value="0" selected="">Off</option>');
+    expect(html).toContain("Search or Show all reveals hidden threads");
     expect(html).toContain('aria-label="Show tool calls in chat"');
     expect(html).toContain("on this device only");
     expect(html).toContain("all conversation history and running work");
@@ -79,6 +89,16 @@ describe("Settings → Appearance", () => {
     expect(fixture.dispatch).not.toHaveBeenCalled();
   });
 
+  it("offers 14, 30, and 90 days without changing the server", () => {
+    fixture.inactivityDays = 30;
+    const html = render();
+    expect(html).toContain('<option value="14">14 days</option>');
+    expect(html).toContain('<option value="30" selected="">30 days</option>');
+    expect(html).toContain('<option value="90">90 days</option>');
+    expect(fixture.api).not.toHaveBeenCalled();
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+  });
+
   it("leaves non-appearance General settings in place", () => {
     fixture.section = "general";
     const html = render();
@@ -88,6 +108,7 @@ describe("Settings → Appearance", () => {
     expect(html).toContain('aria-label="App language"');
     expect(html).toContain("Diagnostics");
     expect(html).not.toContain('aria-label="Show threads"');
+    expect(html).not.toContain('aria-label="Hide inactive threads after"');
     expect(html).not.toContain('aria-label="Show tool calls in chat"');
     expect(html).not.toContain("Midnight");
   });

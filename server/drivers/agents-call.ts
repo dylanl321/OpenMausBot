@@ -445,6 +445,12 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     }) });
     return { text: JSON.stringify(result), ...(result.error ? { isError: true } : {}) };
   }
+  if (name === "retry_goal_work") {
+    const result = await api("/api/internal/work-items/retry-goal", { method: "POST", body: JSON.stringify({
+      goalId: args.goal_id, workItemId: args.work_item_id, expectedRevision: args.expected_revision, remediation: args.remediation,
+    }) });
+    return { text: JSON.stringify(result), ...(result.error ? { isError: true } : {}) };
+  }
   if (name === "link_item") {
     const result = await api("/api/internal/work-items/link", { method: "POST", body: JSON.stringify({
       workItemId: args.work_item_id, refOrUrl: args.ref_or_url, role: args.role, title: args.title,

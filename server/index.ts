@@ -7,6 +7,7 @@ import { existsSync, readFileSync, rmSync, mkdirSync } from "node:fs";
 import { writeFileAtomic } from "./atomic.ts";
 import { rm as removeDirectory } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { CompanionViewerRelay } from "../companion/src/viewer-relay.ts";
 import { ToolResults, TOOL_RESULT_MAX_CHARS } from "./tool-results.ts";
 import { extname, join } from "node:path";
 import { authorizeExternalRuntime, externalRuntimeIsActive, type ExternalRuntimeGrant } from "./external-runtime.ts";
@@ -20,6 +21,8 @@ import { SharedComputers, sharedComputerOperation, sharedComputerRegistration } 
 import { SharedComputerControl } from "./shared-computer-control.ts";
 import { RoomHandoffs, type RoomAddress, type RoomHandoff } from "./room-handoffs.ts";
 import { WorkCoordination } from "./work-coordination.ts";
+import { OngoingGoals, canRetryGoalWork, goalTurnInstructions, interruptedLinkedWork, parseGoalDecision, referencedGoalWork, requiresExternalInventory } from "./ongoing-goals.ts";
+import { goalCreateSchema } from "../shared/ongoing-goal.ts";
 import type { WorkRecord } from "./work-items.ts";
 import { SHARED_WORK_INSTRUCTIONS } from "./work-instructions.ts";
 import { assertRequestTarget, guardedRequestPath, requestConflict, requestNeedsInput, requestSourceForCard } from "./guarded-requests.ts";
@@ -379,7 +382,8 @@ import { RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrig
 import { WatchManager } from "./watches.ts";
 import { summarizeChanges } from "../shared/watches.ts";
 import type { SourceChange, Watch, WatchInput } from "../shared/watches.ts";
-import { applyWatchToWork, ensureTasksFromChanges } from "./watch-actions.ts";
+import { applyWatchToWork, ensureTasksFromChanges, watchLinkMatches } from "./watch-actions.ts";
+import { sourceIdentity } from "../shared/work-links.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
 import { BUILT_IN_BROWSER_SYSTEM_PROMPT } from "./browser-engine.ts";
 import { BrowserRuntime } from "./browser-runtime.ts";
@@ -3482,7 +3486,32 @@ function updateChannel(groupId: string, value: unknown): GroupRecord {
   const group = store.patchGroup(groupId, patch);
   if (resetAudience) audienceChanged();
   if (!group) throw Object.assign(new Error("no such room"), { status: 404 });
+  if (body.memberIds !== undefined) parkRevokedRoomGoals(group.id, group.threadId, group.memberIds);
   return group;
+}
+
+function parkRevokedRoomGoals(groupId: string, threadId: string, members: string[]) {
+  for (const goal of ongoingGoals?.records.values() ?? []) {
+    if (["completed", "stopped"].includes(goal.status)) continue;
+    const sourceRevoked = goal.sourceThreadId === threadId && !members.includes(goal.ownerBotId);
+    const sourceGroup = store.groupByThread(goal.sourceThreadId);
+    const linkedRevoked = goal.workItemIds.some(id => {
+      const item = workCoordination.items.records.get(id);
+      return item?.groupId === groupId && (!members.includes(goal.ownerBotId) ||
+        sourceGroup && !sourceGroup.memberIds.every(id => members.includes(id)));
+    });
+    if (!sourceRevoked && !linkedRevoked) continue;
+    const running = Boolean(goal.inFlightAt);
+    ongoingGoals?.park(goal, "Goal room access changed; permission to continue was revoked.");
+    if (running) void interruptDirectThread(goal.ownerBotId, goal.executionThreadId)
+      .catch(error => console.error("ongoing goal access interrupt:", error));
+    for (const id of goal.ownedWorkItemIds) {
+      const item = workCoordination.items.records.get(id);
+      if (item?.status === "active") workCoordination.update(id, {
+        expectedRevision: item.revision, status: "cancelled", detail: `Ongoing goal ${goal.id} lost room access`,
+      });
+    }
+  }
 }
 
 const channelTaskBlocked = (group: GroupRecord) =>
@@ -3575,6 +3604,11 @@ function outstandingAssignmentsPrompt(threadId: string): string {
 
 const workEvents = new WorkEvents(join(DATA_DIR, "work-events"));
 const taskConnectionList = () => parseStoredConnections(cfg.taskConnections);
+let ongoingGoals: OngoingGoals | null = null;
+const ongoingGoalItems = new Map<string, string[]>();
+const ongoingGoalCosts = new Map<string, number | null>();
+const ongoingGoalOutcomes = new Map<string, { ok: boolean; text: string }>();
+const ongoingGoalPublicOverrides = new Map<string, string>();
 
 const workCoordination: WorkCoordination = new WorkCoordination(join(DATA_DIR, "work-items.json"), store, {
   handoffs: () => roomHandoffs,
@@ -3583,6 +3617,19 @@ const workCoordination: WorkCoordination = new WorkCoordination(join(DATA_DIR, "
     (peerReviewRequired(store.bot(source.botId)!, source.threadId) ? "Peer approval is required; ask the user to create the shared task or change the existing peer permission setting." : undefined),
   isUnattended: source => isUnattended(source.botId, source.threadId),
   markUnattended,
+  goalScope: (source, identity) => {
+    const goal = [...(ongoingGoals?.records.values() ?? [])].find(item => item.executionThreadId === source.threadId && ["working", "waiting"].includes(item.status));
+    return goal && !identity.startsWith(goal.scope) ? `Task identity must begin with the goal's authorized scope: ${goal.scope}` : undefined;
+  },
+  onEnsure: (item, source, created) => {
+    const goal = [...(ongoingGoals?.records.values() ?? [])].find(candidate => candidate.executionThreadId === source.threadId && ["working", "waiting"].includes(candidate.status));
+    if (goal && !goal.workItemIds.includes(item.id)) {
+      ongoingGoals?.link(goal, item.id, created);
+      store.appendMessage(item.threadId, { role: "bot", kind: "activity", tool: {
+        name: `Ongoing goal ${goal.id} links this task. Only its current coordinator may request a scoped, recorded retry of blocked work.`, ok: true,
+      } });
+    }
+  },
   sourceLink: (scope, identity) => sourceLinkedItem(taskConnectionList(), scope, identity),
   resolveRef: (scope, ref) => {
     for (const connection of taskConnectionList()) {
@@ -3602,6 +3649,9 @@ const workCoordination: WorkCoordination = new WorkCoordination(join(DATA_DIR, "
   resolveEvidence: (item, id) => workEvents.read(item.id).find(event => event.id === id)?.provenance,
   recentEvents: id => workEvents.recent(id),
   publish: item => {
+    for (const goal of ongoingGoals?.records.values() ?? []) {
+      if (goal.workItemIds.includes(item.id) && item.status !== "active") ongoingGoals?.wake(goal);
+    }
     const group = store.group(item.groupId);
     if (group) broadcast({ kind: "group", group: publicGroupState(group) });
     for (const botId of new Set([item.coordinatorBotId, ...item.assignments.map(assignment => assignment.botId)])) {
@@ -4724,6 +4774,18 @@ watchdog.start();
 
 bus.subscribe((event: RuntimeEvent) => {
   if (shouldIgnoreProviderEvent(event)) return;
+  if (event.type === "turn.completed" && ongoingGoalItems.has(event.threadId)) {
+    ongoingGoalCosts.set(event.threadId, event.cost ?? null);
+    ongoingGoalOutcomes.set(event.threadId, { ok: event.ok, text: event.stopReason ?? "The turn ended without a reply" });
+  }
+  if (event.type === "turn.completed" && event.turnId && ongoingGoals) {
+    const work = workCoordination.items.forThread(event.threadId);
+    if (work) for (const goal of ongoingGoals.records.values()) {
+      if (goal.ownedWorkItemIds.includes(work.id) && event.threadId !== goal.executionThreadId) {
+        ongoingGoals.charge(goal, event.turnId, event.cost ?? null);
+      }
+    }
+  }
   if (event.type === "request.opened") watchdog.setWaitingOnHuman(event.threadId, true);
   else if (event.type === "request.resolved") watchdog.setWaitingOnHuman(event.threadId, false);
   else if (event.type === "turn.completed") {
@@ -5683,6 +5745,13 @@ bus.subscribe((event: RuntimeEvent) => {
   const coordinatorTurnsForThread = groupGoalCoordinatorTurns.get(event.threadId);
   const ambiguousCoordinatorText = !event.turnId && (coordinatorTurnsForThread?.size ?? 0) > 1;
   const goalCoordinatorTurn = groupGoalCoordinatorTurnForEvent(event);
+  const ongoingItems = ongoingGoalItems.get(event.threadId);
+  if (ongoingItems && event.type === "item.completed" && event.itemType === "assistant_text") {
+    ongoingItems.push(event.text);
+    return;
+  }
+  if (ongoingItems && event.type === "content.delta" && event.streamKind === "assistant_text") return;
+  if (ongoingItems && event.type === "item.completed" && event.itemType === "assistant_image") return;
   const completedTurnId = event.type === "turn.completed"
     ? groupGoalCompletionTurnId(event.turnId, goalCoordinatorTurn?.turnId)
     : event.turnId;
@@ -5748,6 +5817,17 @@ bus.subscribe((event: RuntimeEvent) => {
       : proven ? { ...m, requestMessageId: owner.messageId } : m);
     return message;
   };
+
+  if (ongoingItems && event.type === "turn.completed") {
+    const publicText = ongoingGoalPublicOverrides.get(event.threadId) ?? parseGoalDecision(ongoingItems.join("\n")).text;
+    ongoingGoalPublicOverrides.delete(event.threadId);
+    ongoingGoalItems.delete(event.threadId);
+    if (publicText) {
+      pushMessage({ role: "bot", kind: "text", text: publicText, turnId: event.turnId });
+      lastReply.set(event.threadId, publicText);
+      broadcast({ kind: "runtime", event: { ...event, eventId: `${event.eventId}-pursuit-text`, type: "item.completed", itemType: "assistant_text", text: publicText } });
+    }
+  }
 
   if (coordinatorVisibleText) {
     pushMessage({ role: "bot", kind: "text", text: coordinatorVisibleText, turnId: completedTurnId });
@@ -8239,6 +8319,14 @@ async function startTurn(
         { id: "mcp", label: "MCP servers", text: customMcpPrompt(Object.keys(integrations.custom ?? {})) },
         { id: "browser", label: "Browser", text: integrations.browser ? BUILT_IN_BROWSER_SYSTEM_PROMPT : "" },
         { id: "coordination", label: "Team", text: coordinationPrompt ? ` ${coordinationPrompt}` : "" },
+        { id: "ongoing-goals", label: "Ongoing goals", text: !opts?.cardContinuation && (threadId === store.bot(bot.id)?.threadId ||
+          [...(ongoingGoals?.records.values() ?? [])].some(goal => goal.ownerBotId === bot.id && goal.sourceThreadId === threadId))
+          ? `Explicit ongoing goals for this bot: ${JSON.stringify([...(ongoingGoals?.records.values() ?? [])]
+            .filter(goal => goal.ownerBotId === bot.id && ["working", "waiting", "paused", "needs-input"].includes(goal.status) &&
+              (!store.groupByThread(goal.sourceThreadId) || store.groupByThread(goal.sourceThreadId)?.memberIds.includes(bot.id)))
+            .map(goal => ({ id: goal.id, objective: goal.objective, status: goal.status, detail: goal.detail,
+              nextAction: goal.nextAction, nextWakeAt: goal.nextWakeAt, workItemIds: goal.workItemIds })).slice(0, 10))}.
+When asked for status, reconcile the real task state and give concrete progress and the next gate. A check-in queues due work but does not create a goal or lift an exhausted budget. Do not report a goal as finished without its recorded evidence.` : "" },
         { id: "assignment", label: "Teammate task", text: coordinationNode ? `\n${coordinationSystemInstructions()}` : "" },
         { id: "outstanding", label: "Outstanding teammate work", text: outstandingAssignmentsPrompt(threadId) },
         { id: "credential", label: "Credentials", text: credentialPrompt },
@@ -9365,6 +9453,9 @@ function applyWatchChanges(changes: SourceChange[], bumpInput: boolean) {
     },
     onEvent(item, event) {
       broadcast({ kind: "work.event", event, workItem: { groupId: item.groupId, threadId: item.threadId, coordinatorBotId: item.coordinatorBotId } });
+      for (const goal of ongoingGoals?.records.values() ?? []) {
+        if (goal.workItemIds.includes(item.id)) ongoingGoals?.wake(goal);
+      }
     },
     onWake(item) {
       try {
@@ -9426,6 +9517,15 @@ const webhookIngressStatus = () => ({
 
 watches = new WatchManager({
   emit: broadcast,
+  matched: (_watch, changes) => {
+    for (const goal of ongoingGoals?.records.values() ?? []) {
+      if (!["working", "waiting"].includes(goal.status)) continue;
+      const linked = goal.workItemIds.map(id => workCoordination.items.records.get(id)).filter((item): item is WorkRecord => Boolean(item));
+      if (changes.some(change => sourceIdentity(change.item)?.startsWith(goal.scope) || linked.some(item => item.links?.some(link => watchLinkMatches(link, change))))) {
+        ongoingGoals?.wake(goal);
+      }
+    }
+  },
   routine: (id) => routines!.listRoutines().find((routine) => routine.id === id) ?? null,
   enqueueRoutine: (input) => routines!.enqueueWatch(input),
   webhookExists: (id) => Boolean(webhooks.list().find((webhook) => webhook.id === id)),
@@ -9501,6 +9601,131 @@ watches = new WatchManager({
     if (notification) broadcast({ kind: "notify", notification }, { adminOnly: true });
   },
 });
+
+ongoingGoals = new OngoingGoals(join(DATA_DIR, "ongoing-goals.json"), goal => {
+  const bot = store.bot(goal.ownerBotId);
+  if (bot) broadcast({ kind: "bot", bot: wireBot(bot) });
+  const group = store.groupByThread(goal.sourceThreadId);
+  if (group) broadcast({ kind: "group", group: publicGroupState(group) });
+  if (["completed", "needs-input", "paused"].includes(goal.status) && bot) {
+    const notification = buildNotification(goal.status === "completed" ? "done" : "incident", bot, goal.sourceThreadId, `${goal.objective}: ${goal.detail}`);
+    if (notification) broadcast({ kind: "notify", notification });
+  }
+});
+
+const lastPursuitByBot = new Map<string, string>();
+const checkingGoalSources = new Set<string>();
+async function advanceOngoingGoals() {
+  if (!ongoingGoals) return;
+  const due = ongoingGoals.due();
+  for (const botId of new Set(due.map(goal => goal.ownerBotId))) {
+    const choices = due.filter(goal => goal.ownerBotId === botId);
+    const previous = choices.findIndex(goal => goal.id === lastPursuitByBot.get(botId));
+    const goal = choices[(previous + 1) % choices.length];
+    if (!goal || checkingGoalSources.has(goal.id)) continue;
+    const bot = store.bot(botId);
+    const sourceGroup = store.groupByThread(goal.sourceThreadId);
+    if (!bot || bot.hidden || !store.taskByThread(botId, goal.executionThreadId) ||
+        sourceGroup && !sourceGroup.memberIds.includes(botId)) {
+      ongoingGoals.park(goal, "Goal owner or authorized conversation is no longer accessible; inspect permissions before resuming.");
+      continue;
+    }
+    if ([...ongoingGoals.records.values()].some(other => other.id !== goal.id && other.ownerBotId === botId && other.inFlightAt)) continue;
+    if (bot.busy || threadBusy(botId, goal.executionThreadId) || activeGroupTurnForBot(botId) || botAtThreadCapacity(botId)) continue;
+    const work = goal.workItemIds.map(id => workCoordination.items.records.get(id)).filter((item): item is WorkRecord => Boolean(item));
+    if (work.length !== goal.workItemIds.length || work.some(item => !workCoordination.accessible(item, { botId, threadId: goal.executionThreadId }) ||
+      sourceGroup && !sourceGroup.memberIds.every(id => store.group(item.groupId)?.memberIds.includes(id)))) {
+      ongoingGoals.park(goal, "A linked task is missing or its audience changed; inspect access before resuming.");
+      continue;
+    }
+    if (work.some(interruptedLinkedWork)) {
+      ongoingGoals.park(goal, "A linked task was interrupted by restart; inspect its worker effects and explicitly reopen the task before resuming this goal.");
+      continue;
+    }
+    if (goal.status === "waiting" && work.some(item => item.status === "active" && item.assignments.some(assignment =>
+      assignment.revision === item.revision && ["queued", "running", "waiting"].includes(assignment.status)))) {
+      ongoingGoals.defer(goal);
+      continue;
+    }
+    if (goal.status === "waiting" && work.length && work.every(item => item.status === "active")) {
+      checkingGoalSources.add(goal.id);
+      try {
+        const refreshed = await Promise.all(work.map(item => sourceLinkedItem(taskConnectionList(), item.scope, item.identity)));
+        if (refreshed.some(Boolean)) {
+          const signature = JSON.stringify(refreshed.map(link => link && [link.externalId, link.state, link.details]));
+          if (!ongoingGoals.observe(goal, signature)) continue;
+        }
+      } catch (error) {
+        console.error("ongoing goal observation:", error);
+        ongoingGoals.defer(goal);
+        continue;
+      } finally { checkingGoalSources.delete(goal.id); }
+    }
+    if (goal.status === "paused" || !ongoingGoals.due().includes(goal)) continue;
+    if (!ongoingGoals.begin(goal)) continue;
+    lastPursuitByBot.set(botId, goal.id);
+    ongoingGoalItems.set(goal.executionThreadId, []);
+    const state = JSON.stringify(work.map(item => ({ id: item.id, revision: item.revision, status: item.status,
+      detail: item.detail, criteria: item.criteria?.map(criterion => ({ state: criterion.state, evidence: criterion.evidence })) })));
+    void startTurn(botId, goalTurnInstructions(goal, state), {
+      threadId: goal.executionThreadId, cardContinuation: true, unattended: true,
+      onDispatchError: message => console.error("ongoing goal dispatch:", message),
+      onTurnSettled: () => {
+        const outcome = ongoingGoalOutcomes.get(goal.executionThreadId) ?? { ok: false, text: "The turn was interrupted before completion" };
+        ongoingGoalOutcomes.delete(goal.executionThreadId);
+        const raw = ongoingGoalItems.get(goal.executionThreadId)?.join("\n") ?? outcome.text;
+        const parsed = parseGoalDecision(raw);
+        const latest = ongoingGoals?.records.get(goal.id);
+        if (!latest || !latest.inFlightAt) {
+          ongoingGoalItems.delete(goal.executionThreadId);
+          ongoingGoalCosts.delete(goal.executionThreadId);
+          ongoingGoalPublicOverrides.delete(goal.executionThreadId);
+          return;
+        }
+        if (!outcome.ok) {
+          ongoingGoalItems.delete(goal.executionThreadId);
+          ongoingGoalCosts.delete(goal.executionThreadId);
+          ongoingGoalPublicOverrides.delete(goal.executionThreadId);
+          ongoingGoals?.park(latest, `Goal turn failed: ${outcome.text}`);
+          return;
+        }
+        let decision = outcome.ok ? parsed.decision : null;
+        if (decision?.status === "completed" && requiresExternalInventory(latest.objective)) {
+          const detail = "Cannot verify all Jira work and GitLab MRs from an unbounded request. Specify the Jira project and GitLab repository scope, and establish an independently observed inventory and current-head merge gates.";
+          ongoingGoalPublicOverrides.set(goal.executionThreadId, detail);
+          decision = { status: "needs-input", detail,
+            ...(decision.acceptanceCriteria ? { acceptanceCriteria: decision.acceptanceCriteria } : {}) };
+        }
+        if (decision?.status === "completed" && (latest.kind === "mission" && !latest.workItemIds.length || latest.workItemIds.some(id => {
+          const item = workCoordination.items.records.get(id);
+          const external = item?.links?.some(link => link.kind !== "link" && ["source", "output"].includes(link.role));
+          return !item || item.status !== "completed" || external && item.criteria?.some(criterion => criterion.state !== "checked" ||
+            !criterion.evidence.some(id => ["observed", "synced"].includes(workCoordination.evidenceProvenance(item, id) ?? "")));
+        }))) decision = { status: "waiting", detail: "Linked tasks or external evidence are not yet complete.", nextAction: "Inspect current task criteria and observed external results.",
+          ...(decision.acceptanceCriteria ? { acceptanceCriteria: decision.acceptanceCriteria } : {}) };
+        const progress = JSON.stringify({ work: latest.workItemIds.map(id => {
+          const item = workCoordination.items.records.get(id);
+          return item && [item.id, item.revision, item.status, item.assignments.map(assignment => assignment.status), item.criteria?.map(criterion => criterion.state)];
+        }), evidence: decision && "evidence" in decision ? decision.evidence : [] });
+        const updated = ongoingGoals?.finish(latest, decision, progress, ongoingGoalCosts.get(goal.executionThreadId));
+        if (updated?.status === "waiting" && updated.workItemIds.every(id => workCoordination.items.records.get(id)?.status !== "active")) {
+          ongoingGoals?.wake(updated);
+        }
+        ongoingGoalCosts.delete(goal.executionThreadId);
+      },
+    }).catch(error => {
+      ongoingGoalItems.delete(goal.executionThreadId);
+      ongoingGoalCosts.delete(goal.executionThreadId);
+      ongoingGoalOutcomes.delete(goal.executionThreadId);
+      ongoingGoalPublicOverrides.delete(goal.executionThreadId);
+      ongoingGoals?.park(goal, `Goal dispatch did not complete: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+}
+const ongoingGoalTimer = setInterval(() => {
+  void advanceOngoingGoals().catch(error => console.error("ongoing goals:", error));
+}, 1_000);
+ongoingGoalTimer.unref();
 
 // ── config hot-reload ─────────────────────────────────────────────────
 // ── group turn engine ──────────────────────────────────────────────────
@@ -12621,6 +12846,8 @@ ROUTES.push(createBedrockRoutes({
 }));
 
 const toolResults = new ToolResults();
+const webViewers = new CompanionViewerRelay("/api/desktop-viewer");
+const webViewerDevice = (auth: RequestAuth) => ({ id: auth.kind === "session" ? auth.session.id : "loopback", cloudDesktopAccess: true });
 const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
   let url: URL;
   try {
@@ -12864,6 +13091,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     if (path.startsWith("/api/") && path !== "/api/events" && path !== "/api/health" && !path.startsWith("/api/shared-computers/") && !isWorkspaceBackupSessionControl(method, path)) {
       releaseWorkspaceRequest = workspaceMaintenance.request();
     }
+
+    if (webViewers.isViewerPath(req.url)) return webViewers.handleHttp(req, res, webViewerDevice(auth));
 
     // New routes live in modules registered in server/routes/table.ts and
     // are tried here, behind the gate above; do not add route `if`s below.
@@ -13135,7 +13364,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           throw Object.assign(new Error("the internal turn capability has expired"), { status: 401 });
         }
       };
-      if (path === "/api/internal/work-items" || path === "/api/internal/work-items/ensure" || path === "/api/internal/work-items/update" || path === "/api/internal/work-items/link") {
+      if (path === "/api/internal/work-items" || path === "/api/internal/work-items/ensure" || path === "/api/internal/work-items/update" || path === "/api/internal/work-items/link" || path === "/api/internal/work-items/retry-goal") {
         const sourceRoom = store.groupByThread(internalCapability.threadId);
         const workSource = { botId: internalSender.id, threadId: internalCapability.threadId, groupId: sourceRoom?.id };
         if (sourceRoom && !internalCapability.roomCoordination) return json(res, 409, { error: "Finish together already owns this room run; it cannot start a competing shared task." });
@@ -13165,6 +13394,20 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           const { workItemId, ...body } = await readInternalBody();
           if (typeof workItemId !== "string") return json(res, 400, { error: "workItemId is required" });
           return json(res, 200, { workItem: workCoordination.update(workItemId, body, workSource) });
+        }
+        if (method === "POST" && path === "/api/internal/work-items/retry-goal") {
+          const input = z.object({ goalId: z.string().uuid(), workItemId: z.string().min(1),
+            expectedRevision: z.number().int().positive(), remediation: z.string().trim().min(1).max(2000) }).strict().parse(await readInternalBody());
+          const goal = ongoingGoals?.records.get(input.goalId);
+          const item = workCoordination.items.records.get(input.workItemId);
+          if (!goal || !item || !canRetryGoalWork(goal, item, workSource, sectionKey(store.bot(goal.ownerBotId)?.section))) {
+            return json(res, 403, { error: "No authorized, settled blocked task is eligible for this goal retry" });
+          }
+          return json(res, 200, { workItem: workCoordination.update(item.id, {
+            expectedRevision: input.expectedRevision, reopen: true,
+            detail: `Goal ${goal.id} retry: ${input.remediation}`,
+            decision: `Goal ${goal.id} authorized a new revision after recorded blocker: ${input.remediation}`,
+          }, workSource, true) });
         }
         if (method === "POST" && path === "/api/internal/work-items/link") {
           const body = await readInternalBody();
@@ -14255,11 +14498,17 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           for (const target of targets) {
             let createdThread: string | undefined;
             let workAssignment: WorkRecord["assignments"][number] | undefined;
+            let previousAssignment: WorkRecord["assignments"][number] | undefined;
+            let previousClosedBy: TaskRecord["closedBy"];
             try {
               requireActiveInternalCapability();
+              roomHandoffs.assertNoAncestor(address, internalCapability.roomHandoffId, target);
               if (workItem) {
                 const claimed = workCoordination.assignment(workItem, target.botId, parsed.data.message, parsed.data.assignmentId, parsed.data.rework);
                 workAssignment = claimed.assignment;
+                previousAssignment = claimed.previous;
+                previousClosedBy = claimed.previousClosedBy;
+                createdThread = claimed.createdThread;
                 target.threadId = workAssignment.threadId;
                 if (claimed.duplicate) {
                   accepted.push({ requestId: workAssignment.requestId ?? workAssignment.id, botId: target.botId, duplicate: true,
@@ -14322,12 +14571,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
                 });
               }
             } catch (error) {
-              if (createdThread) store.deleteTask(target.botId, createdThread);
-              if (workItem && workAssignment && !workAssignment.requestId) {
-                workAssignment.status = "failed";
-                workAssignment.result = error instanceof Error ? error.message : String(error);
-                workCoordination.items.changed(workItem);
-              }
+              if (workItem && workAssignment && !workAssignment.requestId) workCoordination.rollbackAssignment(workItem, workAssignment, previousAssignment, createdThread, previousClosedBy);
+              else if (createdThread && !workAssignment?.requestId) store.deleteTask(target.botId, createdThread);
               errors.push({ botId: target.botId, error: error instanceof Error ? error.message : String(error) });
             }
           }
@@ -15783,6 +16028,84 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     }
 
     // ── channels (persisted internally as groups) ───────────────────────
+    if (path === "/api/goals" && method === "GET") {
+      return json(res, 200, { goals: [...(ongoingGoals?.records.values() ?? [])].filter(goal =>
+        visible.bot(goal.ownerBotId) && visible.thread(goal.sourceThreadId)) });
+    }
+    if (path === "/api/goals" && method === "POST") {
+      const input = goalCreateSchema.parse(await readBody(req));
+      const owner = store.bot(input.ownerBotId);
+      const group = store.groupByThread(input.sourceThreadId);
+      if (!owner || owner.hidden || !visible.bot(owner.id) || !visible.thread(input.sourceThreadId) ||
+          (group ? group.dm || !group.memberIds.includes(owner.id)
+            : !store.taskByThread(owner.id, input.sourceThreadId))) {
+        return json(res, 403, { error: "Choose an accessible bot and a conversation it owns or participates in" });
+      }
+      const previous = ongoingGoals?.findRequest(input);
+      if (previous) return json(res, 200, { goal: previous });
+      if ([...(ongoingGoals?.records.values() ?? [])].some(goal => goal.sourceThreadId === input.sourceThreadId && !["completed", "stopped"].includes(goal.status))) {
+        return json(res, 409, { error: "This conversation already owns an ongoing goal" });
+      }
+      for (const id of input.workItemIds ?? []) {
+        const item = workCoordination.items.records.get(id);
+        if (!item || !visible.group(item.groupId) || item.scope !== sectionKey(owner.section) || !input.scope || !item.identity.startsWith(input.scope) ||
+            !workCoordination.accessible(item, { botId: owner.id, threadId: owner.threadId }) ||
+            group && !group.memberIds.every(id => store.group(item.groupId)?.memberIds.includes(id))) {
+          return json(res, 403, { error: "An existing task is outside the authorized goal scope" });
+        }
+      }
+      const inferredItem = !input.scope && !input.workItemIds?.length ? referencedGoalWork(input.objective,
+        [...workCoordination.items.records.values()].filter(item => visible.group(item.groupId) &&
+          item.scope === sectionKey(owner.section) && workCoordination.accessible(item, { botId: owner.id, threadId: owner.threadId }) &&
+          (!group || group.memberIds.every(id => store.group(item.groupId)?.memberIds.includes(id))))) : undefined;
+      const executionThreadId = group
+        ? store.createTask(owner.id, `Pursue: ${input.objective.slice(0, 64)}`, false)?.threadId
+        : input.sourceThreadId;
+      if (!executionThreadId) return json(res, 409, { error: "Could not create a coordinator conversation" });
+      let goal;
+      try {
+        goal = ongoingGoals!.create({ ...input, ...(inferredItem ? { scope: inferredItem.identity } : {}) }, executionThreadId);
+        if (inferredItem) ongoingGoals!.link(goal, inferredItem.id, false);
+      }
+      catch (error) {
+        if (group) store.deleteTask(owner.id, executionThreadId);
+        throw error;
+      }
+      store.appendMessage(input.sourceThreadId, { role: "bot", kind: "text", text: `Ongoing goal started: ${goal.objective}. I will report concrete progress, the next check, or a specific decision I cannot make.` });
+      return json(res, 201, { goal });
+    }
+    const ongoingGoalMatch = path.match(/^\/api\/goals\/([\w-]+)$/);
+    if (ongoingGoalMatch && (method === "GET" || method === "PATCH")) {
+      const goal = ongoingGoals?.records.get(ongoingGoalMatch[1]);
+      if (!goal || !visible.bot(goal.ownerBotId) || !visible.thread(goal.sourceThreadId)) return json(res, 404, { error: "No such goal" });
+      if (method === "GET") return json(res, 200, { goal });
+      const runningGoalTurn = Boolean(goal.inFlightAt && ongoingGoalItems.has(goal.executionThreadId));
+      const updated = ongoingGoals!.control(goal.id, await readBody(req));
+      if (updated.status === "stopped") {
+        if (runningGoalTurn && ongoingGoalItems.has(goal.executionThreadId)) await interruptDirectThread(goal.ownerBotId, goal.executionThreadId);
+        for (const id of updated.ownedWorkItemIds) {
+          const item = workCoordination.items.records.get(id);
+          if (item?.status === "active") workCoordination.update(id, {
+            expectedRevision: item.revision, status: "cancelled", detail: `Stopped with ongoing goal ${updated.id}`,
+          });
+        }
+      }
+      return json(res, 200, { goal: updated });
+    }
+    const ongoingGoalLink = path.match(/^\/api\/goals\/([\w-]+)\/work-items$/);
+    if (ongoingGoalLink && method === "POST") {
+      const goal = ongoingGoals?.records.get(ongoingGoalLink[1]);
+      const input = z.object({ workItemId: z.string().min(1) }).strict().parse(await readBody(req));
+      const item = workCoordination.items.records.get(input.workItemId);
+      if (!goal || !item || !visible.bot(goal.ownerBotId) || !visible.thread(goal.sourceThreadId) ||
+          !visible.group(item.groupId) || !item.identity.startsWith(goal.scope) ||
+          item.scope !== sectionKey(store.bot(goal.ownerBotId)?.section) ||
+          !workCoordination.accessible(item, { botId: goal.ownerBotId, threadId: goal.executionThreadId }) ||
+          (store.groupByThread(goal.sourceThreadId) && !store.groupByThread(goal.sourceThreadId)?.memberIds.every(id => store.group(item.groupId)?.memberIds.includes(id)))) {
+        return json(res, 403, { error: "Task does not belong to this goal's authorized scope" });
+      }
+      return json(res, 200, { goal: ongoingGoals!.link(goal, item.id, false) });
+    }
     if (path === "/api/work-items" && method === "GET") {
       return json(res, 200, { workItems: [...workCoordination.items.records.values()]
         .filter(item => workItemVisible(item, visible)).map(item => memberWorkItem(workCoordination.view(item), visible)) });
@@ -16387,6 +16710,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         clearTurnDigestState(threadId);
       }
       routines!.disableForGroup(group.id);
+      parkRevokedRoomGoals(group.id, group.threadId, []);
       store.deleteGroup(group.id);
       rejectDeletedThreadSkillStages(stagedSkillCleanups);
       return json(res, 200, { ok: true });
@@ -16489,6 +16813,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return { ok: true as const, threadId, message };
         },
       );
+      for (const goal of ongoingGoals?.records.values() ?? []) {
+        if (goal.sourceThreadId === threadId && ["working", "waiting"].includes(goal.status)) ongoingGoals?.wake(goal);
+      }
       return json(res, 202, receipt);
     }
     m = path.match(/^\/api\/groups\/([\w-]+)\/queue\/([\w-]+)$/);
@@ -18225,6 +18552,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           return startOrQueueDirectMessage(bot.id, threadId, text, replyTo, sendId, messageSender(auth), trigger);
         },
       );
+      for (const goal of ongoingGoals?.records.values() ?? []) {
+        if (goal.ownerBotId === bot.id && ["working", "waiting"].includes(goal.status)) ongoingGoals?.wake(goal);
+      }
       return json(res, 202, receipt);
     }
 
@@ -18999,7 +19329,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     // what the user's machine can host: which runtime is installed, whether
     // its daemon is up, and whether the desktop image and container exist
     if (method === "GET" && path === "/api/local-computer") {
-      return json(res, 200, await localVmPayload(SHARED_LOCAL_VM_TARGET));
+      const status = await localVmPayload(SHARED_LOCAL_VM_TARGET);
+      res.setHeader("cache-control", "private, no-store");
+      return json(res, 200, { ...status, remote_viewer_url: webViewers.registerViewer(status.viewer_url, "shared-local-vm", webViewerDevice(auth).id) });
     }
     if (method === "GET" && path === "/api/local-computer/instances") {
       res.setHeader("cache-control", "private, no-store");
@@ -19061,7 +19393,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     if (m && method === "GET") {
       const bot = computerPreviewBot(m[1], url);
       if (!bot) return json(res, 404, { error: "no such bot" });
-      return json(res, 200, await localVmPayload(localVmTargetForBot(bot.id)));
+      const status = await localVmPayload(localVmTargetForBot(bot.id));
+      res.setHeader("cache-control", "private, no-store");
+      return json(res, 200, { ...status, remote_viewer_url: webViewers.registerViewer(status.viewer_url, `local-vm-${bot.id}`, webViewerDevice(auth).id) });
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/local-computer\/(run|stop|remove)$/);
     if (m && method === "POST") {
@@ -20513,10 +20847,19 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         }
         if (action === "release" && controlLeaseId) {
           const result = computerControl.releaseLease(controlKey, controlLeaseId);
+          if (!result.snapshot.held) {
+            webViewers.closeBot(`local-vm-${bot.id}`);
+            webViewers.closeBot(`vps-${bot.id}`);
+          }
           return json(res, 200, { ...result.snapshot, released: result.released });
         }
         if (action === "take") return json(res, 200, computerControl.take(controlKey));
-        if (action === "release") return json(res, 200, computerControl.release(controlKey));
+        if (action === "release") {
+          const result = computerControl.release(controlKey);
+          webViewers.closeBot(`local-vm-${bot.id}`);
+          webViewers.closeBot(`vps-${bot.id}`);
+          return json(res, 200, result);
+        }
         if (action === "dismiss-help") return json(res, 200, computerControl.dismissHelp(controlKey));
         return json(res, 400, { error: "action must be take, release, or dismiss-help" });
       }
@@ -20529,6 +20872,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
         return json(res, 415, { error: "content-type must be application/json" });
       }
+      if (bot.cloudBackend === "vps") webViewers.closeBot(`vps-${bot.id}`);
       return json(res, 200, bot.cloudBackend === "vps" ? vps.closeVpsDesktopTunnel(bot.id) : { closed: false });
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/computer\/(provision|join|sleep|exec|screenshot|remove)$/);
@@ -20599,7 +20943,9 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             return json(res, 409, { error: "the VPS computer is being used by this bot — interrupt the turn first" });
           }
           if (m[2] === "join") {
-            return json(res, 200, await vps.vpsComputerJoin(cfg, botId));
+            const joined = await vps.vpsComputerJoin(cfg, botId);
+            res.setHeader("cache-control", "private, no-store");
+            return json(res, 200, { ...joined, remoteJoinUrl: webViewers.registerViewer(joined.joinUrl, `vps-${botId}`, webViewerDevice(auth).id) });
           }
           const action = m[2] === "provision" ? "provision" : m[2] === "remove" ? "remove" : "stop";
           return json(res, 200, await vps.vpsComputerAction(action, cfg, botId));
@@ -20668,6 +21014,29 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
 };
 
 const server = createServer(handleRequest);
+server.on("upgrade", async (req, socket, head) => {
+  if (!webViewers.isViewerPath(req.url)) return socket.destroy();
+  try {
+    const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
+    const gate = resolveRequestAuth(req, {
+      sessions,
+      cookieName: SESSION_COOKIE,
+      streamPath: "/api/events",
+      url,
+      loopbackMutationToken: desktopMutationToken,
+      companionMutationToken,
+      features: { sharedComputers: sharedComputersEnabled(cfg) },
+      loopbackTrust: LOOPBACK.trust,
+      cliOwnerToken,
+    });
+    if (!gate.auth || (HOSTED_WORKSPACE && gate.auth.kind === "session" && (!workspaceAccess || await workspaceAccess.authorize(req, gate.auth)))) {
+      return socket.destroy();
+    }
+    webViewers.handleUpgrade(req, socket, head, webViewerDevice(gate.auth));
+  } catch {
+    socket.destroy();
+  }
+});
 
 calendarCalls.start();
 

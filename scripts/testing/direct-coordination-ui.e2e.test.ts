@@ -55,7 +55,9 @@ const enabled = process.env.OMB_UI_E2E === "1" || Boolean(resolveAgentBrowserBin
     await ui("flag", "--set", "features.showToolCalls=false");
     await ui("type", "--name", "Message Pepper", "--text", "Please have Engineer check the CSV export and report back");
     await ui("press", "--keys", "Enter");
-    await expect.poll(snapshot, { timeout: 15_000 }).toContain("Teammates working");
+    await expect.poll(snapshot, { timeout: 15_000 }).toContain("Waiting for teammates");
+    expect((await ui("eval", "--js", "Boolean(document.querySelector('[data-waiting-teammates]'))")).result).toBe(true);
+    expect((await ui("eval", "--js", "Boolean(document.querySelector('[data-sidebar-bot-row] [data-testid=teammates-dot]'))")).result).toBe(true);
     const waiting = (await api("/api/bots?messages=0")).bots.find((bot: any) => bot.id === info.botId);
     expect(waiting).toMatchObject({ busy: false, waitingForTeammates: true });
     const controls = (await ui("snapshot")).refs as Record<string, { role: string; name: string }>;
@@ -64,6 +66,7 @@ const enabled = process.env.OMB_UI_E2E === "1" || Boolean(resolveAgentBrowserBin
     writeFileSync(gateFile, "complete fixture work");
     await ui("wait-settle", "--timeout", "60");
     await expect.poll(snapshot, { timeout: 15_000 }).toContain("Engineer checked the fixture CSV export");
+    expect((await ui("eval", "--js", "Boolean(document.querySelector('[data-waiting-teammates]'))")).result).toBe(false);
     expect(await snapshot()).toContain("Sent to Engineer");
     const state = await api("/api/bots");
     const parent = state.bots.find((bot: any) => bot.id === info.botId);

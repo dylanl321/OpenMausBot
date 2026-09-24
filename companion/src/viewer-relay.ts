@@ -16,7 +16,6 @@ interface ViewerSession {
   sockets: Set<{ destroy(): void }>;
 }
 
-const VIEWER_PATH = /^\/vps-viewer\/([A-Za-z0-9_-]{32})(\/.*)?$/;
 const BOT_JOIN_PATH = /^\/api\/bots\/([\w-]+)\/computer\/join$/;
 const SESSION_TTL_MS = 8 * 60 * 60_000;
 const MAX_SESSIONS = 64;
@@ -102,6 +101,11 @@ function acceptUpgrade(socket: Duplex, response: IncomingMessage): void {
 
 export class CompanionViewerRelay {
   readonly #sessions = new Map<string, ViewerSession>();
+  readonly prefix: string;
+
+  constructor(prefix = "/vps-viewer") {
+    this.prefix = prefix;
+  }
 
   #prune(): void {
     const now = Date.now();
@@ -137,39 +141,55 @@ export class CompanionViewerRelay {
     }
   }
 
+  closeBot(botId: string): void {
+    for (const session of this.#sessions.values()) {
+      if (session.botId === botId) this.#remove(session);
+    }
+  }
+
   rewriteJoinResponse(path: string, value: unknown, deviceId?: string): unknown {
     const botId = BOT_JOIN_PATH.exec(path)?.[1];
     if (!botId || !value || typeof value !== "object" || Array.isArray(value)) return value;
     const body = value as Record<string, unknown>;
-    const viewer = safeLoopbackViewer(body.joinUrl);
-    if (!viewer) return value;
+    if (!safeLoopbackViewer(body.joinUrl)) return value;
     if (!deviceId) throw new Error("the paired device has no viewer identity");
 
-    this.#prune();
     this.close(deviceId, botId);
-    const id = randomBytes(24).toString("base64url");
-    this.#sessions.set(id, {
-      id,
-      botId,
-      deviceId,
-      origin: viewer.origin,
-      expiresAt: Date.now() + SESSION_TTL_MS,
-      sockets: new Set(),
-    });
+    return { ...body, joinUrl: this.registerViewer(body.joinUrl, botId, deviceId) };
+  }
+
+  registerViewer(rawUrl: unknown, botId: string, deviceId: string): string | null {
+    const viewer = safeLoopbackViewer(rawUrl);
+    if (!viewer) return null;
+    this.#prune();
+    let session = [...this.#sessions.values()].find((entry) =>
+      entry.deviceId === deviceId && entry.botId === botId && entry.origin === viewer.origin);
+    if (!session) {
+      this.close(deviceId, botId);
+      const id = randomBytes(24).toString("base64url");
+      session = {
+        id,
+        botId,
+        deviceId,
+        origin: viewer.origin,
+        expiresAt: Date.now() + SESSION_TTL_MS,
+        sockets: new Set(),
+      };
+      this.#sessions.set(id, session);
+    }
 
     const settings = new URLSearchParams(viewer.hash.slice(1));
-    settings.set("path", `vps-viewer/${id}/websockify`);
-    return {
-      ...body,
-      joinUrl: `/vps-viewer/${id}${viewer.pathname}#${settings.toString()}`,
-    };
+    settings.set("path", `${this.prefix.slice(1)}/${session.id}/websockify`);
+    return `${this.prefix}/${session.id}${viewer.pathname}#${settings.toString()}`;
   }
 
   #target(rawUrl: string | undefined, device: ViewerDevice | null): { session: ViewerSession; target: URL } | null {
     this.#prune();
     if (!device?.id || !device.cloudDesktopAccess) return null;
     const incoming = new URL(rawUrl ?? "/", "http://companion.invalid");
-    const match = VIEWER_PATH.exec(incoming.pathname);
+    const match = incoming.pathname.startsWith(`${this.prefix}/`)
+      ? /^([A-Za-z0-9_-]{32})(\/.*)?$/.exec(incoming.pathname.slice(this.prefix.length + 1))
+      : null;
     if (!match) return null;
     const session = this.#sessions.get(match[1]);
     if (!session || session.deviceId !== device.id || session.expiresAt <= Date.now()) return null;
@@ -182,7 +202,7 @@ export class CompanionViewerRelay {
 
   isViewerPath(rawUrl: string | undefined): boolean {
     const pathname = new URL(rawUrl ?? "/", "http://companion.invalid").pathname;
-    return pathname.startsWith("/vps-viewer/");
+    return pathname.startsWith(`${this.prefix}/`);
   }
 
   handleHttp(req: IncomingMessage, res: ServerResponse, device: ViewerDevice | null): void {
@@ -200,6 +220,7 @@ export class CompanionViewerRelay {
       upstream.setTimeout(0);
       const responseHeaders: Record<string, string | string[]> = {
         "cache-control": "private, no-store",
+        "referrer-policy": "no-referrer",
       };
       for (const name of [
         "content-type",

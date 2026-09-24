@@ -4,6 +4,7 @@ Run the isolated integration recipe:
 
 ```sh
 pnpm exec vitest run server/full-access-workflows.e2e.test.ts
+pnpm exec vitest run scripts/host-approval.test.ts server/approval-mode.test.ts server/drivers/bedrock.test.ts
 pnpm exec vitest run server/team-setup-requests.test.ts server/profile-requests.test.ts server/routine-requests.test.ts
 pnpm exec electron scripts/smoke-approval-modes.cjs --all-threads-only
 pnpm typecheck
@@ -12,7 +13,9 @@ pnpm lint
 
 The test launches its own temporary server through `launchVerificationServer`,
 creates fixture bots and tasks, then stops that exact child before seeding
-Full Access into its disposable saved state. It restarts against the same
+Full Access through the offline, lease-guarded host command in its disposable
+saved state. It also verifies the command refuses to run while the fixture
+server owns its data directory. It restarts against the same
 temporary home with a restricted environment. No production grant bypass or
 live application data is used. Both server processes are stopped before the
 fixture is removed.
@@ -34,6 +37,8 @@ of a real provider's planning quality or authentication.
   card or extra setup continuation appears, and new specialists retain Ask.
 - Real peer coordination succeeds with `approvePeerComms` enabled. Its one
   downstream summary is expected; unrelated setup continuations are not.
+- Bedrock Full access runs the fixture MCP tool without an approval card;
+  local-computer requests remain separately checked by the server.
 - An explicit Ask sibling retains four pending reviews even though the bot
   default is Full. Conversely, an explicit Full thread applies its profile
   change while the bot default remains Ask.

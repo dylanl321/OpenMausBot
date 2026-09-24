@@ -60,7 +60,7 @@ describe("sidebar rows", () => {
     const markup = renderRow(bot({ chiefOfStaff: true, busy: true }));
 
     expect(markup).toContain("Chefe de gabinete");
-    expect(markup).toContain("Trabalhando…");
+    expect(markup).toContain('data-testid="working-dot"');
     expect(markup).not.toContain("Chief of Staff");
 
     setLocale("ja");

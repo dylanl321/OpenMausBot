@@ -5,6 +5,13 @@ import { describe, expect, it } from "vitest";
 import { SidebarSectionHeader } from "./SidebarSectionHeader";
 
 describe("SidebarSectionHeader", () => {
+  it("shows a collapsed team's Chief indicator without duplicating the row", () => {
+    const header = (collapsed: boolean) => renderToStaticMarkup(createElement(SidebarSectionHeader, {
+      name: "Crux", collapsed, chiefName: "Crux Manager", onToggle: () => {}, reorderable: false, dragging: false,
+    }));
+    expect(header(true)).toContain('aria-label="Crux Manager · Chief of Staff"');
+    expect(header(false)).not.toContain('aria-label="Crux Manager · Chief of Staff"');
+  });
   it("exposes collapse and keyboard reorder semantics without a fake grip button", () => {
     const html = renderToStaticMarkup(
       createElement(SidebarSectionHeader, {

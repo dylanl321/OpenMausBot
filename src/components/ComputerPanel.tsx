@@ -133,6 +133,7 @@ interface LocalVmStatus {
   ready: boolean;
   problem: string | null;
   viewer_url: string;
+  remote_viewer_url?: string | null;
 }
 
 const computerControlSnapshotSchema = z.object({
@@ -524,8 +525,8 @@ export function ComputerPanel({
           setResolvedComputerSelection({ botId: bot.id, threadId: bot.threadId, computer: bot.computer, cloudBackend });
           setVmStatus(status);
           // parse at the boundary: our own status endpoint sends a string or nothing
-          const viewerUrl = String(status.viewer_url ?? "");
-          if (viewerUrl.startsWith("http")) setVmViewerUrl(viewerUrl);
+          const viewerUrl = String((window.ogb?.desktopViewer ? status.viewer_url : status.remote_viewer_url ?? status.viewer_url) ?? "");
+          if (viewerUrl.startsWith("http") || viewerUrl.startsWith("/api/desktop-viewer/")) setVmViewerUrl(viewerUrl);
           if (status.ready) {
             vmReadinessAttempts.current = 0;
             setPhase("vm");
@@ -1048,7 +1049,8 @@ export function ComputerPanel({
       let viewerUrl = vmViewerUrl;
       if (cloudPreviewReady) {
         const result = await api(threadPath("computer/join"), { method: "POST", signal: controller.signal });
-        viewerUrl = result.joinUrl?.constructor === String ? String(result.joinUrl) : null;
+        const link = window.ogb?.desktopViewer ? result.joinUrl : result.remoteJoinUrl ?? result.joinUrl;
+        viewerUrl = typeof link === "string" ? link : null;
       }
       if (!ownsConnection()) throw new DOMException("The selected conversation changed", "AbortError");
       if (!viewerUrl) throw new LocalizedPanelError("computer.err.noDesktopLink");
@@ -1057,7 +1059,7 @@ export function ComputerPanel({
         const opened = await window.ogb.desktopViewer.open(viewerUrl, t("computer.viewerTitle", { name: bot.name }), bot.id);
         if (!opened) throw new LocalizedPanelError("computer.err.openDesktop");
       } else if (fallbackTab) {
-        fallbackTab.location.replace(viewerUrl);
+        fallbackTab.location.replace(new URL(viewerUrl, window.location.href).href);
       } else if (window.ogb?.openExternal) {
         const opened = await window.ogb.openExternal(viewerUrl);
         if (!opened) throw new LocalizedPanelError("computer.err.openDesktopLink");

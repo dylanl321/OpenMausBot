@@ -20,6 +20,58 @@ afterEach(async () => {
 });
 
 describe("VPS companion viewer relay", () => {
+  it("relays browser viewers on the app origin and revokes their HTTP and WebSocket access", async () => {
+    const viewer = createServer((req, res) => res.end(`asset:${req.url}`));
+    viewer.on("upgrade", (_request, socket) => {
+      sockets.push(socket);
+      socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: test\r\n\r\nviewer-ready");
+    });
+    servers.push(viewer);
+    const port = await listen(viewer);
+    const relay = new CompanionViewerRelay("/api/desktop-viewer");
+    const original = `http://127.0.0.1:${port}/vnc.html#password=viewer-secret`;
+    const link = relay.registerViewer(original, "local-vm-bot", "browser-session")!;
+    expect(link).toMatch(/^\/api\/desktop-viewer\/[A-Za-z0-9_-]{32}\/vnc\.html#/);
+    expect(link).toContain("path=api%2Fdesktop-viewer%2F");
+    expect(link).not.toContain("127.0.0.1");
+    expect(relay.registerViewer(original, "local-vm-bot", "browser-session")).toBe(link);
+    expect(relay.registerViewer("http://192.0.2.1:6080/vnc.html", "bot", "session")).toBeNull();
+
+    const device = { id: "browser-session", cloudDesktopAccess: true };
+    const app = createServer((req, res) => relay.handleHttp(req, res, device));
+    app.on("upgrade", (req, socket, head) => relay.handleUpgrade(req, socket, head, device));
+    servers.push(app);
+    const appPort = await listen(app);
+    const path = link.split("#")[0];
+    const asset = await fetch(`http://127.0.0.1:${appPort}${path}`);
+    expect(asset.status).toBe(200);
+    expect(asset.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(await asset.text()).toBe("asset:/vnc.html");
+    const otherDevice = { id: "other-session", cloudDesktopAccess: true };
+    const denied = createServer((req, res) => relay.handleHttp(req, res, otherDevice));
+    servers.push(denied);
+    expect((await fetch(`http://127.0.0.1:${await listen(denied)}${path}`)).status).toBe(404);
+
+    const socket = createConnection({ host: "127.0.0.1", port: appPort });
+    sockets.push(socket);
+    const message = await new Promise<string>((resolve, reject) => {
+      socket.on("data", (chunk: Buffer) => {
+        if (chunk.toString().includes("viewer-ready")) resolve(chunk.toString());
+      });
+      socket.once("error", reject);
+      socket.setTimeout(2_000, () => reject(new Error("viewer WebSocket timed out")));
+      socket.once("connect", () => socket.write(
+        `GET ${path.replace("/vnc.html", "/websockify")} HTTP/1.1\r\n`
+        + `Host: 127.0.0.1:${appPort}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n`
+        + "Sec-WebSocket-Key: dGVzdA==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+      ));
+    });
+    expect(message).toContain("viewer-ready");
+    relay.closeBot("local-vm-bot");
+    expect((await fetch(`http://127.0.0.1:${appPort}${path}`)).status).toBe(404);
+    expect(socket.destroyed).toBe(true);
+  });
+
   it("rewrites only a generated loopback noVNC URL and keeps its password in the fragment", () => {
     const relay = new CompanionViewerRelay();
     const rewritten = relay.rewriteJoinResponse(

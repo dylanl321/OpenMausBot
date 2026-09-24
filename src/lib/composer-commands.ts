@@ -1,4 +1,4 @@
-export type ComposerSlashCommandId = "goal" | "learn" | "setup";
+export type ComposerSlashCommandId = "goal" | "pursue" | "learn" | "setup";
 
 export interface ComposerSlashCommand {
   id: ComposerSlashCommandId;

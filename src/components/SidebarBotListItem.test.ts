@@ -38,19 +38,19 @@ function renderRow(candidate: Bot) {
 }
 
 describe("BotListItem", () => {
-  it("offers a direct New folder button and keyboard-accessible bot menu independently of New thread", () => {
+  it("offers a separate navigator and keyboard-accessible bot menu", () => {
     const markup = renderRow(bot());
-    expect(markup).toContain('aria-label="New folder under Atlas"');
+    expect(markup).toContain('aria-label="Browse Atlas threads and folders"');
     expect(markup).toContain('aria-label="Actions for Atlas"');
     expect(markup).toContain('aria-haspopup="menu"');
   });
-  it("keeps the native thread toggle beside, not inside, the selectable bot row", () => {
+  it("keeps the navigator chevron beside, not inside, the selectable bot row", () => {
     const markup = renderRow(bot());
     expect(markup).toContain('role="button" tabindex="0"');
-    expect(markup).toContain('</div><button type="button" aria-label="Expand Atlas threads" aria-expanded="false"');
-    const toggle = markup.match(/<button[^>]*aria-label="Expand Atlas threads"[^>]*>/)?.[0];
-    expect(toggle).toContain("focus-visible:ring-1");
-    expect(toggle).not.toContain("hover:bg-");
+    expect(markup).toContain('</div><button type="button" aria-label="Browse Atlas threads and folders" aria-haspopup="dialog"');
+    const chevron = markup.match(/<button[^>]*aria-label="Browse Atlas threads and folders"[^>]*>/)?.[0];
+    expect(chevron).toContain("focus-visible:ring-1");
+    expect(chevron).toContain("hover:bg-raised");
   });
 
   // Phase 0 writes a digest row after every turn, so the last row of an idle
@@ -72,6 +72,17 @@ describe("BotListItem", () => {
 
     expect(markup).toContain('data-sidebar-bot-row="atlas"');
     expect(markup).not.toContain('aria-label="Archive Atlas"');
+  });
+
+  it.each([["comfortable", 56], ["compact", 48], ["icons", 56]] as const)("makes only a pinned Chief a %s hero", (density, size) => {
+    const markup = renderToStaticMarkup(createElement(StoreProvider, null, createElement(BotListItem, {
+      bot: bot({ chiefOfStaff: true, pinned: true, title: "Chief" }), density, hero: true, onMenu: vi.fn(),
+    })));
+    expect(markup).toContain('data-chief-hero="atlas"');
+    expect(markup).toContain(`width="${size}px" height="${size}px"`);
+    expect(markup).toContain("Chief of Staff");
+    expect(markup).not.toContain("No messages yet");
+    expect(renderRow(bot({ chiefOfStaff: true }))).not.toContain('data-chief-hero="atlas"');
   });
 
   it("shows the Chief of Staff label on its own line under the name", () => {
@@ -133,12 +144,27 @@ describe("BotListItem", () => {
     expect(renderRow(bot({ busy: true, activity: "waiting-on-you" }))).not.toContain('data-testid="working-dot"');
   });
 
+  it("distinguishes teammate background work from waiting on the person in compact and icon-only layouts", () => {
+    const waiting = bot({ waitingForTeammates: true, tasks: [{ threadId: "thread-atlas", title: "Follow-up", createdAt: 1, waitingForTeammates: true }] });
+    for (const density of ["comfortable", "compact", "icons"] as const) {
+      const markup = renderToStaticMarkup(createElement(StoreProvider, null, createElement(BotListItem, { bot: waiting, density, onMenu: vi.fn() })));
+      expect(markup).toContain('data-testid="teammates-dot"');
+      expect(markup).toContain('aria-label="Waiting for teammates"');
+      expect(markup).not.toContain('data-testid="working-dot"');
+      if (density === "icons") expect(markup).toContain('aria-label="Atlas · Waiting for teammates"');
+      else expect(markup).toContain("Waiting for teammates");
+    }
+    expect(renderRow(bot({ ...waiting, waitingForTeammates: false, tasks: waiting.tasks!.map(task => ({ ...task, waitingForTeammates: false })) }))).not.toContain('data-testid="teammates-dot"');
+    expect(renderRow(bot({ ...waiting, busy: true }))).not.toContain('data-testid="teammates-dot"');
+    expect(renderRow(bot({ ...waiting, activity: "waiting-on-you" }))).toContain('data-testid="waiting-dot"');
+  });
+
   it("keeps Archive in the Actions menu and reveals quiet row controls on focus as well as hover", () => {
     const markup = renderRow(bot());
     expect(markup).not.toContain('aria-label="Archive Atlas"');
     expect(markup).toContain('aria-label="Actions for Atlas"');
     expect(markup).toContain("group-focus-within:opacity-100");
-    expect(markup).toContain("group-hover:pointer-events-auto");
+    expect(markup).toContain("group-hover:opacity-100");
     expect(markup).not.toContain("pr-[92px]");
   });
 });

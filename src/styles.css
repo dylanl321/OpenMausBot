@@ -1370,3 +1370,13 @@ button:disabled.bg-danger {
 [data-sidebar] :is(button, [role="button"]):not(:disabled, [aria-busy="true"]) {
   cursor: pointer;
 }
+
+@keyframes sidebar-navigator-enter {
+  from { transform: translateX(-18px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.sidebar-navigator-enter { animation: sidebar-navigator-enter 180ms ease-out both; }
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-navigator-enter { animation: none; }
+}

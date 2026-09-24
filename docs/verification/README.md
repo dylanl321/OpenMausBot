@@ -171,6 +171,9 @@ The [routines fixture](routines.md) checks confirmed proposals, manual and
 scheduled runs, central run logs, List/Calendar views, and bot-scoped routines
 using the real renderer and an isolated fake-engine server.
 
+The [ongoing goals fixture](ongoing-goals.md) checks durable, scoped pursuit
+with an isolated fake-engine server, without touching live conversations.
+
 The [interval restrictions recipe](interval-restrictions.md) checks weekday and
 time-window limits on scheduled routines in that same disposable fixture.
 

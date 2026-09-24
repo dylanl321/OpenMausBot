@@ -18,7 +18,7 @@
 // `{configured: true}` survives, the host label does not.
 
 /** Keys that are the harness's business, never a device's. */
-const WITHHELD_KEYS = new Set(["resumeCursors", "sshAlias"]);
+const WITHHELD_KEYS = new Set(["resumeCursors", "sshAlias", "remoteJoinUrl", "remote_viewer_url"]);
 
 /** Recursively drop the withheld keys, wherever they appear. */
 export function scrub<T>(value: T): T {

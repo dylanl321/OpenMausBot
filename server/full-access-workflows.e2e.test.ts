@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";
+import { setHostApproval } from "../scripts/host-approval.ts";
 import { waitForExit } from "./testing/cleanup.ts";
 
 it("applies requested Full Access workflows through MCP without duplicate approvals, while exact Ask tasks still wait", async () => {
@@ -106,13 +107,13 @@ it("applies requested Full Access workflows through MCP without duplicate approv
 
     // This is fixture setup, not a production grant endpoint or bypass flag.
     // Stop the exact owned server before changing its disposable persisted data.
+    expect(() => setHostApproval(dataDir, { bot: chief.id }, "full", true)).toThrow("already using this data directory");
     await waitForExit(fixture.child, { signal: "SIGTERM" });
+    expect(setHostApproval(dataDir, { bot: chief.id }, "full", true)).toEqual([chief.name]);
     const savedBots = JSON.parse(readFileSync(join(dataDir, "bots.json"), "utf8"));
     const savedChief = savedBots.find((bot: any) => bot.id === chief.id);
-    savedChief.approvalMode = "full"; savedChief.autoApprove = false;
     for (const task of savedChief.tasks) {
-      task.approvalMode = task.threadId === ask.threadId ? "ask" : "full";
-      task.autoApprove = false;
+      if (task.threadId === ask.threadId) task.approvalMode = "ask";
     }
     const savedInverse = savedBots.find((bot: any) => bot.id === inverse.id);
     savedInverse.approvalMode = "ask"; savedInverse.autoApprove = false;

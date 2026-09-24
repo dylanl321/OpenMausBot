@@ -32,7 +32,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { api, useStore, formatTime, visibleMessages, currentTaskBot, type AppState, type Bot, type Group } from "@/state/store";
+import { api, openThread, useStore, formatTime, visibleMessages, currentTaskBot, type AppState, type Bot, type Group } from "@/state/store";
 import { peerLine } from "@/lib/peer-message";
 
 import { BotAvatar, InitialsAvatar } from "./Avatar";
@@ -47,7 +47,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { WorkingDots } from "./WorkingIndicator";
 import { nextRename } from "@/lib/rename";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
-import { MIN_QUERY, SearchResults } from "./SearchResults";
+import { SearchResults } from "./SearchResults";
 import { TeamLibraryPanel } from "./TeamLibraryPanel";
 import { TeamDialog } from "./TeamDialog";
 import { RenameTitle } from "./RenameTitle";
@@ -80,7 +80,6 @@ import {
   partitionSidebarGroups,
   placeSection,
   sameSectionOrder,
-  sidebarGoalRunPreview,
   sidebarLayoutInteractive,
   sidebarSectionCollapsed,
   sidebarSectionLabel,
@@ -98,7 +97,8 @@ import { DesktopWorkspaceSwitcher } from "./DesktopWorkspaceSwitcher";
 import { profileInitials, SidebarProfileMenu } from "./SidebarProfileMenu";
 import { SidebarSectionHeader } from "./SidebarSectionHeader";
 import { useShowThreads } from "@/lib/thread-preferences";
-import { AttentionThreadRows, crossBotAttentionThreads, SidebarBotActivity, sidebarBotActivityTasks } from "./SidebarBotActivity";
+import { useThreadInactivityCutoff } from "@/lib/thread-inactivity-preference";
+import { AttentionThreadRows, crossBotAttentionThreads, sidebarBotActivityTasks } from "./SidebarBotActivity";
 import { SidebarAttentionPanel } from "./SidebarAttentionPanel";
 import { ShortcutHint } from "./ShortcutHint";
 
@@ -138,24 +138,6 @@ interface MenuState {
   y: number;
 }
 
-function groupPreview(group: Group, bots: Bot[]): string {
-  if (group.busyBotId) {
-    return t("sidebar.preview.botWorking", {
-      name: bots.find((b) => b.id === group.busyBotId)?.name ?? t("sidebar.preview.aBot"),
-    });
-  }
-  if (group.working) return t("sidebar.preview.teamWorking");
-  const last = lastNonReceipt(group.messages);
-  if (!last) return t("sidebar.preview.noMessages");
-  const text = last.kind === "activity" && last.tool
-    ? last.tool.name
-    : last.kind === "goal.run" && last.goalRun
-      ? sidebarGoalRunPreview(last.goalRun)
-      : (last.text ?? "");
-  if (last.role === "user") return t("sidebar.preview.you", { text });
-  return last.from ? `${last.from.name}: ${text}` : text;
-}
-
 /** A small member stack identifies a group without turning it into a card. */
 function StackedMauses({ members, density }: { members: Bot[]; density: SidebarDensity }) {
   const iconOnly = density === "icons";
@@ -190,25 +172,22 @@ function StackedMauses({ members, density }: { members: Bot[]; density: SidebarD
 export function GroupListItem({
   group,
   density,
-  query = "",
   onMenu,
+  onNavigate,
 }: {
   group: Group;
   density: SidebarDensity;
   query?: string;
   onMenu: (menu: { groupId: string; x: number; y: number }) => void;
+  onNavigate?: (opener: HTMLElement, groupId: string) => void;
 }) {
   const { state, dispatch } = useStore();
   const selected = state.activeView === "chat" && state.selectedId === group.id;
-  const workCount = group.tasks?.filter(task => task.workItem).length ?? 0;
   const topicSelected = selectedSharedWork(state)?.groupId === group.id;
-  const [threadsOpen, setThreadsOpen] = useState(selected || topicSelected || workCount > 0 || Boolean(query));
-  useEffect(() => { if (selected || topicSelected || query || workCount > 0) setThreadsOpen(true); }, [selected, topicSelected, query, workCount]);
-  const expanded = !group.dm && threadsOpen && density !== "icons";
+  const workCount = group.tasks?.filter(task => task.workItem).length ?? 0;
   const members = group.memberIds
     .map((id) => state.bots.find((b) => b.id === id))
     .filter((b): b is Bot => Boolean(b));
-  const last = group.messages.at(-1);
   return (
     <div data-work-topic={workCount > 0 ? group.id : undefined}>
     <div className={cn("group relative", workCount > 0 && "rounded-lg border-l-2 border-accent/50 bg-accent/5")}>
@@ -229,8 +208,8 @@ export function GroupListItem({
       }}
       className={cn(
         "relative flex w-full items-center rounded-md text-left outline-none focus-visible:ring-1 focus-visible:ring-accent/60",
-        density === "icons" ? "justify-center px-1 py-1.5" : density === "compact" ? "gap-1.5 py-1 pl-6 pr-2" : "gap-2 py-1.5 pl-6 pr-2",
-        selected && !expanded ? "bg-raised/70" : "hover:bg-raised/40",
+        density === "icons" ? "justify-start px-1 py-1.5" : density === "compact" ? "gap-1.5 py-1 pl-2 pr-10" : "gap-2 py-1.5 pl-2 pr-10",
+        selected || topicSelected ? "bg-raised/70" : "hover:bg-raised/40",
       )}
       title={density === "icons" ? group.name : undefined}
       aria-label={density === "icons" ? group.name : undefined}
@@ -239,12 +218,10 @@ export function GroupListItem({
       <div className={cn("min-w-0 flex-1", density === "icons" && "hidden")}>
         <div className="flex items-baseline justify-between gap-2">
           <span className="truncate text-[14px] font-semibold text-ink">{group.name}</span>
-          {selected && last && !expanded && <span className="shrink-0 text-[10px] text-ink-secondary">{formatTime(last.at)}</span>}
-          {expanded && group.unread && <span className="size-1.5 shrink-0 rounded-full bg-accent" aria-label={t("task.unreadMany")} />}
         </div>
         {workCount > 0 && <div className="mt-0.5 truncate text-[10px] text-ink-secondary">{t("work.topic")} · {t(workCount === 1 ? "work.topicTask" : "work.topicTasks", { count: workCount })}</div>}
-        {!expanded && <div className="flex items-center justify-between gap-2">
-          <span className="truncate text-[11px] text-ink-secondary">{groupPreview(group, state.bots)}</span>
+        {workCount === 0 && <div className="flex items-center justify-between gap-2">
+          <span className="truncate text-[11px] text-ink-secondary">{group.dm ? t("sidebar.section.botChats") : t("sidebar.navigator.groupChat")}</span>
           {group.unread && <span className="size-2 shrink-0 rounded-full bg-accent" />}
         </div>}
       </div>
@@ -252,12 +229,11 @@ export function GroupListItem({
         <span className="absolute bottom-1.5 right-1.5 size-2 rounded-full border border-panel bg-accent" />
       )}
     </button>
-    {!group.dm && density !== "icons" && <button type="button" aria-label={t(expanded ? "task.collapseNamed" : "task.expandNamed", { name: group.name })} aria-expanded={expanded}
-      onClick={() => setThreadsOpen((open) => !open)} className="absolute left-0.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-ink-secondary outline-none hover:text-ink focus-visible:ring-1 focus-visible:ring-accent/60">
-      <ChevronRight aria-hidden="true" size={12} className={cn("transition-transform", expanded && "rotate-90")} />
-    </button>}
+    <button type="button" aria-label={t(workCount ? "sidebar.navigator.browseTasks" : "sidebar.navigator.browseThreads", { name: group.name })} aria-haspopup="dialog"
+      onClick={(event) => onNavigate?.(event.currentTarget, group.id)} className={cn("absolute right-1 top-1/2 flex size-8 -translate-y-1/2 items-center justify-center rounded text-ink-secondary outline-none hover:bg-raised hover:text-ink focus-visible:ring-1 focus-visible:ring-accent/60", density === "icons" && "right-0 size-5")}>
+      <ChevronRight aria-hidden="true" size={16} />
+    </button>
     </div>
-    {expanded && <GroupThreadList group={group} selected={selected} density={density} query={group.name.toLowerCase().includes(query.toLowerCase()) ? "" : query} />}
     </div>
   );
 }
@@ -273,8 +249,9 @@ function useRevealedThreadRow(reveal: AppState["revealThread"], currentThreadId:
   }, [reveal, currentThreadId]);
 }
 
-export function GroupThreadList({ group, selected, density = "comfortable", query = "", filter: filterProp }: { group: Group; selected: boolean; density?: SidebarDensity; query?: string; filter?: SidebarWorkFilter }) {
+export function GroupThreadList({ group, selected, density = "comfortable", query = "", filter: filterProp, onNavigate }: { group: Group; selected: boolean; density?: SidebarDensity; query?: string; filter?: SidebarWorkFilter; onNavigate?: () => void }) {
   const { state, dispatch } = useStore();
+  const inactiveBefore = useThreadInactivityCutoff();
   const [showAll, setShowAll] = useState(false);
   const [filter, setFilter] = useState<SidebarWorkFilter>(filterProp ?? "all");
   const busy = Boolean(group.working || group.busyBotId);
@@ -294,7 +271,7 @@ export function GroupThreadList({ group, selected, density = "comfortable", quer
   });
   const visible = orderedThreadList(hasWork || showAll || Boolean(query)
     ? matchingTasks
-    : visibleSidebarThreads(matchingTasks, activeThread, "", [], false));
+    : visibleSidebarThreads(matchingTasks, activeThread, "", [], false, inactiveBefore, selected ? activeThread : ""));
   const selectedBot = state.bots.find(bot => bot.id === state.selectedId);
   useRevealedThreadRow(state.revealThread, activeWork?.groupId === group.id && selectedBot ? selectedBot.threadId : selected ? group.threadId : null);
   return <div className="mb-2 ml-5 space-y-0.5 border-l border-hairline/30 pl-2" role="group" aria-label={t("task.namedList", { name: group.name })}>
@@ -311,8 +288,108 @@ export function GroupThreadList({ group, selected, density = "comfortable", quer
       onDelete={() => dispatch({ type: "deleteGroupTask", groupId: group.id, threadId: task.threadId })}
       onPin={(pinned) => dispatch({ type: "pinGroupTask", groupId: group.id, threadId: task.threadId, pinned, title: task.title })} />)}
     {!hasWork && !query && !showAll && tasks.length > visible.length && <button type="button" onClick={() => setShowAll(true)} className="px-3 py-1.5 text-[11px] text-ink-secondary hover:text-ink">{t("task.showAll", { count: tasks.length })}</button>}
-    <button type="button" disabled={busy} onClick={() => dispatch({ type: "newGroupTask", groupId: group.id })} title={t(busy ? "task.newBusy" : "task.newShort")}
+    <button type="button" disabled={busy} onClick={() => { dispatch({ type: "newGroupTask", groupId: group.id }); onNavigate?.(); }} title={t(busy ? "task.newBusy" : "task.newShort")}
       className="mt-1 flex min-h-8 w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-[12px] text-ink-secondary hover:bg-raised/40 hover:text-ink disabled:opacity-40"><Plus size={12} />{t("task.newShort")}</button>
+  </div>;
+}
+
+type NavigatorTarget = { kind: "bot" | "group"; id: string };
+
+export function SidebarNavigator({ target, density, docked, onClose, onNavigate }: {
+  target: NavigatorTarget;
+  density: SidebarDensity;
+  docked: boolean;
+  onClose: () => void;
+  onNavigate: () => void;
+}) {
+  const { state, dispatch } = useStore();
+  const bot = target.kind === "bot" ? state.bots.find(candidate => candidate.id === target.id && !candidate.hidden) : undefined;
+  const group = target.kind === "group" ? state.groups.find(candidate => candidate.id === target.id) : undefined;
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<SidebarWorkFilter>("all");
+  const backRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => { backRef.current?.focus(); }, []);
+  const workTasks = group?.tasks?.filter(task => task.workItem) ?? [];
+  const workTopic = workTasks.length > 0;
+  const name = bot?.name ?? group?.name ?? "";
+  if (!bot && !group) return null;
+  return <div data-sidebar-navigator data-sidebar role="dialog" aria-modal="false" aria-label={t("sidebar.navigator.browse", { name })} className={cn(
+    "sidebar-navigator-enter absolute inset-y-0 z-40 flex h-full w-[320px] max-w-full shrink-0 flex-col border-r border-hairline/50 bg-panel shadow-2xl",
+    docked && "min-[1280px]:relative min-[1280px]:left-auto min-[1280px]:shadow-none",
+    "max-md:left-0 max-md:top-0 max-md:z-50 max-md:w-full",
+    "max-md:right-0",
+    density === "icons" ? "left-[80px]" : density === "compact" ? "left-[272px]" : "left-[320px]",
+  )}>
+    <div className="flex items-center gap-2 border-b border-hairline/40 px-3 py-3">
+      <button ref={backRef} type="button" onClick={onClose} aria-label={t("sidebar.navigator.backFrom", { name })} className="rounded-md px-2 py-1.5 text-sm text-ink-secondary hover:bg-raised focus-visible:ring-1 focus-visible:ring-accent">
+        <span className="md:hidden">{t("sidebar.navigator.back")}</span><span className="max-md:hidden">{t("sidebar.navigator.close")}</span>
+      </button>
+      <div className="min-w-0 flex-1 truncate text-sm font-semibold text-ink">{name}</div>
+      <span className="text-[11px] text-ink-secondary">{bot ? t("sidebar.navigator.bot") : workTopic ? t("work.topic") : t("task.list")}</span>
+    </div>
+    {workTopic && <div className="border-b border-hairline/40 p-2">
+      <input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder={t("sidebar.navigator.filter")} aria-label={t("sidebar.navigator.filterNamed", { name })} className="w-full rounded-md bg-inset px-3 py-2 text-sm text-ink outline-none focus-visible:ring-1 focus-visible:ring-accent" />
+      <div role="toolbar" aria-label={t("work.filterBar")} className="mt-2 flex flex-wrap gap-1">
+        {SIDEBAR_WORK_FILTERS.map(value => <button key={value} type="button" aria-pressed={filter === value} onClick={() => setFilter(value)} className={cn("rounded-full border px-2 py-1 text-[11px]", filter === value ? "border-accent/40 bg-accent/10 text-ink" : "border-hairline/40 text-ink-secondary hover:bg-raised")}>{t(`work.filter.${value}`)}</button>)}
+      </div>
+    </div>}
+    <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3" onClick={event => {
+      if ((event.target as Element).closest("[data-sidebar-thread-row]")) onNavigate();
+    }}>
+      {bot && <BotThreadList bot={bot} selected={state.selectedId === bot.id && state.activeView === "chat"} density={density} onNavigate={onNavigate} />}
+      {group && !workTopic && <GroupThreadList group={group} selected={state.selectedId === group.id && state.activeView === "chat"} density={density} onNavigate={onNavigate} />}
+      {group && workTopic && <div className="space-y-1" role="list" aria-label={t("task.namedList", { name })}>
+        {workTasks.filter(task => task.workItem && sharedWorkMatches(task.workItem, state.bots, query) && matchesSidebarWorkFilter(task.workItem, state.bots, filter)).map(task => <div key={task.threadId} role="listitem"><button type="button" data-sidebar-task-row={task.workItem!.id} aria-current={selectedSharedWork(state)?.id === task.workItem!.id ? "page" : undefined}
+          onClick={() => { openThread(dispatch, { botId: task.workItem!.coordinatorBotId, threadId: task.threadId }, state); onNavigate(); }}
+          className="flex w-full flex-col rounded-lg px-3 py-2 text-left text-ink hover:bg-raised focus-visible:ring-1 focus-visible:ring-accent">
+          <span className="truncate text-sm font-medium">{task.workItem!.title}</span><span className="text-[11px] text-ink-secondary">{t(`work.status.${task.workItem!.status}`)}</span>
+        </button></div>)}
+        {!workTasks.some(task => task.workItem && sharedWorkMatches(task.workItem, state.bots, query) && matchesSidebarWorkFilter(task.workItem, state.bots, filter)) && <p className="px-3 py-3 text-xs text-ink-secondary">{t("work.filterEmpty")}</p>}
+      </div>}
+    </div>
+  </div>;
+}
+
+export function SidebarDirectResults({ query, onLanded, onBrowse }: {
+  query: string;
+  onLanded: () => void;
+  onBrowse: (opener: HTMLElement, target: NavigatorTarget) => void;
+}) {
+  const { state, dispatch } = useStore();
+  const showThreads = useShowThreads();
+  const needle = query.trim().toLowerCase();
+  if (!needle) return null;
+  const workIds = sharedWorkIds(state.groups);
+  const threads = !showThreads ? [] : state.bots.filter(bot => !bot.hidden).flatMap(bot => (bot.tasks ?? [])
+    .filter(task => !task.routineRunId && !workIds.has(task.workItemId ?? "") && task.title.toLowerCase().includes(needle))
+    .map(task => ({ bot, task })));
+  const folders = !showThreads ? [] : state.bots.filter(bot => !bot.hidden).flatMap(bot => (bot.projects ?? [])
+    .filter(folder => folder.name.toLowerCase().includes(needle)).map(folder => ({ bot, folder })));
+  const groupThreads = state.groups.flatMap(group => (group.tasks ?? [])
+    .filter(task => !task.workItem && task.title.toLowerCase().includes(needle))
+    .map(task => ({ group, task })));
+  const workTasks = state.groups.flatMap(group => (group.tasks ?? [])
+    .filter(task => task.workItem && sharedWorkMatches(task.workItem, state.bots, needle))
+    .map(task => ({ group, task })));
+  if (!threads.length && !folders.length && !groupThreads.length && !workTasks.length) return null;
+  const row = (key: string, label: string, name: string, subtitle: string, onClick: (event: React.MouseEvent<HTMLButtonElement>) => void) =>
+    <button key={key} type="button" onClick={onClick} className="flex w-full flex-col rounded-md px-3 py-1.5 text-left hover:bg-raised focus-visible:ring-1 focus-visible:ring-accent">
+      <span className="text-[10px] text-ink-secondary">{label} · {subtitle}</span><span className="w-full truncate text-[13px] text-ink">{name}</span>
+    </button>;
+  return <div role="group" aria-label={t("sidebar.navigator.results")} className="border-t border-hairline/40 pt-2">
+    <div className="px-3 pb-1 text-[11px] font-semibold text-ink-secondary">{t("sidebar.navigator.results")}</div>
+    {workTasks.map(({ group, task }) => row(`work:${task.threadId}`, t("work.topic"), task.workItem!.title, group.name, () => {
+      openThread(dispatch, { botId: task.workItem!.coordinatorBotId, threadId: task.threadId }, state); onLanded();
+    }))}
+    {threads.map(({ bot, task }) => row(`bot:${task.threadId}`, t("task.list"), task.title, bot.name, () => {
+      dispatch({ type: "switchTask", botId: bot.id, threadId: task.threadId }); onLanded();
+    }))}
+    {groupThreads.map(({ group, task }) => row(`group:${task.threadId}`, t("sidebar.navigator.groupChat"), task.title, group.name, () => {
+      dispatch({ type: "switchGroupTask", groupId: group.id, threadId: task.threadId }); onLanded();
+    }))}
+    {folders.map(({ bot, folder }) => row(`folder:${folder.id}`, t("sidebar.navigator.folder"), folder.name, bot.name, event => {
+      onBrowse(event.currentTarget, { kind: "bot", id: bot.id }); onLanded();
+    }))}
   </div>;
 }
 
@@ -893,8 +970,9 @@ export function BotDeleteMenuItem({ deleting, onClick }: { deleting: boolean; on
 /** The thread tree under one bot row: project folders, then ungrouped rows.
  * Visibility folds old threads away. Pins stay, then the newest update.
  * Waiting and working stay visible as status, not as a sort key. */
-export function BotThreadList({ bot, selected, density = "comfortable", query = "", hidden = false }: { bot: Bot; selected: boolean; density?: SidebarDensity; query?: string; hidden?: boolean }) {
+export function BotThreadList({ bot, selected, density = "comfortable", query = "", hidden = false, onNavigate }: { bot: Bot; selected: boolean; density?: SidebarDensity; query?: string; hidden?: boolean; onNavigate?: () => void }) {
   const { state, dispatch } = useStore();
+  const inactiveBefore = useThreadInactivityCutoff();
   const topicWorkIds = sharedWorkIds(state.groups);
   const tasks = (bot.tasks ?? [{ threadId: bot.threadId, title: t("task.newShort"), createdAt: 0 }])
     .filter((task) => !task.routineRunId && !topicWorkIds.has(task.workItemId ?? ""))
@@ -923,7 +1001,7 @@ export function BotThreadList({ bot, selected, density = "comfortable", query = 
     });
   }, [selected, currentProjectId]);
   // Pin, then newest update. Search keeps the same order among matches.
-  const visibleTasks = orderedThreadList(visibleSidebarThreads(tasks, bot.threadId, query, projects, showAll));
+  const visibleTasks = orderedThreadList(visibleSidebarThreads(tasks, bot.threadId, query, projects, showAll, inactiveBefore, selected ? bot.threadId : ""));
   // A folder rises with the thread of its that sits highest in that order.
   // An empty index sorts last. Saved order breaks ties, and still governs
   // move up and down.
@@ -1031,7 +1109,7 @@ export function BotThreadList({ bot, selected, density = "comfortable", query = 
               <span className="shrink-0 text-[10px] font-normal opacity-50">{projectTasks.length}</span>
               {!open && (waiting ? <span className="text-[10px] text-warning">{t("task.waiting")}</span> : working ? <Loader2 size={10} className="shrink-0 animate-spin text-success" /> : projectTasks.some((task) => task.unread) ? <span className="size-1.5 shrink-0 rounded-full bg-accent" aria-label={t("task.unreadMany")} /> : null)}
             </button>
-            <button type="button" title={t("task.newIn", { name: project.name })} aria-label={t("task.newIn", { name: project.name })} onClick={() => dispatch({ type: "newTask", botId: bot.id, projectId: project.id })}
+            <button type="button" title={t("task.newIn", { name: project.name })} aria-label={t("task.newIn", { name: project.name })} onClick={() => { dispatch({ type: "newTask", botId: bot.id, projectId: project.id }); onNavigate?.(); }}
               className="flex size-6 items-center justify-center rounded opacity-0 hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover/folder:opacity-100 max-md:opacity-70"><Plus size={12} /></button>
             <FolderActions project={project} canMoveUp={index > 0} canMoveDown={index < projects.length - 1} canMarkRead={folderUnreadThreadIds(bot, project.id).length > 0} saving={reordering || markingRead}
               menu={folderMenu?.projectId === project.id ? folderMenu : null} onMenuChange={(menu) => setFolderMenu(menu ? { ...menu, projectId: project.id } : null)}
@@ -1058,7 +1136,7 @@ export function BotThreadList({ bot, selected, density = "comfortable", query = 
         </button>
         {showArchived && archivedTasks.map(renderThread)}
       </>}
-      <NewThreadButton bot={bot} className="mt-1 w-full rounded-md" />
+      <NewThreadButton bot={bot} className="mt-1 w-full rounded-md" onCreated={onNavigate} />
       {projectToEdit && <BotProjectDialog bot={bot} project={projectToEdit} onClose={() => setEditingProject(null)} />}
       </>}
     </div>
@@ -1068,36 +1146,29 @@ export function BotThreadList({ bot, selected, density = "comfortable", query = 
 export function BotListItem({
   bot,
   density,
-  query = "",
   onMenu,
+  onNavigate,
+  hero = false,
 }: {
   bot: Bot;
   density: SidebarDensity;
   query?: string;
   onMenu: (menu: MenuState) => void;
+  onNavigate?: (opener: HTMLElement, botId: string) => void;
+  hero?: boolean;
 }) {
   const { state, dispatch } = useStore();
   const showThreads = useShowThreads();
   const remoteClient = typeof window !== "undefined" && window.ogb?.remoteClient?.active === true;
   const [renaming, setRenaming] = useState(false);
-  const [creatingProject, setCreatingProject] = useState(false);
   const selected = state.activeView === "chat" && state.selectedId === bot.id;
-  const [threadsOpen, setThreadsOpen] = useState(Boolean(query));
-  useEffect(() => { if (query && showThreads) setThreadsOpen(true); }, [query, showThreads]);
-  // a thread opened from a chip or #Title link: unfold this bot so the row
-  // it lands on is on screen (BotThreadList scrolls it into view)
-  const reveal = state.revealThread;
-  const revealedTask = bot.tasks?.find(task => task.threadId === reveal?.threadId);
-  const revealHere = Boolean(reveal && !sharedWorkIds(state.groups).has(revealedTask?.workItemId ?? "") && (bot.threadId === reveal.threadId || revealedTask));
-  useEffect(() => { if (revealHere && showThreads) setThreadsOpen(true); }, [reveal, revealHere, showThreads]);
   const deleting = state.deletingBots[bot.id] === true;
   const mascotMotion = selected && state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
   const iconOnly = density === "icons";
-  const expanded = showThreads && !iconOnly && threadsOpen;
   useEffect(() => {
     if (iconOnly) setRenaming(false);
   }, [iconOnly]);
-  const avatarSize = iconOnly ? 44 : density === "compact" ? (showThreads ? 26 : 40) : (showThreads ? 32 : 56);
+  const avatarSize = hero ? density === "compact" ? 48 : 56 : iconOnly ? 44 : density === "compact" ? (showThreads ? 26 : 40) : (showThreads ? 32 : 56);
   // the visible branch, so a version switch changes the row with the chat
   const visible = visibleMessages(bot);
   const last = visible.at(-1);
@@ -1108,18 +1179,20 @@ export function BotListItem({
   const rowClass = cn(
     "flex w-full items-center rounded-md text-left outline-none focus-visible:ring-1 focus-visible:ring-accent/60",
     iconOnly
-      ? "justify-center px-1 py-1.5"
+      ? "justify-start px-1 py-1.5"
       : density === "compact"
-        ? cn(showThreads ? "gap-1.5 py-1" : "gap-2 py-1.5", showThreads ? "pl-6 pr-9 group-hover:pr-16 group-focus-within:pr-16 max-md:pr-16" : "pl-2 pr-9")
-        : cn(showThreads ? "gap-2 py-2" : "gap-3 py-2.5", showThreads ? "pl-6 pr-9 group-hover:pr-16 group-focus-within:pr-16 max-md:pr-16" : "pl-2 pr-9"),
+        ? cn(showThreads ? "gap-1.5 py-1" : "gap-2 py-1.5", "pl-2 pr-11")
+        : cn(showThreads ? "gap-2 py-2" : "gap-3 py-2.5", "pl-2 pr-11"),
     // Chief of Staff is called out by the crown label below, not by tinting
     // the whole row — an accent border + fill read as "selected" even when
     // another bot was active.
     selected ? "bg-raised/70" : "hover:bg-raised/40",
   );
   const activityTasks = sidebarBotActivityTasks(bot, state.pendingQueued);
+  const botPreview = bot.chiefOfStaff ? "" : preview(bot);
   const waiting = bot.activity === "waiting-on-you" || activityTasks.some((task) => task.activity === "waiting-on-you");
   const working = !waiting && (Boolean(bot.busy) || activityTasks.some((task) => task.busy || task.activity === "working"));
+  const waitingTeammates = !waiting && !working && (Boolean(bot.waitingForTeammates) || bot.tasks?.some(task => task.waitingForTeammates));
   const queued = activityTasks.some((task) => task.queued);
   const unread = bot.unread || activityTasks.some((task) => task.unread);
   const body = (
@@ -1153,7 +1226,9 @@ export function BotListItem({
         )}
         {waiting && <span data-testid="waiting-dot" role="status" aria-label={t("sidebar.preview.waiting")} title={t("sidebar.preview.waiting")}
           className={cn("absolute -right-0.5 -bottom-0.5 rounded-full border-2 border-panel bg-warning", iconOnly ? "size-3" : "size-2.5")} />}
-        {!waiting && !working && queued && <span data-testid="queued-dot" role="status" aria-label={t("task.queued")} title={t("task.queued")}
+        {waitingTeammates && <span data-testid="teammates-dot" role="status" aria-label={t("chat.waitingTeammates")} title={t("chat.waitingTeammates")}
+          className={cn("absolute -right-0.5 -bottom-0.5 rounded-full border-2 border-panel bg-accent", iconOnly ? "size-3" : "size-2.5")} />}
+        {!waiting && !working && !waitingTeammates && queued && <span data-testid="queued-dot" role="status" aria-label={t("task.queued")} title={t("task.queued")}
           className={cn("absolute -right-0.5 -bottom-0.5 rounded-full border-2 border-panel bg-ink-secondary", iconOnly ? "size-3" : "size-2.5")} />}
       </span>
       <div className={cn("min-w-0 flex-1", iconOnly && "hidden")}>
@@ -1166,7 +1241,7 @@ export function BotListItem({
         )}
         <div className="flex items-baseline justify-between gap-2">
           <span className="flex min-w-0 grow items-center gap-1.5 truncate text-[14px] font-semibold text-ink">
-            {bot.pinned && <Pin size={12} className="shrink-0 text-ink-secondary" />}
+            {bot.pinned && <Pin size={12} className="shrink-0 text-ink-secondary" aria-label={t("sidebar.navigator.pinned")} />}
             <RenameTitle
               key={iconOnly ? "icons" : "expanded"}
               value={bot.name}
@@ -1184,12 +1259,11 @@ export function BotListItem({
               inputClassName="w-full rounded bg-inset px-1 py-0.5 text-[14px] font-semibold"
             />
           </span>
-          {selected && last && !renaming && !expanded && (
+          {selected && last && !renaming && (
             <span className="shrink-0 text-xs text-ink-secondary transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">
               {formatTime(last.at)}
             </span>
           )}
-          {expanded && unread && <span className="size-1.5 shrink-0 rounded-full bg-accent" aria-label={t("task.unreadMany")} />}
         </div>
         {bot.chiefOfStaff && !renaming && (
           // Chief of Staff gets its own line under the name so a long name
@@ -1198,7 +1272,7 @@ export function BotListItem({
             <Crown size={11} className="shrink-0" /> {t("sidebar.bot.chiefOfStaff")}
           </span>
         )}
-        {(!expanded || deleting) && <div className="flex items-center justify-between gap-2">
+        {(!bot.chiefOfStaff || deleting) && <div className="flex items-center justify-between gap-2">
           {deleting ? (
             <span role="status" className="flex min-w-0 items-center gap-1.5 truncate text-[11px] text-ink-secondary">
               <Loader2 size={12} className="shrink-0 animate-spin" />
@@ -1214,7 +1288,7 @@ export function BotListItem({
                   <span className="sr-only">{t("sidebar.preview.working")}</span>
                 </span>
               ) : (
-                <span className="truncate">{waiting ? t("sidebar.preview.waiting") : queued ? t("task.queued") : preview(bot)}</span>
+                <span className="truncate">{t("sidebar.navigator.botType")}{waiting ? ` · ${t("sidebar.preview.waiting")}` : waitingTeammates ? ` · ${t("chat.waitingTeammates")}` : queued ? ` · ${t("task.queued")}` : botPreview ? ` · ${botPreview}` : ""}</span>
               )}
             </span>
           )}
@@ -1239,7 +1313,7 @@ export function BotListItem({
 
   return (
     <>
-    <div className="group relative" title={iconOnly ? bot.name : undefined}>
+    <div className={cn("group relative", hero && "rounded-xl border border-accent/25 bg-accent/5")} title={iconOnly ? bot.name : undefined} data-chief-hero={hero ? bot.id : undefined}>
       {/* Keep this wrapper mounted while RenameTitle swaps its label for an
           input. Replacing the wrapper tree remounts RenameTitle, loses its
           editing state, and leaves the row stuck in rename mode. Omitting
@@ -1251,7 +1325,7 @@ export function BotListItem({
           !renaming && iconOnly
             ? deleting
               ? t("sidebar.bot.deletingAria", { name: bot.name })
-              : `${bot.name}${waiting ? ` · ${t("sidebar.preview.waiting")}` : working ? ` · ${t("chat.activity.working")}` : queued ? ` · ${t("task.queued")}` : ""}${unread ? ` · ${t("task.unread")}` : ""}`
+              : `${bot.name}${waiting ? ` · ${t("sidebar.preview.waiting")}` : working ? ` · ${t("chat.activity.working")}` : waitingTeammates ? ` · ${t("chat.waitingTeammates")}` : queued ? ` · ${t("task.queued")}` : ""}${unread ? ` · ${t("task.unread")}` : ""}`
             : undefined
         }
         aria-busy={deleting || undefined}
@@ -1269,21 +1343,19 @@ export function BotListItem({
       >
         {body}
       </div>
-      {showThreads && !iconOnly && <button
+      {showThreads && <button
         type="button"
-        aria-label={t(threadsOpen ? "task.collapseNamed" : "task.expandNamed", { name: bot.name })}
-        aria-expanded={threadsOpen}
-        onClick={() => setThreadsOpen((open) => !open)}
-        className="absolute left-0.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-ink-secondary outline-none hover:text-ink focus-visible:ring-1 focus-visible:ring-accent/60"
-      ><ChevronRight aria-hidden="true" size={13} className={cn("transition-transform", threadsOpen && "rotate-90")} /></button>}
+        aria-label={t("sidebar.navigator.browseBot", { name: bot.name })}
+        aria-haspopup="dialog"
+        onClick={(event) => onNavigate?.(event.currentTarget, bot.id)}
+        className={cn("absolute right-1 top-1/2 flex size-8 -translate-y-1/2 items-center justify-center rounded text-ink-secondary outline-none hover:bg-raised hover:text-ink focus-visible:ring-1 focus-visible:ring-accent/60", iconOnly && "right-0 size-5")}
+      ><ChevronRight aria-hidden="true" size={16} /></button>}
       {!renaming && iconOnly && unread && (
         <span className="pointer-events-none absolute bottom-1.5 right-1.5 size-2 rounded-full border border-panel bg-accent" />
       )}
       {!renaming && !deleting && !iconOnly && <>
-        {showThreads && <button type="button" aria-label={t("folder.newNamed", { name: bot.name })} title={t("folder.new")} onClick={() => { setThreadsOpen(true); setCreatingProject(true); }}
-          className="pointer-events-none absolute right-8 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded text-ink-secondary opacity-0 hover:bg-raised hover:text-ink group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 max-md:pointer-events-auto max-md:opacity-70"><FolderPlus size={14} /></button>}
         <button type="button" aria-label={t("sidebar.bot.actions", { name: bot.name })} title={t("sidebar.bot.actions", { name: bot.name })} aria-haspopup="menu" onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); onMenu({ botId: bot.id, x: rect.left, y: rect.bottom }); }}
-          className="pointer-events-none absolute right-1 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded text-ink-secondary opacity-0 hover:bg-raised hover:text-ink group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 max-md:pointer-events-auto max-md:opacity-70"><MoreHorizontal size={15} /></button>
+          className={cn("absolute right-9 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded text-ink-secondary hover:bg-raised hover:text-ink focus-visible:ring-1 focus-visible:ring-accent/60", !hero && "opacity-60 group-hover:opacity-100 group-focus-within:opacity-100")}><MoreHorizontal size={15} /></button>
       </>}
       {deleting && iconOnly && (
         <span className="pointer-events-none absolute bottom-1 right-1 rounded-full bg-card p-1 text-ink-secondary">
@@ -1293,9 +1365,6 @@ export function BotListItem({
     </div>
     {/* Keep folder expansion state mounted while the preference is off. The
         hidden list omits its children, including any thread-menu portals. */}
-    {!iconOnly && threadsOpen && <BotThreadList bot={bot} selected={selected} density={density} hidden={!showThreads} query={bot.name.toLowerCase().includes(query.toLowerCase()) || bot.title.toLowerCase().includes(query.toLowerCase()) ? "" : query} />}
-    {!expanded && <SidebarBotActivity bot={bot} density={density} />}
-    {showThreads && creatingProject && <BotProjectDialog bot={bot} onClose={() => setCreatingProject(false)} />}
     </>
   );
 }
@@ -1522,6 +1591,48 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   const { capabilities } = useDesktopCapabilities();
   const importReturnRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
+  const [navigatorTarget, setNavigatorTarget] = useState<NavigatorTarget | null>(null);
+  const navigatorOpener = useRef<HTMLElement | null>(null);
+  const navigatorLocation = useRef("");
+  const location = `${state.activeView}:${state.selectedId}`;
+  const openNavigator = (opener: HTMLElement, target: NavigatorTarget) => {
+    navigatorOpener.current = opener;
+    navigatorLocation.current = location;
+    setNavigatorTarget(target);
+  };
+  const closeNavigator = (restoreFocus = true) => {
+    setNavigatorTarget(null);
+    if (restoreFocus) queueMicrotask(() => {
+      if (navigatorOpener.current?.isConnected) navigatorOpener.current.focus();
+      else sidebarRef.current?.focus();
+    });
+    else requestAnimationFrame(() => {
+      const main = document.querySelector<HTMLElement>("main");
+      const destination = main?.querySelector<HTMLElement>("textarea, [contenteditable='true'], [tabindex]") ?? main;
+      if (destination) { if (destination === main) main.tabIndex = -1; destination.focus(); }
+    });
+  };
+  useEffect(() => {
+    if (!navigatorTarget) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Element && !event.target.closest("[data-sidebar-navigator], [data-thread-overlay], [role='dialog'], [aria-haspopup='dialog']")) closeNavigator();
+    };
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !(event.target instanceof Element && event.target.closest("[data-thread-overlay], [role='dialog']:not([data-sidebar-navigator])"))) {
+        event.stopImmediatePropagation(); closeNavigator();
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onEscape, true);
+    return () => { document.removeEventListener("pointerdown", onPointerDown); document.removeEventListener("keydown", onEscape, true); };
+  }, [navigatorTarget]);
+  useEffect(() => {
+    if (navigatorTarget && !state.bots.some(bot => navigatorTarget.kind === "bot" && bot.id === navigatorTarget.id && !bot.hidden)
+      && !state.groups.some(group => navigatorTarget.kind === "group" && group.id === navigatorTarget.id)) closeNavigator();
+  }, [navigatorTarget, state.bots, state.groups]);
+  useEffect(() => {
+    if (navigatorTarget && navigatorLocation.current !== location) closeNavigator(false);
+  }, [navigatorTarget, location]);
   const [confirm, setConfirm] = useState<{ kind: BotConfirmKind; bot: Bot } | null>(null);
   const cancelConfirm = useCallback(() => setConfirm(null), []);
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -1609,11 +1720,11 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   useEffect(() => {
     if (!open || confirm) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape" && !navigatorTarget) onClose();
     };
     document.addEventListener("keydown", closeOnEscape);
     return () => document.removeEventListener("keydown", closeOnEscape);
-  }, [open, onClose, confirm]);
+  }, [open, onClose, confirm, navigatorTarget]);
 
   useEffect(() => {
     if (!densityOpen) return;
@@ -1719,7 +1830,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
         b.tasks?.some((task) => !task.routineRunId && task.title.toLowerCase().includes(q)) ||
         b.projects?.some((folder) => folder.name.toLowerCase().includes(q)),
     );
-  const visibleGroups = state.groups.filter((g) => !q || g.name.toLowerCase().includes(q) || g.tasks?.some((task) => task.workItem ? sharedWorkMatches(task.workItem, state.bots, q) : task.title.toLowerCase().includes(q)));
+  const visibleGroups = state.groups.filter((g) => !q || g.name.toLowerCase().includes(q));
   const {
     unsectionedChief,
     pinnedBots,
@@ -1741,13 +1852,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   for (const group of sectionedRooms) {
     if (!sectionNames.includes(group.section!)) sectionNames.push(group.section!);
   }
-  const naturalSectionIds = [
-    ...(pinnedBots.length > 0 ? [PINNED_SECTION_ID] : []),
-    ...(unsectionedRooms.length > 0 ? [CHANNELS_SECTION_ID] : []),
-    ...(botChats.length > 0 ? [BOT_CHATS_SECTION_ID] : []),
-    ...(unsectionedBots.length > 0 ? [BOTS_SECTION_ID] : []),
-    ...sectionNames.map(userSectionId),
-  ];
+  const naturalSectionIds = [BOTS_SECTION_ID, ...sectionNames.map(userSectionId)];
   const sectionIds = orderedSidebarSections(naturalSectionIds, sectionOrder);
   const layoutInteractive = sidebarLayoutInteractive(density, q);
   const sectionCollapsed = (id: string) =>
@@ -1829,6 +1934,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   const pendingBotUndo = teamFeedback?.restoreBot;
 
   return (
+    <>
     <aside
       ref={sidebarRef}
       tabIndex={-1}
@@ -2066,40 +2172,17 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
       {/* Bot list */}
       <div className="flex-1 overflow-y-auto px-2">
         <div className="flex flex-col gap-0.5">
-          {matchingBots.length === 0 && visibleGroups.length === 0 && q && q.length < MIN_QUERY && (
-            <div className="px-3 py-6 text-center text-[13px] text-ink-secondary">{t("sidebar.noMatch", { query })}</div>
-          )}
-          {unsectionedChief && (
-            <div className="mb-1.5">
-              <BotListItem
-                bot={unsectionedChief}
-                density={density}
-                query={q}
-                onMenu={setMenu}
-              />
-            </div>
-          )}
           {sectionIds.map((id, index) => {
             const sectionName = userSectionName(id);
             const sectionChiefItems = sectionName
               ? sectionChiefs.filter((bot) => bot.section === sectionName)
-              : [];
+              : id === BOTS_SECTION_ID && unsectionedChief ? [unsectionedChief] : [];
             const sectionGroupItems =
-              id === CHANNELS_SECTION_ID
-                ? unsectionedRooms
-                : id === BOT_CHATS_SECTION_ID
-                  ? botChats
-                  : sectionName
-                    ? sectionedRooms.filter((group) => group.section === sectionName)
-                    : [];
+              id === BOTS_SECTION_ID ? [...unsectionedRooms, ...botChats]
+                : sectionName ? sectionedRooms.filter((group) => group.section === sectionName) : [];
             const sectionBotItems =
-              id === PINNED_SECTION_ID
-                ? pinnedBots
-                : id === BOTS_SECTION_ID
-                  ? unsectionedBots
-                  : sectionName
-                    ? sectionedBots.filter((bot) => bot.section === sectionName)
-                    : [];
+              id === BOTS_SECTION_ID ? [...pinnedBots.filter(bot => !bot.section), ...unsectionedBots]
+                : sectionName ? [...pinnedBots.filter(bot => bot.section === sectionName), ...sectionedBots.filter((bot) => bot.section === sectionName)] : [];
             const collapsed = sectionCollapsed(id);
             const queued = collapsed ? [...sectionChiefItems, ...sectionBotItems].flatMap((bot) =>
               sidebarBotActivityTasks(bot, state.pendingQueued).filter((task) => task.queued).map((task) => `${bot.name}: ${task.title}`)) : [];
@@ -2125,7 +2208,8 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                 )}
                 {density !== "icons" && (
                   <SidebarSectionHeader
-                    name={sectionLabel(id)}
+                    name={id === BOTS_SECTION_ID ? t("sidebar.section.general") : sectionLabel(id)}
+                    chiefName={sectionChiefItems[0]?.name}
                     onContextMenu={!remoteClient && layoutInteractive && sectionName ? (event) => {
                       event.preventDefault();
                       teamMenuReturn.current = event.currentTarget.querySelector<HTMLElement>("button") ?? event.currentTarget;
@@ -2154,13 +2238,17 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                 {!collapsed && (
                   <>
                     {sectionChiefItems.map((bot) => (
+                      <div key={bot.id} className={cn(bot.pinned && "sticky top-0 z-10 bg-panel pb-1")}>
                       <BotListItem
                         key={bot.id}
                         bot={bot}
                         density={density}
                         query={q}
                         onMenu={setMenu}
+                        hero={Boolean(bot.pinned)}
+                        onNavigate={(opener, botId) => openNavigator(opener, { kind: "bot", id: botId })}
                       />
+                      </div>
                     ))}
                     {sectionGroupItems.map((group) => (
                       <GroupListItem
@@ -2169,6 +2257,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                         density={density}
                         query={q}
                         onMenu={setRoomMenu}
+                        onNavigate={(opener, groupId) => openNavigator(opener, { kind: "group", id: groupId })}
                       />
                     ))}
                     {sectionBotItems.map((bot) => (
@@ -2178,6 +2267,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                         density={density}
                         query={q}
                         onMenu={setMenu}
+                        onNavigate={(opener, botId) => openNavigator(opener, { kind: "bot", id: botId })}
                       />
                     ))}
                     {!remoteClient && sectionName && layoutInteractive && (
@@ -2194,6 +2284,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
               </div>
             );
           })}
+          <SidebarDirectResults query={query} onLanded={() => setQuery("")} onBrowse={openNavigator} />
           <SearchResults query={query} onLanded={() => setQuery("")} />
         </div>
       </div>
@@ -2456,5 +2547,9 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
           document.body,
         )}
     </aside>
+    {navigatorTarget && <SidebarNavigator key={`${navigatorTarget.kind}:${navigatorTarget.id}`} target={navigatorTarget} density={density}
+      docked={!state.computerOpen && !state.inspectorOpen && !state.settingsOpen && !state.appSettingsOpen && !state.pluginsOpen}
+      onClose={() => closeNavigator()} onNavigate={() => closeNavigator(false)} />}
+    </>
   );
 }
