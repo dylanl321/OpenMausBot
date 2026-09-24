@@ -426,3 +426,60 @@ describe("run_routine through RoutineManager", () => {
     expect(again.id).toBe(routines.listRuns()[0]!.id);
   });
 });
+
+describe("watch dry-run", () => {
+  it("previews a draft against a 7-day cursor without saving the watch", async () => {
+    const dir = tempDir();
+    const now = Date.parse("2026-09-24T00:00:00.000Z");
+    const cursors: Array<string | null> = [];
+    const watches = new WatchManager({
+      file: join(dir, "watches.json"),
+      now: () => now,
+      connectionChanges: async (_id, _scope, cursor) => {
+        cursors.push(cursor);
+        return {
+          changes: [change({
+            id: "PAY-9@created",
+            at: Date.parse("2026-09-22T00:00:00.000Z"),
+            fields: { project: "PAY" },
+          })],
+          cursor: "2026-09-24T00:00:00.000Z",
+        };
+      },
+    });
+    const result = await watches.dryRunInput({
+      name: "Ready stories",
+      source: { type: "connection", connectionId: "jira-acme", scope: { query: "project = PAY" } },
+      events: ["item.created"],
+      check: { type: "interval", everyMinutes: 5, anchorAt: 0 },
+      action: { type: "record" },
+    }, { sinceDays: 7 });
+    expect(result).toMatchObject({ matchCount: 1, seen: 1, skipped: 0, used: "changes" });
+    expect(watches.list()).toEqual([]);
+    expect(cursors[0]).toContain("2026-09-17");
+  });
+
+  it("falls back to query when the connection has no change feed", async () => {
+    const dir = tempDir();
+    const watches = new WatchManager({
+      file: join(dir, "watches.json"),
+      now: () => Date.parse("2026-09-24T00:00:00.000Z"),
+      connectionQuery: async () => [{
+        kind: "work_item",
+        title: "PAY-12 Ready",
+        externalId: "PAY-12",
+        updatedAt: Date.parse("2026-09-23T00:00:00.000Z"),
+      }],
+    });
+    const result = await watches.dryRunInput({
+      name: "Plane board",
+      source: { type: "connection", connectionId: "plane-ops" },
+      events: ["item.updated"],
+      check: { type: "interval", everyMinutes: 5, anchorAt: 0 },
+      action: { type: "record" },
+    });
+    expect(result.used).toBe("query");
+    expect(result.matchCount).toBe(1);
+    expect(result.matches[0]?.item.title).toBe("PAY-12 Ready");
+  });
+});
