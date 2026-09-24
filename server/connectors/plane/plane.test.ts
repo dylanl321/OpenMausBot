@@ -17,7 +17,6 @@ const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const readJson = (name: string) => JSON.parse(readFileSync(join(FIXTURES, name), "utf8"));
 const captureCall = (name: string): CaptureCall => readJson(`capture/${name}.json`);
 const API_KEY = "fixture-plane-api-key";
-const PROJECT = "4af68566-94a4-4eb3-94aa-50dc9427067b";
 
 const projects = readJson("projects.json");
 const workItems = readJson("work-items.json") as Record<string, { id: string; name: string }>;
@@ -54,7 +53,7 @@ function fixtureFetch(input: Parameters<typeof fetch>[0], init?: RequestInit): P
     const body = byId(byUuid[1]);
     return Promise.resolve(body ? jsonResponse(body) : new Response("not found", { status: 404 }));
   }
-  if (url.includes("/work-items?")) {
+  if (url.includes("/work-items?") || /\/work-items\/\?/.test(url)) {
     const listed = url.includes("pql=")
       ? Object.values(workItems)
       : [workItems["PAY-123"], workItems["PAY-201"]];
