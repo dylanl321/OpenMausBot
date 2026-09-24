@@ -7,6 +7,7 @@ const nodeSchema = z.object({
   id: z.string(), rootId: z.string(), parentId: z.string().optional(),
   groupId: z.string().optional(), threadId: z.string(), botId: z.string(),
   key: z.string(), text: z.string(), createdAt: z.number(),
+  requestBatchKey: z.string().optional(),
   status: z.enum(["source", "queued", "running", "waiting", "resume", "completed", "failed", "cancelled"]),
   result: z.string().default(""), reported: z.boolean().default(false),
   executions: z.number().int().nonnegative().default(0), startedAt: z.number().optional(),
@@ -193,7 +194,7 @@ export class RoomHandoffs {
 
   enqueue(source: RoomAddress, generation: string, parentId: string | undefined,
     target: RoomAddress, key: string, text: string, approvalGranted = false,
-    rework = false, sourceText = "", stateKey?: string,
+    rework = false, sourceText = "", requestBatchKey?: string, stateKey?: string,
     work?: Pick<RoomHandoff, "workItemId" | "workRevision" | "workAssignmentId">): { node: RoomHandoff; duplicate: boolean } {
     if (this.loadError) throw new Error(this.loadError);
     let parent = parentId ? this.nodes.get(parentId) : this.nodes.get(generation);
@@ -211,10 +212,16 @@ export class RoomHandoffs {
     const existing = this.children(parent.id).find(n => n.key === key);
     if (existing) {
       if (existing.groupId !== target.groupId || existing.botId !== target.botId || existing.text !== text ||
-        existing.kind !== kind || existing.workItemId !== work?.workItemId || existing.workRevision !== work?.workRevision) throw new Error("request_key was already used for different work");
+        existing.kind !== kind || existing.requestBatchKey !== requestBatchKey ||
+        existing.workItemId !== work?.workItemId || existing.workRevision !== work?.workRevision) throw new Error("request_key was already used for different work");
       const problem = this.hooks.validate({ ...existing, approvalGranted }, parent);
       if (problem) throw new Error(problem);
       return { node: existing, duplicate: true };
+    }
+    if (requestBatchKey && target.groupId) {
+      const batch = this.children(parent.id).filter(n => n.requestBatchKey === requestBatchKey && n.groupId === target.groupId);
+      if (batch.some(n => n.text !== text || n.threadId !== target.threadId)) throw new Error("request_key was already used for different room work");
+      if (batch.some(n => n.startedAt !== undefined)) throw new Error("This shared room request has already started; use a new request_key for additional recipients");
     }
     // A routine or a new user turn creates a fresh root, so request_key alone
     // cannot see equivalent work from an earlier tree. Callers that know the
@@ -269,13 +276,22 @@ export class RoomHandoffs {
     }
     const node: RoomHandoff = { ...target, id: randomUUID(), rootId: parent.rootId, parentId: parent.id,
       key, text, createdAt: this.now(), status: "queued", result: "", reported: false, executions: 0, approvalGranted,
-      kind, ...(stateKey ? { stateKey } : {}), ...work };
+      kind, ...(target.groupId && requestBatchKey ? { requestBatchKey } : {}), ...(stateKey ? { stateKey } : {}), ...work };
     const problem = this.hooks.validate(node, parent);
     if (problem) throw new Error(problem);
     if (fresh) this.nodes.set(parent.id, parent);
     this.nodes.set(node.id, node);
     try { this.publish(node, parent); } catch (e) { this.nodes.delete(node.id); if (fresh) this.nodes.delete(parent.id); throw e; }
     return { node, duplicate: false };
+  }
+
+  /** A room brief is displayed once; each recipient keeps its own execution and result. */
+  sharedRequest(node: RoomHandoff): { id: string; botIds: string[] } {
+    const batch = node.groupId && node.requestBatchKey && node.parentId
+      ? this.children(node.parentId).filter(n => n.requestBatchKey === node.requestBatchKey &&
+        n.groupId === node.groupId && n.threadId === node.threadId && n.text === node.text)
+      : [node];
+    return { id: batch[0]?.id ?? node.id, botIds: batch.map(n => n.botId) };
   }
 
   sourceSettled(generation: string, ok: boolean) {

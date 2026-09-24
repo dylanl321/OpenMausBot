@@ -8,13 +8,14 @@ import type { McpServerSpec, SendTurnInput } from "../contracts.ts";
 import { RemoteMcpClient } from "../mcp-http.ts";
 import { augmentedPath } from "../env-path.ts";
 import { killCliTree, spawnCli } from "../procs.ts";
+import { chatImage, type ChatImagePart } from "./chat-images.ts";
+import { ChatBoxClient } from "./chat-box-tools.ts";
 
 export interface ChatToolDefinition {
   type: "function";
   function: { name: string; description: string; parameters: Record<string, unknown> };
 }
-export interface ChatToolImage { mime: "image/png" | "image/jpeg" | "image/gif" | "image/webp"; data: string }
-export interface ChatToolResult { text: string; ok: boolean; images?: ChatToolImage[] }
+export interface ChatToolResult { text: string; ok: boolean; images?: ChatImagePart[] }
 /** The transport cannot safely continue this turn. A dispatched operation may
  * already have taken effect, so callers must not retry it through a new round. */
 export class ChatToolSessionError extends Error {}
@@ -27,6 +28,7 @@ export interface ChatToolSession {
 }
 
 type Server = { command: string; args: string[]; env: Record<string, string> };
+type BoxDescriptor = NonNullable<NonNullable<SendTurnInput["integrations"]>["computer"]>;
 const STARTUP_MS = 8_000;
 const CALL_MS = 10 * 60_000;
 const FRAME_BYTES = 2 * 1024 * 1024;
@@ -53,6 +55,7 @@ export function chatMcpEnvironment(serverEnv: Record<string, string>, source: No
 }
 
 class ChatMcpClient {
+  private readonly frameBytes: number;
   private child: ReturnType<typeof spawnCli>;
   private buffer = "";
   private nextId = 1;
@@ -63,7 +66,8 @@ class ChatMcpClient {
   private closing?: Promise<void>;
   private pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
 
-  constructor(server: Server, privateEnvironment: readonly string[] = []) {
+  constructor(server: Server, images = false, privateEnvironment: readonly string[] = []) {
+    this.frameBytes = images ? 32 * 1024 * 1024 : FRAME_BYTES;
     try {
       // The desktop shell inherits Finder's bare PATH, where `npx`-style
       // servers cannot find `node` and exit at once. Widen it the way the
@@ -107,7 +111,7 @@ class ChatMcpClient {
   private write(frame: unknown): void {
     if (this.closed || !this.child.stdin.writable || this.child.stdin.destroyed) throw new Error("MCP session closed");
     const encoded = JSON.stringify(frame) + "\n";
-    if (Buffer.byteLength(encoded) > FRAME_BYTES) throw new Error("MCP request exceeds the frame limit");
+    if (Buffer.byteLength(encoded) > this.frameBytes) throw new Error("MCP request exceeds the frame limit");
     this.child.stdin.write(encoded);
   }
 
@@ -119,7 +123,7 @@ class ChatMcpClient {
       const line = this.buffer.slice(0, newline);
       this.buffer = this.buffer.slice(newline + 1);
       if (++this.frames > MAX_FRAMES) return this.fail(new Error("MCP session exceeded the response frame count limit"));
-      if (Buffer.byteLength(line) > FRAME_BYTES) return this.fail(new Error("MCP response exceeds the frame limit"));
+      if (Buffer.byteLength(line) > this.frameBytes) return this.fail(new Error("MCP response exceeds the frame limit"));
       if (!line.trim()) continue;
       let message: unknown;
       try { message = JSON.parse(line); }
@@ -144,7 +148,7 @@ class ChatMcpClient {
       else if (!("result" in message)) entry.reject(new Error("MCP response has no result"));
       else entry.resolve(message.result);
     }
-    if (Buffer.byteLength(this.buffer) > FRAME_BYTES) this.fail(new Error("MCP response exceeds the frame limit"));
+    if (Buffer.byteLength(this.buffer) > this.frameBytes) this.fail(new Error("MCP response exceeds the frame limit"));
   }
 
   async call(method: string, params: unknown, signal: AbortSignal, timeout: number): Promise<unknown> {
@@ -217,7 +221,8 @@ class ChatMcpClient {
 }
 
 // A schema is a contract, so conversion that drops constraints is not safe.
-// Ajv validates the same schema sent to the provider without coercing values,
+// Ajv validates the original schema even when a provider needs its top-level
+// composition constraints in the description. It does so without coercing values,
 // applying defaults, removing fields, or fetching external references.
 const validatorOptions = {
   strict: true, allErrors: false, coerceTypes: false, useDefaults: false,
@@ -239,6 +244,8 @@ function compileSchema(schema: Record<string, unknown>): ValidateFunction {
   // ajv-formats is CommonJS and exports the plugin as both module.exports
   // and .default; the latter also matches its NodeNext declaration.
   formats.default(compiler);
+  compiler.addFormat("uint32", { type: "number", validate: value => Number.isInteger(value) && value >= 0 && value <= 4294967295 });
+  compiler.addFormat("uint64", { type: "number", validate: value => Number.isSafeInteger(value) && value >= 0 });
   try { return compiler.compile(schema); }
   catch { throw new Error("MCP tool schema could not be validated; check its constraints, formats, and references"); }
 }
@@ -252,18 +259,21 @@ function boundedText(value: string): string {
 }
 
 export async function mountChatTools(integrations: SendTurnInput["integrations"], signal: AbortSignal,
-  options: { extended?: boolean; images?: boolean; privateEnvironment?: readonly string[] } = {},
+  settings: { extended?: boolean; computerUse?: boolean; images?: boolean; privateEnvironment?: readonly string[] } | boolean = {},
 ): Promise<ChatToolSession> {
-  const servers: Array<[string, McpServerSpec, ("local-computer" | undefined)?]> = [];
+  const options = typeof settings === "boolean" ? { computerUse: settings, images: settings } : settings;
+  const computerUse = Boolean(options.computerUse || options.extended);
+  const servers: Array<[string, McpServerSpec | BoxDescriptor, ("local-computer" | undefined)?]> = [];
+  if (computerUse && integrations?.computer) servers.push(["computer", integrations.computer]);
+  if (computerUse && integrations?.localComputer) servers.push(["computer", integrations.localComputer, integrations.localComputer.scope]);
+  if (computerUse && integrations?.browser) servers.push(["browser", integrations.browser]);
   if (integrations?.agents) servers.push(["agents", integrations.agents]);
   if (integrations?.composio) servers.push(["composio", integrations.composio]);
   if (options.extended) {
-    if (integrations?.localComputer) servers.push(["computer", integrations.localComputer, integrations.localComputer.scope]);
-    if (integrations?.browser) servers.push(["browser", integrations.browser]);
     if (integrations?.phone) servers.push(["phone", integrations.phone]);
   }
-  // this client starts its servers and talks over stdio; a remote (url)
-  // entry is skipped here and reaches Claude and Codex bots
+  // Native transports can also mount remote MCP descriptors. Other chat
+  // providers retain their existing stdio-only custom server contract.
   for (const [name, server] of Object.entries(integrations?.custom ?? {})) {
     if ("command" in server || options.extended) servers.push([name, server]);
   }
@@ -302,6 +312,15 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
         if (!object(tool.inputSchema) || tool.inputSchema.type !== "object") throw new Error("MCP tools require an object input schema");
         if (Buffer.byteLength(JSON.stringify(tool.inputSchema)) > SCHEMA_BYTES) throw new Error("MCP tool schema exceeds the 64KB limit");
         const schema = compileSchema(tool.inputSchema);
+        const parameters = { ...tool.inputSchema };
+        const constraints: Record<string, unknown> = {};
+        if (computerUse) {
+          for (const key of ["anyOf", "oneOf", "allOf", "not"]) {
+            if (key in parameters) { constraints[key] = parameters[key]; delete parameters[key]; }
+          }
+        }
+        const description = (typeof tool.description === "string" ? tool.description : "Configured MCP tool") +
+          (Object.keys(constraints).length ? " Additional argument constraints (validated before execution): " + JSON.stringify(constraints) : "");
         const base = `${server}_${tool.name}`.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 64) || "mcp_tool";
         const clientNames = names.get(client) ?? new Map<string, string>();
         names.set(client, clientNames);
@@ -313,7 +332,7 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
           reservedNames.add(name);
         }
         nextRegistered.set(name, { client, name: tool.name, schema, scope });
-        nextDefinitions.push({ type: "function", function: { name, description: typeof tool.description === "string" ? tool.description : "Configured MCP tool", parameters: tool.inputSchema } });
+        nextDefinitions.push({ type: "function", function: { name, description, parameters } });
         if (Buffer.byteLength(JSON.stringify(nextDefinitions)) > CATALOG_BYTES) throw new Error("MCP tool catalog exceeds the 1MB limit");
       }
     }
@@ -327,7 +346,8 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
     // so names and collision suffixes remain stable across startup timings.
     const mounts = await Promise.allSettled(servers.map(async ([name, descriptor, scope]) => {
       if (signal.aborted || closed) throw aborted();
-      const client: Client = "command" in descriptor ? new ChatMcpClient(descriptor, options.privateEnvironment) : remoteChatClient(descriptor);
+      const client: Client = "boxId" in descriptor ? new ChatBoxClient(descriptor)
+        : "command" in descriptor ? new ChatMcpClient(descriptor, options.images, options.privateEnvironment) : remoteChatClient(descriptor);
       clients.push(client);
       return { name, client, scope, tools: await client.tools(signal) };
     }));
@@ -366,21 +386,17 @@ export async function mountChatTools(integrations: SendTurnInput["integrations"]
         }
         if (!object(result) || !Array.isArray(result.content) || (result.isError !== undefined && typeof result.isError !== "boolean")) throw new Error("MCP tool returned an invalid result; execution outcome may be uncertain");
         const parts: string[] = [];
-        const images: ChatToolImage[] = [];
+        const images: ChatImagePart[] = [];
         let unsupported = 0;
         for (const item of result.content) {
           if (!object(item) || typeof item.type !== "string" || (item.type === "text" && typeof item.text !== "string")) throw new Error("MCP tool returned invalid content; execution outcome may be uncertain");
           if (item.type === "text") parts.push(item.text as string);
-          else if (options.images && item.type === "image" && typeof item.data === "string" &&
-            typeof item.mimeType === "string" && ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(item.mimeType) &&
-            item.data.length <= 5_000_000 && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(item.data) && images.length < 8) {
-            images.push({ mime: item.mimeType as ChatToolImage["mime"], data: item.data });
-          }
+          else if (options.images && item.type === "image") images.push(chatImage(item));
           else unsupported += 1;
         }
         if (result.structuredContent !== undefined) parts.push(JSON.stringify(result.structuredContent));
         if (unsupported) parts.unshift(`[${unsupported} unsupported MCP content item(s) omitted. The operation may have taken effect, but its full result cannot be represented; inspect its state before retrying.]`);
-        return { text: boundedText(parts.join("\n") || (images.length ? "Image result attached." : "(empty result)")), ok: result.isError !== true && unsupported === 0,
+        return { text: boundedText(parts.join("\n") || (images.length ? "Screenshot captured." : "(empty result)")), ok: result.isError !== true && unsupported === 0,
           ...(images.length ? { images } : {}),
         };
       } catch (error) {

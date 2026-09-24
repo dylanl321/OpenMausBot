@@ -201,6 +201,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       apiUrl: urlForModel,
       tools: config.tools,
       approveToolsWithoutPrompt: config.toolApproval === "always",
+      computerUse: true,
       models: () => catalog,
       refreshModels: fetchModels,
       requestBody: (model, messages, stream) => ({

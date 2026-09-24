@@ -11,7 +11,8 @@ import type {
 import { newEventId, newId } from "../contracts.ts";
 import { redactSecretsInText } from "../redact.ts";
 import { toolDetailPreview } from "../tool-summary.ts";
-import { ChatToolSessionError, mountChatTools, type ChatToolDefinition, type ChatToolSession, type ChatToolImage } from "./chat-mcp-tools.ts";
+import { ChatToolSessionError, mountChatTools, type ChatToolDefinition, type ChatToolSession, type ChatToolResult } from "./chat-mcp-tools.ts";
+import { assertImageTransport, chatImageBudget, chatToolImages, chatUserContent, type ChatContentPart, type ChatImagePart } from "./chat-images.ts";
 import { createChatToolApproval } from "./chat-tool-approval.ts";
 import { ChatProtocolError, ChatReasoningDetails, ChatToolCalls, MAX_CHAT_TOOL_CALLS, object, type ChatToolCall } from "./openai-chat-protocol.ts";
 import { appendNative } from "./native.ts";
@@ -19,14 +20,14 @@ import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS }
 
 export interface OpenAIChatMessage {
   role: "system" | "user" | "assistant" | "tool";
-  content: string | null;
+  content: string | ChatContentPart[] | null;
   tool_calls?: ChatToolCall[];
   tool_call_id?: string;
   reasoning_content?: string;
   reasoning_details?: Record<string, unknown>[];
   /** Internal transport data, never spread into a Chat Completions body. */
   images?: TurnImageInput[];
-  toolImages?: ChatToolImage[];
+  toolImages?: ChatImagePart[];
   nativeContent?: unknown[];
 }
 
@@ -130,6 +131,7 @@ interface RuntimeOptions<Config> {
   refreshModels?: () => Promise<void>;
   generateModel?: () => string;
   reasoning?: boolean;
+  contentText?: (content: unknown) => string;
   billing?: "metered";
   includeUsageInCompleted?: boolean;
   noBodyError?: string;
@@ -139,6 +141,8 @@ interface RuntimeOptions<Config> {
   transport?: ChatTransport;
   /** Operator-configured trust for every tool exposed by this instance. */
   approveToolsWithoutPrompt?: boolean;
+  /** Opt-in structured images and harness-authorized computer/browser MCP. */
+  computerUse?: boolean;
 }
 
 const usageFrom = (usage: CompletionJson["usage"]): Usage | null =>
@@ -205,6 +209,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         ? await options.transport.request({ ...request, signal: activeSignal })
         : await fetch(`${apiUrl}/chat/completions`, {
         method: "POST",
+        ...(messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === "image_url")) ? { redirect: "error" as const } : {}),
         headers: { authorization: `Bearer ${options.apiKey}`, "content-type": "application/json" },
         body: JSON.stringify({
           ...options.requestBody(model, messages, stream),
@@ -234,7 +239,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         const finishReason = json.choices?.[0]?.finish_reason ?? null;
         activeSignal.throwIfAborted();
         return {
-          text: typeof message?.content === "string" ? message.content : "",
+          text: options.contentText ? options.contentText(message?.content) : typeof message?.content === "string" ? message.content : "",
           reasoning: options.reasoning && typeof reasoning === "string"
             ? reasoning
             : "",
@@ -292,7 +297,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         const reasoningDelta = options.reasoning && typeof reasoningPart === "string"
           ? reasoningPart
           : "";
-        const contentDelta = typeof delta?.content === "string" ? delta.content : "";
+        const contentDelta = options.contentText ? options.contentText(delta?.content) : typeof delta?.content === "string" ? delta.content : "";
         if (reasoningDelta) {
           reasoning += reasoningDelta;
           onDelta?.(reasoningDelta, "reasoning_text");
@@ -349,19 +354,24 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       role: message.role,
       content: message.text,
     })),
-    { role: "user", content: turn.text, ...(options.transport && turn.images?.length ? { images: turn.images } : {}) },
+    { role: "user", content: options.computerUse || options.transport ? chatUserContent(turn) : turn.text },
   ];
 
   const sendTurn = async (turn: SendTurnInput) => {
     if (!options.transport && !options.apiKey) throw new Error(options.missingKeyError);
     if (active.has(turn.threadId)) throw new Error("a turn is already running on this thread");
+    const model = turn.model || options.models().default;
+    const apiUrl = typeof options.apiUrl === "function" ? options.apiUrl(model) : options.apiUrl;
+    if (options.computerUse && !options.transport && (turn.images?.length || turn.integrations?.computer || turn.integrations?.localComputer || turn.integrations?.browser)) assertImageTransport(apiUrl);
 
     const turnId = newId();
     const abort = new AbortController();
     const messages = messagesFor(turn);
-    const model = turn.model || options.models().default;
+    const retainImages = chatImageBudget();
+    for (const message of messages) retainImages(message.content);
     options.transport?.validateModel(model);
-    const secrets = [options.apiKey, ...options.transport?.secrets() ?? []];
+    const secrets = [options.apiKey, ...options.transport?.secrets() ?? [], turn.integrations?.computer?.token,
+      turn.integrations?.computer?.control?.token].filter((value): value is string => Boolean(value));
     for (const integration of Object.values(turn.integrations ?? {})) {
       const entries = object(integration);
       const specs = entries && "command" in entries ? [entries] : Object.values(entries ?? {}).map(object);
@@ -422,7 +432,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         const features = options.transport?.features(model);
         if (turn.images?.length && features?.images === false) throw new ChatProtocolError("This model does not support image input. Choose a vision model or remove the images.");
         tools = await mountChatTools(options.tools === false || features?.tools === false ? undefined : turn.integrations, abort.signal,
-          options.transport ? { extended: true, images: features?.images === true, privateEnvironment: options.transport.privateEnvironment } : undefined);
+          options.transport ? { extended: true, images: features?.images === true, privateEnvironment: options.transport.privateEnvironment }
+            : { computerUse: options.computerUse, images: options.computerUse });
         for (let round = 0; round < 16; round++) {
           abort.signal.throwIfAborted();
           native("out", options.nativeLog.outgoing(turn, messages, model));
@@ -555,9 +566,10 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             ...(completion.protocolReasoningDetails.length ? { reasoning_details: completion.protocolReasoningDetails } : {}),
             ...(completion.nativeContent ? { nativeContent: completion.nativeContent } : {}),
           });
+          const screenshotParts: ChatContentPart[] = [];
           for (const call of toolCalls) {
             abort.signal.throwIfAborted();
-            let result: { text: string; ok: boolean; images?: ChatToolImage[] };
+            let result: ChatToolResult;
             let started = false;
             let fatal: Error | undefined;
             try {
@@ -584,6 +596,14 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
               started = true;
               if (allowed) {
                 result = await tools.execute(call.function.name, args as Record<string, unknown>, abort.signal);
+                if (result.images?.length) {
+                  try {
+                    if (!options.transport) assertImageTransport(apiUrl);
+                    retainImages(result.images);
+                  } catch (error) {
+                    throw new ChatToolSessionError(asError(error).message);
+                  }
+                }
               } else {
                 denials.push(call.function.name);
                 result = { ok: false, text: "Permission denied or expired; the tool was not executed." };
@@ -602,11 +622,13 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             if (!result.ok) toolFailed = true;
             if (result.ok && /\bend (?:your|this) turn\b/i.test(text)) emptyFinalAllowed = true;
             messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: result.ok, result: text }),
-              ...(result.images?.length ? { toolImages: result.images } : {}),
+              ...(options.transport && result.images?.length ? { toolImages: result.images } : {}),
             });
+            if (!options.transport) screenshotParts.push(...chatToolImages(call.id, result.images));
             abort.signal.throwIfAborted();
             if (fatal) throw fatal;
           }
+          if (screenshotParts.length) messages.push({ role: "user", content: screenshotParts });
         }
         if (!ok) throw new ChatProtocolError("model-call limit reached before a final response");
       } catch (value) {
@@ -652,8 +674,9 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
     adapter: {
       provider: options.driverKind,
       capabilities: { sessionModelSwitch: "in-session", customMcp: options.tools !== false, agentsMcp: options.tools !== false, composioMcp: options.tools !== false,
-        ...(options.transport ? { images: true, nativeImageInput: true, computerMcp: options.tools !== false,
-          localComputerMcp: options.tools !== false, browserMcp: options.tools !== false, phoneMcp: options.tools !== false } : {}),
+        ...(options.transport || options.computerUse ? { images: true, nativeImageInput: true, computerMcp: options.tools !== false,
+          cloudComputerMcp: options.tools !== false, localComputerMcp: options.tools !== false, browserMcp: options.tools !== false } : {}),
+        ...(options.transport ? { phoneMcp: options.tools !== false } : {}),
       },
       sendTurn,
       interruptTurn: async (threadId, turnId) => {

@@ -110,8 +110,10 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
         if (Boolean(response.error || response.result?.isError) !== Boolean(step.expectError)) throw new Error(`Unexpected tool outcome: ${JSON.stringify(response)}`);
       }
       if (typeof plan.progress === "string") progress?.(plan.progress);
-      // Let a race fixture release this exact turn after its settings mutation,
-      // independent of machine load. The run timeout also bounds this wait.
+      // All MCP calls have completed. An explicit test gate is owned by the
+      // parent test's timeout, not the transport deadline: long conversation
+      // fixtures may deliberately keep a teammate waiting across many turns.
+      if (plan.gateFile) clearTimeout(timer);
       if (plan.gateFile && !existsSync(plan.gateFile)) {
         if (plan.gateEnteredFile) writeFileSync(plan.gateEnteredFile, "provider waiting");
         await new Promise<void>(resolve => {
