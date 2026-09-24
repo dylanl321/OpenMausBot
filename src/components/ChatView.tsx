@@ -67,6 +67,9 @@ import { hasRoutineExecutionTask, RoutineRunCard } from "./RoutineRunCard";
 import { AttachmentGallery, collectMessageFiles } from "./AttachmentGallery";
 import { ScreenFrame } from "./ScreenFrame";
 import { CompactionChip, DigestChip } from "./DigestChip";
+import { BotTurnCard } from "./work/BotTurnCard";
+import { workerTurns } from "./work/bot-turn";
+import { workerThreadWorkItem } from "@/lib/shared-work-sidebar";
 import { RenameTitle } from "./RenameTitle";
 import { BotActivityPicker, TaskPicker } from "./TaskPicker";
 import { ModelPicker } from "./ModelPicker";
@@ -642,6 +645,14 @@ const MessagesList = memo(function MessagesList({
 }) {
   const { state, dispatch } = useStore();
   const showToolCalls = showToolCallsEnabled(state.config);
+  const workItem = workerThreadWorkItem(bot, state.groups);
+  const turns = useMemo(() => workItem ? workerTurns(transcript, workItem, bot.threadId) : [], [workItem, transcript, bot.threadId]);
+  const turnsByReplyId = useMemo(() => {
+    const byReply = new Map<string, (typeof turns)[number]>();
+    for (const turn of turns) if (turn.replyId) byReply.set(turn.replyId, turn);
+    return byReply;
+  }, [turns]);
+  const liveTurn = workItem ? turns.find(turn => turn.live) : undefined;
   // Finished tool chips become compact runs; settled assistant narration
   // becomes one reversible turn row while the terminal answer stays visible.
   const items = useMemo(() => groupTranscript(messages), [messages, locale]);
@@ -790,6 +801,8 @@ const MessagesList = memo(function MessagesList({
               return <ActivityChip message={m} place={place} />;
             }
             case "digest":
+              // Worker threads use the bot-turn card instead of the digest chip.
+              if (workItem) return null;
               // the summary of the turn's tool chips: shown under the same setting
               return showToolCalls ? <DigestChip message={m} /> : null;
             case "compaction":
@@ -815,14 +828,18 @@ const MessagesList = memo(function MessagesList({
               );
           }
         })();
-        if (!row) return null;
+        if (!row && !(workItem && turnsByReplyId.has(m.id))) return null;
+        const turn = workItem ? turnsByReplyId.get(m.id) : undefined;
         return (
           <div key={m.id} className="contents" data-mid={m.id}>
             {newDay && <DaySeparator at={m.at} />}
             {row}
+            {turn && <BotTurnCard turn={turn} onRawReply={() => dispatch({ type: "focusMessage", threadId: bot.threadId, messageId: turn.replyId! })}
+              onToolLog={() => dispatch({ type: "toggleInspector", open: true })} />}
           </div>
         );
       })}
+      {liveTurn && <BotTurnCard turn={liveTurn} onToolLog={() => dispatch({ type: "toggleInspector", open: true })} />}
     </>
   );
 });

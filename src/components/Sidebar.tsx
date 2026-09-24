@@ -93,7 +93,7 @@ import { botListItemPointerIntent } from "@/lib/sidebar-selection";
 import { phoneSettingsAction, SidebarPhoneButton } from "./SidebarPhoneButton";
 import { SidebarMoreMenu } from "./SidebarMoreMenu";
 import { SharedWorkThreadTree } from "./SharedWorkThreadTree";
-import { selectedSharedWork, sharedWorkIds, sharedWorkMatches } from "@/lib/shared-work-sidebar";
+import { matchesSidebarWorkFilter, selectedSharedWork, sharedWorkIds, sharedWorkMatches, SIDEBAR_WORK_FILTERS, type SidebarWorkFilter } from "@/lib/shared-work-sidebar";
 import { DesktopWorkspaceSwitcher } from "./DesktopWorkspaceSwitcher";
 import { profileInitials, SidebarProfileMenu } from "./SidebarProfileMenu";
 import { SidebarSectionHeader } from "./SidebarSectionHeader";
@@ -273,9 +273,10 @@ function useRevealedThreadRow(reveal: AppState["revealThread"], currentThreadId:
   }, [reveal, currentThreadId]);
 }
 
-export function GroupThreadList({ group, selected, density = "comfortable", query = "" }: { group: Group; selected: boolean; density?: SidebarDensity; query?: string }) {
+export function GroupThreadList({ group, selected, density = "comfortable", query = "", filter: filterProp }: { group: Group; selected: boolean; density?: SidebarDensity; query?: string; filter?: SidebarWorkFilter }) {
   const { state, dispatch } = useStore();
   const [showAll, setShowAll] = useState(false);
+  const [filter, setFilter] = useState<SidebarWorkFilter>(filterProp ?? "all");
   const busy = Boolean(group.working || group.busyBotId);
   const waiting = state.bots.find((bot) => bot.id === group.busyBotId)?.activity === "waiting-on-you";
   const tasks = (group.tasks ?? [{ threadId: group.threadId, title: group.name, createdAt: group.createdAt }]).map((task) => ({
@@ -284,17 +285,32 @@ export function GroupThreadList({ group, selected, density = "comfortable", quer
   }));
   const activeWork = selectedSharedWork(state);
   const activeThread = activeWork?.groupId === group.id ? activeWork.threadId : group.threadId;
-  const matchingTasks = query ? tasks.filter(task => task.workItem ? sharedWorkMatches(task.workItem, state.bots, query) : task.title.toLowerCase().includes(query.toLowerCase())) : tasks;
-  const visible = orderedThreadList(visibleSidebarThreads(matchingTasks, activeThread, "", [], showAll || Boolean(query)));
+  const hasWork = tasks.some(task => task.workItem);
+  const matchingTasks = tasks.filter(task => {
+    if (query && !(task.workItem ? sharedWorkMatches(task.workItem, state.bots, query) : task.title.toLowerCase().includes(query.toLowerCase()))) return false;
+    if (!task.workItem) return filter === "all";
+    if (activeWork?.id === task.workItem.id) return true;
+    return matchesSidebarWorkFilter(task.workItem, state.bots, filter);
+  });
+  const visible = orderedThreadList(hasWork || showAll || Boolean(query)
+    ? matchingTasks
+    : visibleSidebarThreads(matchingTasks, activeThread, "", [], false));
   const selectedBot = state.bots.find(bot => bot.id === state.selectedId);
   useRevealedThreadRow(state.revealThread, activeWork?.groupId === group.id && selectedBot ? selectedBot.threadId : selected ? group.threadId : null);
   return <div className="mb-2 ml-5 space-y-0.5 border-l border-hairline/30 pl-2" role="group" aria-label={t("task.namedList", { name: group.name })}>
+    {hasWork && <div role="toolbar" aria-label={t("work.filterBar")} className="mb-1 flex flex-wrap gap-1 px-1">
+      {SIDEBAR_WORK_FILTERS.map(value => <button key={value} type="button" aria-pressed={filter === value} onClick={() => setFilter(value)}
+        className={`rounded-full border px-2 py-0.5 text-[11px] ${filter === value ? "border-accent/40 bg-accent/10 text-ink" : "border-hairline/40 text-ink-secondary hover:bg-raised"}`}>
+        {t(`work.filter.${value}`)}
+      </button>)}
+    </div>}
+    {hasWork && filter !== "all" && !visible.some(task => task.workItem) && <p className="px-2 py-1 text-[11px] text-ink-secondary">{t("work.filterEmpty")}</p>}
     {visible.map((task) => task.workItem ? <SharedWorkThreadTree key={task.threadId} item={task.workItem} compact={density === "compact"} query={query} /> : <SidebarThreadRow key={task.threadId} task={task} ownerId={group.id} current={selected && task.threadId === group.threadId} compact={density === "compact"}
       onSelect={() => { if (task.threadId !== group.threadId) dispatch({ type: "switchGroupTask", groupId: group.id, threadId: task.threadId }); else dispatch({ type: "select", id: group.id }); }}
       onRename={(title) => dispatch({ type: "renameGroupTask", groupId: group.id, threadId: task.threadId, title })}
       onDelete={() => dispatch({ type: "deleteGroupTask", groupId: group.id, threadId: task.threadId })}
       onPin={(pinned) => dispatch({ type: "pinGroupTask", groupId: group.id, threadId: task.threadId, pinned, title: task.title })} />)}
-    {!query && !showAll && tasks.length > visible.length && <button type="button" onClick={() => setShowAll(true)} className="px-3 py-1.5 text-[11px] text-ink-secondary hover:text-ink">{t("task.showAll", { count: tasks.length })}</button>}
+    {!hasWork && !query && !showAll && tasks.length > visible.length && <button type="button" onClick={() => setShowAll(true)} className="px-3 py-1.5 text-[11px] text-ink-secondary hover:text-ink">{t("task.showAll", { count: tasks.length })}</button>}
     <button type="button" disabled={busy} onClick={() => dispatch({ type: "newGroupTask", groupId: group.id })} title={t(busy ? "task.newBusy" : "task.newShort")}
       className="mt-1 flex min-h-8 w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-[12px] text-ink-secondary hover:bg-raised/40 hover:text-ink disabled:opacity-40"><Plus size={12} />{t("task.newShort")}</button>
   </div>;
