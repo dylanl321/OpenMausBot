@@ -236,6 +236,8 @@ export interface Group {
   pinnedMessageId?: string;
   /** sidebar section heading this room is filed under (shared with bots) */
   section?: string;
+  /** Optional connection query that fills this topic's board with untracked items. */
+  taskBoard?: { connectionId: string; query: string } | null;
   /** New user-created rooms remain in setup until Save or Skip. */
   setupCompletedAt?: number | null;
   setupSkippedAt?: number | null;

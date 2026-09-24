@@ -521,6 +521,8 @@ export interface WireGroup {
   pinnedMessageId?: string;
   /** sidebar section heading this room is filed under. */
   section?: string;
+  /** Optional connection query that fills this topic's board with untracked items. */
+  taskBoard?: { connectionId: string; query: string } | null;
   /** New user-created rooms start with setup pending. */
   setupCompletedAt?: number | null;
   setupSkippedAt?: number | null;

@@ -85,6 +85,13 @@ describe("TaskView", () => {
     }
   });
 
+  it("offers an inline answer when the task needs input", () => {
+    const html = render({ ...item, status: "needs-input", detail: "Which merchant account should we use?" });
+    expect(html).toContain('data-task-answer="work"');
+    expect(html).toContain("Which merchant account should we use?");
+    expect(html).toContain("Send answer");
+  });
+
   it("keeps the reopen action and hides previous-revision specialist work", () => {
     const html = render({
       ...item, status: "completed", revision: 2, evidence: ["Verified output"],
