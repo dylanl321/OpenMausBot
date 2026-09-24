@@ -330,12 +330,14 @@ export function watchSourceSummary(
   watch: Watch,
   connections: readonly TaskConnectionListing[],
   connectors: readonly TaskConnectorManifest[],
+  webhooks: readonly { id: string; name: string }[] = [],
 ): { name: string; icon?: string; detail: string } {
   if (watch.source.type === "git") {
     return { name: t("watches.source.git"), detail: watch.source.remote };
   }
   if (watch.source.type === "webhook") {
-    return { name: t("watches.source.webhook"), detail: watch.source.webhookId };
+    const hook = webhooks.find((item) => item.id === watch.source.webhookId);
+    return { name: t("watches.source.webhook"), detail: hook?.name || watch.source.webhookId };
   }
   const connection = connectionForSource(watch.source, connections);
   const connector = connectorForSource(watch.source, connections, connectors);
