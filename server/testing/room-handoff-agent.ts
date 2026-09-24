@@ -48,18 +48,37 @@ export async function runRoomHandoffAgent(argv: string[], planPath: string, prom
   const turnContext = `${system}\n${JSON.stringify(prompt)}`;
   const resumed = turnContext.includes("Your downstream room requests have settled.");
   const basePlan = JSON.parse(readFileSync(planPath, "utf8"))[botId] ?? {};
-  const jsonl = (path: string) => existsSync(path)
-    ? readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
+  const jsonl = (path: string) => {
+    if (!existsSync(path)) return [];
+    const rows: Array<{ botId?: string; turnIndex?: number }> = [];
+    for (const line of readFileSync(path, "utf8").split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        rows.push(JSON.parse(trimmed));
+      } catch {
+        // A concurrent writer, or a Windows taskkill mid-append, can leave a
+        // trailing partial line. Keep the complete rows so the next launch
+        // does not fail the turn with a JSON parse error.
+      }
+    }
+    return rows;
+  };
   const previous = jsonl(`${planPath}.evidence.jsonl`);
   // Evidence is written in `finally`. SIGKILL of the parent skips that, and
   // a gated turn also clears the 20s MCP timer, so an orphaned launch never
   // records completion. Reserve the slot before any await so the next
   // process does not reuse a never-opening gate.
+  //
+  // Index by the highest reserved slot, not the row count: two launches that
+  // race on Windows can both write the same turnIndex, and counting rows
+  // would then skip a later scripted reply (Unexpected extra fixture turn).
   const startedPath = `${planPath}.started.jsonl`;
-  const turnIndex = Math.max(
-    jsonl(startedPath).filter(p => p.botId === botId).length,
-    previous.filter(p => p.botId === botId).length,
-  );
+  const startedNext = jsonl(startedPath).filter(p => p.botId === botId).reduce((next, row) => {
+    const index = Number(row.turnIndex);
+    return Number.isInteger(index) && index >= 0 ? Math.max(next, index + 1) : next;
+  }, 0);
+  const turnIndex = Math.max(startedNext, previous.filter(p => p.botId === botId).length);
   const plan = basePlan.turns ? basePlan.turns[turnIndex] : basePlan;
   if (!plan) throw new Error(`Unexpected extra fixture turn ${turnIndex} for ${botId}`);
   appendFileSync(startedPath, JSON.stringify({ botId, turnIndex }) + "\n");

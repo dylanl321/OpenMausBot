@@ -41,6 +41,30 @@ it("does not reuse a plan slot reserved by a turn that started but never finishe
   await expect(run()).resolves.toBe("second");
 }));
 
+it("does not skip a plan slot when the same reservation was written twice", () => withMcp(`
+  require("node:readline").createInterface({ input: process.stdin }).on("line", line => {
+    const request = JSON.parse(line);
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} }) + "\\n");
+  });
+`, async (run, dir) => {
+  const plan = join(dir, "plan.json");
+  writeFileSync(plan, JSON.stringify({ fixture: { turns: [{ reply: "first" }, { reply: "second" }] } }));
+  writeFileSync(`${plan}.started.jsonl`, [0, 0].map((turnIndex) => JSON.stringify({ botId: "fixture", turnIndex })).join("\n") + "\n");
+  await expect(run()).resolves.toBe("second");
+}));
+
+it("ignores a trailing partial reservation line instead of failing the next turn", () => withMcp(`
+  require("node:readline").createInterface({ input: process.stdin }).on("line", line => {
+    const request = JSON.parse(line);
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} }) + "\\n");
+  });
+`, async (run, dir) => {
+  const plan = join(dir, "plan.json");
+  writeFileSync(plan, JSON.stringify({ fixture: { turns: [{ reply: "first" }, { reply: "second" }] } }));
+  writeFileSync(`${plan}.started.jsonl`, `${JSON.stringify({ botId: "fixture", turnIndex: 0 })}\n{"botId":"fixture","turnIndex":`);
+  await expect(run()).resolves.toBe("second");
+}));
+
 it("reaps the MCP process even if it ignores graceful shutdown", () => withMcp(`
   require("node:fs").writeFileSync(require("node:path").join(process.env.FIXTURE_HOME, "pid"), String(process.pid));
   process.on("SIGTERM", () => {});
