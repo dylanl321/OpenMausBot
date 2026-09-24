@@ -436,7 +436,8 @@ function mutatingPublicRoute(method: string, path: string): boolean {
     path !== "/api/testing/internal-capability" &&
     path !== "/api/auth/pair" &&
     // The same exchange under the shape the companion apps send.
-    path !== "/api/pair";
+    path !== "/api/pair" &&
+    !/^\/api\/connectors\/[a-z][a-z0-9-]{0,63}\/webhook$/.test(path);
 }
 
 function secureTokenMatch(actual: string | undefined, expected: string): boolean {

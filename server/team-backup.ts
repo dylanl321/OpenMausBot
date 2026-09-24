@@ -290,7 +290,16 @@ export function importTeamBackup(store: Store, routines: RoutineManager, input: 
         ? { type: "run_routine", routineId: createdRoutines.find((routine) => routine.name === sourceAction.routineName)?.id ?? sourceAction.routineName }
         : sourceAction.type === "notify"
           ? { type: "notify", botId: sourceAction.botId ? botIds.get(sourceAction.botId) : undefined, threadId: sourceAction.threadId }
-          : sourceAction;
+          : sourceAction.type === "ensure_task"
+            ? {
+                type: "ensure_task",
+                ...(sourceAction.topic ? { topic: sourceAction.topic } : {}),
+                ...(sourceAction.coordinatorBotId
+                  ? { coordinatorBotId: botIds.get(sourceAction.coordinatorBotId) ?? sourceAction.coordinatorBotId }
+                  : {}),
+                ...(sourceAction.criteriaFrom ? { criteriaFrom: sourceAction.criteriaFrom } : {}),
+              }
+            : sourceAction;
       createdWatches.push(options.watches!.create({
         name: source.name,
         source: source.source,

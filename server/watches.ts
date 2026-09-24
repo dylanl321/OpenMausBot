@@ -84,6 +84,11 @@ export interface WatchManagerOptions {
   notify?: (watch: Watch, changes: SourceChange[], action: Extract<WatchAction, { type: "notify" }>) => void;
   record?: (watch: Watch, changes: SourceChange[]) => void;
   taskUpdate?: (watch: Watch, changes: SourceChange[]) => void;
+  ensureTask?: (
+    watch: Watch,
+    changes: SourceChange[],
+    action: Extract<WatchAction, { type: "ensure_task" }>,
+  ) => void | Promise<void>;
   raiseAttention?: (watch: Watch, reason: string) => void;
   webhookExists?: (webhookId: string) => boolean;
   connectionChanges?: (
@@ -136,6 +141,14 @@ function cloneAction(action: WatchAction): WatchAction {
     return { type: "notify", ...(action.botId ? { botId: action.botId } : {}), ...(action.threadId ? { threadId: action.threadId } : {}) };
   }
   if (action.type === "run_routine") return { type: "run_routine", routineId: action.routineId };
+  if (action.type === "ensure_task") {
+    return {
+      type: "ensure_task",
+      ...(action.topic ? { topic: action.topic } : {}),
+      ...(action.coordinatorBotId ? { coordinatorBotId: action.coordinatorBotId } : {}),
+      ...(action.criteriaFrom ? { criteriaFrom: action.criteriaFrom } : {}),
+    };
+  }
   return { type: action.type };
 }
 
@@ -299,7 +312,16 @@ function cleanAction(value: unknown): WatchAction {
     };
   }
   if (action.type === "run_routine") return { type: "run_routine", routineId: cleanId(action.routineId, "routine id") };
-  if (action.type === "ensure_task") throw new Error("Creating tasks from watches lands in a later slice");
+  if (action.type === "ensure_task") {
+    const topic = typeof action.topic === "string" ? action.topic.trim().slice(0, 100) : "";
+    return {
+      type: "ensure_task",
+      ...(topic ? { topic } : {}),
+      ...(action.coordinatorBotId != null && action.coordinatorBotId !== ""
+        ? { coordinatorBotId: cleanId(action.coordinatorBotId, "coordinator bot id") } : {}),
+      ...(action.criteriaFrom === "item" ? { criteriaFrom: "item" as const } : {}),
+    };
+  }
   throw new Error("Choose a supported watch action");
 }
 
@@ -626,6 +648,18 @@ export class WatchManager {
     }
   }
 
+  /** Ingest connector-normalized changes (poll or webhook) for connection watches. */
+  async ingestConnectionChanges(connectionId: string, changes: SourceChange[], at?: number): Promise<void> {
+    const when = at ?? this.now();
+    for (const watch of this.watches) {
+      if (!watch.enabled || watch.source.type !== "connection" || watch.source.connectionId !== connectionId) continue;
+      await this.acceptChanges(watch, changes.map((change) => ({
+        ...change,
+        connectionId: change.connectionId || connectionId,
+      })), when);
+    }
+  }
+
   exportForBackup(routineName: (id: string) => string | undefined): PortableWatch[] {
     return this.watches.map((watch) => {
       const action = watch.action.type === "run_routine"
@@ -890,6 +924,11 @@ export class WatchManager {
     }
     if (action.type === "task_update") {
       this.options.taskUpdate?.(watch, changes);
+      return;
+    }
+    if (action.type === "ensure_task") {
+      if (!this.options.ensureTask) throw new Error("Creating tasks from watches is unavailable");
+      await this.options.ensureTask(watch, changes, action);
       return;
     }
     const routine = this.options.routine?.(action.routineId);

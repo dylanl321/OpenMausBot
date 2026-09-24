@@ -47,7 +47,8 @@ export type WatchAction =
   | { type: "record" }
   | { type: "notify"; botId?: string; threadId?: string }
   | { type: "run_routine"; routineId: string }
-  | { type: "task_update" };
+  | { type: "task_update" }
+  | { type: "ensure_task"; topic?: string; coordinatorBotId?: string; criteriaFrom?: "item" };
 
 export interface WatchBatch {
   windowSeconds: number;

@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { LinkKind, SyncedItem } from "../../shared/work-links.ts";
-import type { ConnectionContext, Connector } from "../connectors/types.ts";
+import type { SourceChange } from "../../shared/watches.ts";
+import { encodeChangeCursor, parseChangeCursor } from "../connectors/change-cursor.ts";
+import type { ConnectionContext, Connector, WatchScope } from "../connectors/types.ts";
 
 const KINDS: LinkKind[] = ["work_item", "change_request", "commit", "build", "comment", "document", "link"];
 
@@ -24,7 +26,7 @@ function catalog() {
 }
 
 function item(kind: LinkKind, externalId: string, ctx: ConnectionContext): SyncedItem {
-  const known = FIXTURES[externalId];
+  const known = FIXTURES[externalId] ?? QUERY_EXTRAS[externalId];
   return {
     kind,
     externalId,
@@ -33,7 +35,63 @@ function item(kind: LinkKind, externalId: string, ctx: ConnectionContext): Synce
     connectorId: "fake",
     connectionId: ctx.connectionId,
     ...(known?.state ? { state: known.state } : {}),
+    ...(externalId === "PAY-8" ? { details: { labels: "bot-ready", description: "Ship the labelled payments story." } } : {}),
+    ...(externalId === "9001" ? { details: { mr: "482" } } : {}),
     updatedAt: 1,
+  };
+}
+
+const FEED: Array<{ at: number; change: (ctx: ConnectionContext) => SourceChange }> = [
+  {
+    at: Date.parse("2026-09-23T10:00:00.000Z"),
+    change: ctx => ({
+      id: "PAY-8@created",
+      type: "item.created",
+      connectionId: ctx.connectionId,
+      item: item("work_item", "PAY-8", ctx),
+      actor: { name: "Ada", isBot: false },
+      fields: { labels: ["bot-ready"], "state.category": "todo", project: "PAY" },
+      at: Date.parse("2026-09-23T10:00:00.000Z"),
+    }),
+  },
+  {
+    at: Date.parse("2026-09-23T11:00:00.000Z"),
+    change: ctx => ({
+      id: "PAY-1@changelog:bot:status",
+      type: "item.state_changed",
+      connectionId: ctx.connectionId,
+      item: item("work_item", "PAY-1", ctx),
+      before: { state: "todo", stateLabel: "To Do" },
+      actor: { name: "Payments bot", isBot: true },
+      fields: { "state.category": "in_progress" },
+      at: Date.parse("2026-09-23T11:00:00.000Z"),
+    }),
+  },
+  {
+    at: Date.parse("2026-09-23T12:00:00.000Z"),
+    change: ctx => ({
+      id: "9001@failed",
+      type: "build.failed",
+      connectionId: ctx.connectionId,
+      item: item("build", "9001", ctx),
+      actor: { name: "gitlab-bot", isBot: true },
+      fields: { mr: "482" },
+      at: Date.parse("2026-09-23T12:00:00.000Z"),
+    }),
+  },
+];
+
+function feedFor(ctx: ConnectionContext, scope: WatchScope, cursor: string | null): { changes: SourceChange[]; cursor: string } {
+  const parsed = parseChangeCursor(cursor);
+  const needle = typeof scope.query === "string" ? scope.query.trim().toLowerCase() : "";
+  const changes = FEED
+    .filter(row => row.at > parsed.since)
+    .map(row => row.change(ctx))
+    .filter(change => !needle || change.item.title.toLowerCase().includes(needle) || String(change.item.externalId ?? "").toLowerCase().includes(needle));
+  const latest = Math.max(parsed.since, ...changes.map(change => change.at));
+  return {
+    changes,
+    cursor: encodeChangeCursor(latest || parsed.since || Date.parse("2026-09-23T09:00:00.000Z"), parsed.seen, changes.flatMap(change => change.item.externalId ? [change.item.externalId] : [])),
   };
 }
 
@@ -44,8 +102,14 @@ export const fakeConnector: Connector = {
     kinds: KINDS,
     settings: [{ key: "site", label: "Site", type: "string" }],
     secrets: [{ key: "token", label: "Token" }],
-    capabilities: { query: true, poll: true },
+    capabilities: { query: true, poll: true, webhooks: true },
     statusDefaults: { "In Progress": "in_progress", opened: "in_review" },
+    watch: {
+      scopes: [
+        { key: "query", label: "Query", type: "string", help: "Optional title or id filter" },
+      ],
+      events: ["item.created", "item.updated", "item.state_changed", "item.labeled", "build.failed"],
+    },
   },
   async test(ctx) {
     const token = ctx.secret("token");
@@ -77,6 +141,20 @@ export const fakeConnector: Connector = {
     const listed = Object.entries(catalog()).filter(([id, spec]) =>
       !needle || needle === "*" || needle === "all" || id.toLowerCase().includes(needle) || spec.title.toLowerCase().includes(needle));
     return { items: listed.map(([id, spec]) => item(spec.kind, id, ctx)) };
+  },
+  async webhook(_ctx, _headers, body) {
+    const record = typeof body === "string" ? JSON.parse(body) as Record<string, unknown> : body as Record<string, unknown>;
+    const id = typeof record?.externalId === "string" ? record.externalId : "PAY-8";
+    const kind = catalog()[id]?.kind ?? "work_item";
+    return [{ kind, externalId: id }];
+  },
+  async changes(ctx, scope, cursor) {
+    return feedFor(ctx, scope, cursor);
+  },
+  async webhookChanges(ctx, _headers, body) {
+    const record = typeof body === "string" ? JSON.parse(body) as Record<string, unknown> : body && typeof body === "object" ? body as Record<string, unknown> : {};
+    const wanted = typeof record.id === "string" ? record.id : typeof record.externalId === "string" ? `${record.externalId}@created` : "PAY-8@created";
+    return feedFor(ctx, {}, "1970-01-01T00:00:00.000Z").changes.filter(change => change.id === wanted);
   },
   capture: [{
     match: { tool: /fake\.issue/i },

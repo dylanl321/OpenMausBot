@@ -1,0 +1,70 @@
+{
+  "isLast": true,
+  "issues": [
+    {
+      "id": "10002",
+      "key": "PAY-140",
+      "fields": {
+        "summary": "Export receipts",
+        "status": {
+          "name": "To Do",
+          "statusCategory": { "key": "new", "name": "To Do" }
+        },
+        "issuetype": { "name": "Story" },
+        "priority": { "name": "High" },
+        "project": { "key": "PAY" },
+        "labels": ["bot-ready", "payments"],
+        "created": "2026-09-23T14:00:00.000+0000",
+        "updated": "2026-09-23T14:00:00.000+0000",
+        "description": {
+          "type": "doc",
+          "version": 1,
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [{ "type": "text", "text": "Ship labelled receipt export for the payments bot." }]
+            }
+          ]
+        },
+        "comment": { "comments": [] }
+      },
+      "changelog": { "histories": [] }
+    },
+    {
+      "id": "10001",
+      "key": "PAY-123",
+      "fields": {
+        "summary": "Refund failures",
+        "status": {
+          "name": "In Progress",
+          "statusCategory": { "key": "indeterminate", "name": "In Progress" }
+        },
+        "assignee": { "displayName": "Payments bot", "accountId": "qm:bot", "emailAddress": "bot@example.test" },
+        "issuetype": { "name": "Story" },
+        "priority": { "name": "High" },
+        "project": { "key": "PAY" },
+        "labels": ["payments"],
+        "created": "2026-09-21T10:00:00.000+0000",
+        "updated": "2026-09-23T14:22:00.000+0000",
+        "comment": { "comments": [] }
+      },
+      "changelog": {
+        "histories": [
+          {
+            "id": "10100",
+            "created": "2026-09-23T14:22:00.000+0000",
+            "author": {
+              "displayName": "Payments bot",
+              "accountId": "qm:bot",
+              "emailAddress": "bot@example.test",
+              "accountType": "atlassian"
+            },
+            "items": [
+              { "field": "status", "fromString": "To Do", "toString": "In Progress" }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

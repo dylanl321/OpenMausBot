@@ -53,6 +53,7 @@ The server calls these methods; it never imports a provider by name.
 | `query` | Optional. List items for a board or “start next work” (JQL, PQL, GitLab project search). |
 | `webhook` | Optional. Verify the delivery, then return changed refs. |
 | `changes` | Optional. Cheap, idempotent change feed after `cursor`. Same cursor → same `SourceChange[]`. Cursor only moves forward. |
+| `webhookChanges` | Optional. Map a verified webhook onto the same `SourceChange.id`s the poll feed emits. |
 | `capture` | Declarative rules over redacted `item.completed` previews. |
 
 `SyncedItem` is a `LinkedItem` without the fields the server owns (`id`,
@@ -97,6 +98,8 @@ It checks:
 - `fetch` returns one titled item per requested kind
 - the first capture rule extracts an id from the sample preview
 - `test` uses `ctx.fetch` (no raw `globalThis.fetch`)
+- when `changes` exists: `watch` is declared, the same cursor returns the same ids, and the next cursor is not earlier
+- when `webhookChanges` is given a recorded body: at least one id matches the poll feed
 
 Add your own tests for mapping, query pagination, webhook verification,
 truncated previews, and secret hygiene.

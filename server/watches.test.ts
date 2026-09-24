@@ -296,6 +296,84 @@ describe("watch backups", () => {
   });
 });
 
+describe("ensure_task and connection feeds", () => {
+  it("accepts ensure_task and creates one task from a connection poll, skipping bot writes", async () => {
+    const dir = tempDir();
+    const ensured: string[][] = [];
+    const records: string[] = [];
+    let cursor = "1970-01-01T00:00:00.000Z";
+    const feed: SourceChange[] = [
+      change({
+        id: "PAY-8@created",
+        type: "item.created",
+        connectionId: "jira-acme",
+        actor: { name: "Ada", isBot: false },
+        item: { kind: "work_item", title: "Ready story", externalId: "PAY-8", connectorId: "jira", connectionId: "jira-acme", updatedAt: 2 },
+      }),
+      change({
+        id: "PAY-1@bot",
+        type: "item.state_changed",
+        connectionId: "jira-acme",
+        actor: { name: "Payments bot", isBot: true },
+        item: { kind: "work_item", title: "Refunds", externalId: "PAY-1", connectorId: "jira", connectionId: "jira-acme", updatedAt: 3 },
+      }),
+    ];
+    const watches = new WatchManager({
+      file: join(dir, "watches.json"),
+      now: () => 6_000,
+      connectionChanges: async (_id, _scope, previous) => {
+        const changes = previous ? [] : feed;
+        cursor = "2026-09-23T12:00:00.000Z";
+        return { changes, cursor };
+      },
+      ensureTask: (_watch, changes) => { ensured.push(changes.map((item) => item.id)); },
+      record: (_watch, changes) => { records.push(...changes.map((item) => item.id)); },
+    });
+    const created = watches.create({
+      name: "Ready stories",
+      source: { type: "connection", connectionId: "jira-acme", scope: { query: "labels = bot-ready" } },
+      events: ["item.created", "item.state_changed"],
+      check: { type: "interval", everyMinutes: 5, anchorAt: 0 },
+      action: { type: "ensure_task", topic: "Payments", coordinatorBotId: "chief", criteriaFrom: "item" },
+      startFrom: "backfill",
+    });
+    expect(created.action).toEqual({
+      type: "ensure_task", topic: "Payments", coordinatorBotId: "chief", criteriaFrom: "item",
+    });
+    await watches.check(created.id);
+    expect(ensured).toEqual([["PAY-8@created"]]);
+    expect(records).toEqual([]);
+    await watches.check(created.id);
+    expect(ensured).toHaveLength(1);
+  });
+
+  it("ingests a connector webhook once for connection watches", async () => {
+    const dir = tempDir();
+    const acted: string[] = [];
+    const watches = new WatchManager({
+      file: join(dir, "watches.json"),
+      now: () => 7_000,
+      taskUpdate: (_watch, changes) => { acted.push(...changes.map((item) => item.id)); },
+    });
+    watches.create({
+      name: "Pipelines",
+      source: { type: "connection", connectionId: "gitlab-acme" },
+      events: ["build.failed"],
+      check: { type: "interval", everyMinutes: 5, anchorAt: 0 },
+      action: { type: "task_update" },
+    });
+    const failed = change({
+      id: "acme/payments#pipeline:9001@failed",
+      type: "build.failed",
+      connectionId: "gitlab-acme",
+      item: { kind: "build", title: "pipeline 9001", externalId: "acme/payments#pipeline:9001", updatedAt: 4 },
+    });
+    await watches.ingestConnectionChanges("gitlab-acme", [failed]);
+    await watches.ingestConnectionChanges("gitlab-acme", [failed]);
+    expect(acted).toEqual(["acme/payments#pipeline:9001@failed"]);
+  });
+});
+
 describe("run_routine through RoutineManager", () => {
   it("enqueues a watch-triggered run with interpolated changes and dedupes the delivery", async () => {
     const dir = tempDir();

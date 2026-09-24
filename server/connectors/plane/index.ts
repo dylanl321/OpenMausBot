@@ -7,6 +7,12 @@ import type {
   SourceChange,
   WatchScope,
 } from "../types.ts";
+import {
+  beforeFromSnapshot,
+  encodeChangeCursor,
+  parseChangeCursor,
+  rememberSnapshot,
+} from "../change-cursor.ts";
 
 const PREVIEW_CUT = "[… preview shortened]";
 const IDENTIFIER = /\b([A-Z][A-Z0-9_]+-\d+)\b/i;
@@ -402,23 +408,38 @@ const captureRules: CaptureRule[] = [
   },
 ];
 
-function changeType(item: PlaneWorkItem, cursorAt: number): SourceChange["type"] {
+function changeType(
+  item: PlaneWorkItem,
+  synced: SyncedItem,
+  cursorAt: number,
+  seen?: ReturnType<typeof beforeFromSnapshot>,
+): SourceChange["type"] {
   const created = when(item.created_at);
   if (created > cursorAt) return "item.created";
+  if (seen?.state && synced.state?.category && seen.state !== synced.state.category) return "item.state_changed";
+  if (seen?.assignee !== undefined && seen.assignee !== synced.details?.assignee) return "item.assigned";
   return "item.updated";
 }
 
-function toChange(item: SyncedItem, raw: PlaneWorkItem, ctx: ConnectionContext, type: SourceChange["type"]): SourceChange {
+function toChange(
+  item: SyncedItem,
+  raw: PlaneWorkItem,
+  ctx: ConnectionContext,
+  type: SourceChange["type"],
+  before?: SourceChange["before"],
+): SourceChange {
   const at = item.updatedAt;
   return {
     id: `${item.externalId}@${raw.updated_at ?? at}`,
     type,
     connectionId: ctx.connectionId,
     item,
+    ...(before ? { before } : {}),
     actor: { name: personName(raw.assignees?.[0] as PlanePerson | undefined) ?? "Plane", isBot: false },
     fields: {
       ...(item.details?.project ? { project: String(item.details.project) } : {}),
       ...(item.details?.priority ? { priority: String(item.details.priority) } : {}),
+      ...(item.details?.assignee ? { assignee: String(item.details.assignee) } : {}),
       ...(item.state?.category ? { "state.category": item.state.category } : {}),
       ...(item.state?.label ? { "state.label": item.state.label } : {}),
     },
@@ -556,7 +577,8 @@ export const planeConnector: Connector = {
   async changes(ctx, scope: WatchScope, cursor: string | null) {
     const projectId = await resolveProjectId(ctx, typeof scope.project === "string" ? scope.project : undefined);
     if (!projectId) return { changes: [], cursor: cursor ?? "" };
-    const since = cursor && Date.parse(cursor) ? Date.parse(cursor) : 0;
+    const parsed = parseChangeCursor(cursor);
+    const since = parsed.since;
     const params = new URLSearchParams({ per_page: "50", expand: "state,assignees", order_by: "updated_at" });
     const filters = [
       typeof scope.query === "string" && scope.query.trim() ? scope.query.trim() : "",
@@ -568,14 +590,25 @@ export const planeConnector: Connector = {
     const rows = pageItems<PlaneWorkItem>(result.body)
       .filter(item => when(item.updated_at) > since)
       .sort((left, right) => when(left.updated_at) - when(right.updated_at));
+    const seen = new Map(parsed.seen);
     const changes = rows.flatMap(raw => {
       const identifier = identifierOf(raw, ctx);
       const item = identifier ? syncedWorkItem(raw, ctx, identifier) : null;
-      return item ? [toChange(item, raw, ctx, changeType(raw, since))] : [];
+      if (!item?.externalId) return [];
+      const before = beforeFromSnapshot(seen.get(item.externalId));
+      const type = changeType(raw, item, since, before);
+      rememberSnapshot(seen, item);
+      return [toChange(item, raw, ctx, type, before)];
     });
-    const latest = rows.at(-1)?.updated_at ?? cursor ?? new Date(since || Date.now()).toISOString();
+    const latest = rows.at(-1)?.updated_at ?? parsed.iso ?? new Date(since || Date.now()).toISOString();
     if (changes.length) ctx.log(`Plane changes named ${changes.length} item(s).`);
-    return { changes, cursor: latest };
+    return {
+      changes,
+      cursor: encodeChangeCursor(latest, seen, rows.flatMap(raw => {
+        const identifier = identifierOf(raw, ctx);
+        return identifier ? [identifier] : [];
+      })),
+    };
   },
   capture: captureRules,
 };

@@ -61,6 +61,8 @@ export interface Connector {
   webhook?(ctx: ConnectionContext, headers: Headers, body: unknown): Promise<{ kind: LinkKind; externalId: string }[]>;
   /** Change feed for watches. Cheap and idempotent: the same cursor returns the same changes. */
   changes?(ctx: ConnectionContext, scope: WatchScope, cursor: string | null): Promise<{ changes: SourceChange[]; cursor: string }>;
+  /** Map a verified webhook onto the same `SourceChange.id`s the poll feed emits. */
+  webhookChanges?(ctx: ConnectionContext, headers: Headers, body: unknown): Promise<SourceChange[]>;
   capture: CaptureRule[];
 }
 

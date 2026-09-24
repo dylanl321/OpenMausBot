@@ -9,6 +9,7 @@ import { removeTempDir } from "../../testing/cleanup.ts";
 import { WorkEvents } from "../../work-events.ts";
 import { WorkItems } from "../../work-items.ts";
 import { WorkCapture } from "../capture.ts";
+import { parseChangeCursor } from "../change-cursor.ts";
 import { connectorContract } from "../contract-suite.ts";
 import type { CaptureCall, ConnectionContext, StoredConnection } from "../types.ts";
 import { planeConnector } from "./index.ts";
@@ -99,7 +100,10 @@ describe("plane connector contract", () => {
   connectorContract(planeConnector, ctx(), [
     { ref: "PAY-123", url: "https://app.plane.so/acme/browse/PAY-123" },
     { ref: "PAY-123:f3e29f26-708d-40f0-9209-7e0de44abc49", url: "https://app.plane.so/acme/browse/PAY-123#f3e29f26-708d-40f0-9209-7e0de44abc49" },
-  ], captureCall("create"));
+  ], captureCall("create"), {
+    scope: { project: "PAY" },
+    cursor: "2026-09-23T00:00:00.000Z",
+  });
 });
 
 describe("plane connector", () => {
@@ -158,13 +162,26 @@ describe("plane connector", () => {
       type: "item.updated",
       item: { externalId: "PAY-123", state: { category: "in_progress" } },
     });
-    expect(first.cursor).toBe("2026-09-23T14:22:00.000Z");
+    expect(parseChangeCursor(first.cursor).iso).toBe("2026-09-23T14:22:00.000Z");
     const again = await planeConnector.changes!(ctx(), { project: "PAY" }, "2026-09-23T00:00:00.000Z");
     expect(again.changes.map(change => change.id)).toEqual(first.changes.map(change => change.id));
-    expect(again.cursor).toBe(first.cursor);
+    expect(parseChangeCursor(again.cursor).iso).toBe(parseChangeCursor(first.cursor).iso);
     const later = await planeConnector.changes!(ctx(), { project: "PAY" }, first.cursor);
     expect(later.changes).toEqual([]);
-    expect(later.cursor).toBe(first.cursor);
+    expect(parseChangeCursor(later.cursor).since).toBeGreaterThanOrEqual(parseChangeCursor(first.cursor).since);
+  });
+
+  it("uses the last-seen snapshot to fill before and emit state_changed", async () => {
+    const cursor = JSON.stringify({
+      at: "2026-09-23T00:00:00.000Z",
+      seen: { "PAY-123": { state: "todo", stateLabel: "Todo", assignee: "Bea" } },
+    });
+    const page = await planeConnector.changes!(ctx(), { project: "PAY" }, cursor);
+    const refunds = page.changes.find(change => change.item.externalId === "PAY-123");
+    expect(refunds).toMatchObject({
+      type: "item.state_changed",
+      before: { state: "todo", stateLabel: "Todo", assignee: "Bea" },
+    });
   });
 
   it("captures Plane MCP create, comment and update previews without truncated ids", () => {

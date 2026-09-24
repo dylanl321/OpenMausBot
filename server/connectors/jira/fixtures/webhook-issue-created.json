@@ -1,0 +1,35 @@
+{
+  "timestamp": 1758631200000,
+  "webhookEvent": "jira:issue_created",
+  "user": {
+    "displayName": "Ada",
+    "accountId": "qm:ada"
+  },
+  "issue": {
+    "id": "10002",
+    "key": "PAY-140",
+    "fields": {
+      "summary": "Export receipts",
+      "status": {
+        "name": "To Do",
+        "statusCategory": { "key": "new" }
+      },
+      "issuetype": { "name": "Story" },
+      "priority": { "name": "High" },
+      "project": { "key": "PAY" },
+      "labels": ["bot-ready", "payments"],
+      "created": "2026-09-23T14:00:00.000+0000",
+      "updated": "2026-09-23T14:00:00.000+0000",
+      "description": {
+        "type": "doc",
+        "version": 1,
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [{ "type": "text", "text": "Ship labelled receipt export for the payments bot." }]
+          }
+        ]
+      }
+    }
+  }
+}

@@ -23,7 +23,10 @@ describe("fake connector contract", () => {
     { ref: "document:doc-1", url: "https://fake.example/document/doc-1" },
     { ref: "link:ref-1", url: "https://fake.example/link/ref-1" },
     { ref: "change_request:482", url: "https://fake.example/change_request/482" },
-  ]);
+  ], { title: "fake.issue", output: "Created PAY-1", ok: true }, {
+    cursor: "1970-01-01T00:00:00.000Z",
+    webhook: { body: { id: "PAY-8@created", externalId: "PAY-8" } },
+  });
 });
 
 describe("fake connector query", () => {
