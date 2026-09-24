@@ -336,8 +336,9 @@ export function watchSourceSummary(
     return { name: t("watches.source.git"), detail: watch.source.remote };
   }
   if (watch.source.type === "webhook") {
-    const hook = webhooks.find((item) => item.id === watch.source.webhookId);
-    return { name: t("watches.source.webhook"), detail: hook?.name || watch.source.webhookId };
+    const source = watch.source;
+    const hook = webhooks.find((item) => item.id === source.webhookId);
+    return { name: t("watches.source.webhook"), detail: hook?.name || source.webhookId };
   }
   const connection = connectionForSource(watch.source, connections);
   const connector = connectorForSource(watch.source, connections, connectors);
