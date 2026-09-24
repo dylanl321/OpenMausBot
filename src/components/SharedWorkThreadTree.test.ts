@@ -127,7 +127,7 @@ describe("outcome-centered sidebar", () => {
         const work: WorkItem = {
           ...item, id, groupId: topic, threadId: `hub-${id}`, title: `${topic} task ${index + 1}`, status,
           links: status === "active" && index === 0
-            ? [link({ id: `${id}-cr`, kind: "change_request", title: "Review", externalId: `${topicIndex}${index}`, state: { label: "opened", category: "in_review" } })]
+            ? [link({ id: `${id}-cr`, kind: "change_request", title: "Review", externalId: `acme/${topic}!${topicIndex}${index}`, state: { label: "opened", category: "in_review" } })]
             : [link({ id: `${id}-src`, kind: "work_item", role: "source", title: topic, externalId: `${topic.slice(0, 3).toUpperCase()}-${topicIndex}${index}` })],
           assignments: [], criteria: item.criteria,
         };
@@ -145,7 +145,8 @@ describe("outcome-centered sidebar", () => {
     expect(html).toContain("PAY-01");
     expect(html).toContain("payments task 1");
     expect(html).toContain("pricing task 4");
-    expect(html).toContain("!00");
+    expect(html).toContain("acme/payments!00");
+    expect(html).not.toContain("!acme/payments!00");
     const review = renderToStaticMarkup(createElement(GroupThreadList, { group: groups[0]!, selected: false, filter: "in_review" }));
     expect(review).toContain("payments task 1");
     expect(review).not.toContain("payments task 2");
