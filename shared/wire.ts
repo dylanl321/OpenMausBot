@@ -21,6 +21,7 @@ import type { QuestionRequestCardData } from "./ask-question.ts";
 import type { RoutineRunCardData } from "./routine-run.ts";
 import type { GroupGoalRunCardData } from "./group-goal-run.ts";
 import type { WorkItem } from "./work-item.ts";
+import type { LinkedItem, TaskEvent } from "./work-links.ts";
 import type { RuntimeEvent } from "./runtime-events.ts";
 import type { Notification } from "./notification.ts";
 import type { Routine, RoutineRun } from "./routines.ts";
@@ -563,6 +564,8 @@ export type ServerFrame =
   | { kind: "computer"; botId: string; state: "provisioning" | "waking" }
   | { kind: "computer-control"; botId: string; held: boolean; helpReason: string | null }
   | { kind: "bot.deleted"; botId: string }
+  | { kind: "work.event"; event: TaskEvent; workItem: { groupId: string; threadId: string; coordinatorBotId: string } }
+  | { kind: "work.link"; link: LinkedItem; workItem: { groupId: string; threadId: string; coordinatorBotId: string } }
   /** The config status object spread flat into the frame; its full typing
    * is the deferred client-model extraction (see j1-phase-bc-progress). */
   | ({ kind: "config" } & Record<string, unknown>);

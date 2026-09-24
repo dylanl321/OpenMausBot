@@ -37,7 +37,7 @@ import { ConnectorCard } from "./ConnectorCard";
 import { SecretRequestCard } from "./SecretRequestCard";
 import { hasRoutineExecutionTask, RoutineRunCard } from "./RoutineRunCard";
 import { GoalRunCard } from "./GoalRunCard";
-import { WorkItemPanel } from "./WorkItemPanel";
+import { TaskView } from "./work/TaskView";
 import { AttachmentGallery, MessageAttachmentGallery } from "./AttachmentGallery";
 import { OptionCard } from "./OptionCard";
 import { GroupCallButton, GroupCallOverlay } from "./GroupCallView";
@@ -1213,7 +1213,7 @@ export function GroupView({ group: suppliedGroup }: { group: Group }) {
 
       {findOpen && <ChatFindBar threadId={group.threadId} onClose={() => setFindOpen(false)} />}
       {group.tasks?.find(task => task.threadId === group.threadId)?.workItem &&
-        <WorkItemPanel key={group.threadId} item={group.tasks.find(task => task.threadId === group.threadId)!.workItem!} />}
+        <TaskView key={group.threadId} item={group.tasks.find(task => task.threadId === group.threadId)!.workItem!} />}
 
       {/* Bulletin: one pinned line; click to edit */}
       {!setupPending && <div className="w-full px-5">

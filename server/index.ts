@@ -521,6 +521,7 @@ import { createHostedSlackRoutes } from "./routes/hosted-slack.ts";
 import { createBedrockRoutes } from "./routes/bedrock.ts";
 import { createTaskConnectionRoutes } from "./routes/task-connections.ts";
 import { createWorkEventRoutes } from "./routes/work-events.ts";
+import { createWorkItemLinkRoutes } from "./routes/work-item-links.ts";
 import { WorkCapture } from "./connectors/capture.ts";
 import { linkId, observedLink } from "./connectors/types.ts";
 import { connectorById } from "./connectors/registry.ts";
@@ -12449,6 +12450,11 @@ ROUTES.push(createWorkEventRoutes({
   item: id => workCoordination.items.records.get(id),
   events: id => workEvents.read(id),
   canSee: (auth, item) => workItemVisible(item, visibleTo(viewerFor(auth))),
+}));
+ROUTES.push(createWorkItemLinkRoutes({
+  item: id => workCoordination.items.records.get(id),
+  canSee: (auth, item) => workItemVisible(item, visibleTo(viewerFor(auth))),
+  link: (id, raw) => workCoordination.linkItem(id, raw),
 }));
 ROUTES.push(createBedrockRoutes({
   entry: (id) => providerConfigs()[id],

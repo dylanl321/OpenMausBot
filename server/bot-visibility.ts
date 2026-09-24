@@ -301,7 +301,7 @@ export function pathSubject(path: string): PathSubject | null {
   if (m && m[1] !== "seen-all") return { kind: "routine-run", id: m[1]! };
   m = /^\/api\/attachments\/([\w.-]+)$/.exec(path);
   if (m) return { kind: "attachment", name: m[1]! };
-  m = /^\/api\/work-items\/([\w-]+)$/.exec(path);
+  m = /^\/api\/work-items\/([\w-]+)(?:\/(?:events|links))?$/.exec(path);
   if (m && m[1] !== "ensure") return { kind: "work-item", id: m[1]! };
   return null;
 }
