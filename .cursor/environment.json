@@ -1,0 +1,14 @@
+{
+  "name": "OpenMausBot",
+  "install": "bash .cursor/install.sh",
+  "terminals": [
+    {
+      "name": "harness-server",
+      "command": "export NVM_DIR=\"$HOME/.nvm\"; . \"$NVM_DIR/nvm.sh\"; nvm use 24 >/dev/null; corepack pnpm dev:server"
+    },
+    {
+      "name": "vite",
+      "command": "export NVM_DIR=\"$HOME/.nvm\"; . \"$NVM_DIR/nvm.sh\"; nvm use 24 >/dev/null; corepack pnpm dev"
+    }
+  ]
+}
