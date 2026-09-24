@@ -247,6 +247,22 @@ it("keeps nested specialist work in the same task using the immediate lead's pee
   expect(fixture.evidence().filter((entry: any) => entry.botId === reviewer.id)).toHaveLength(1);
 }), 55_000);
 
+it("captures a worker git commit and completes from that observed link", () => fixture(async fixture => {
+  const { chief, engineer, plan } = fixture;
+  plan[chief.id] = { steps: [{ arguments: { intent: "work", bot_ids: [engineer.id], request_key: "commit", message: "Commit the refund fix" } }],
+    reply: "Assigned", resumeSteps: [{ tool: "update_work_item", arguments: { work_item_id: "$current", expected_revision: "$current", status: "completed",
+      detail: "Commit 3f2a1c9 is the fix", criteria: [{ index: 0, state: "checked", evidence: ["local:commit:3f2a1c9"] }] } }], resumeReply: "Completed from the commit" };
+  plan[engineer.id] = { shell: { command: "git commit -m refund", output: "[main 3f2a1c9] refund\n 1 file changed\n" }, reply: "Committed the refund fix" };
+  fixture.save();
+  await fixture.api("/api/work-items/ensure", { coordinatorBotId: chief.id, topic: "Payments", identity: "repo:refunds", title: "Commit the fix",
+    objective: "Land the refund fix", acceptanceCriteria: ["Commit is on the task"] });
+  await expect.poll(async () => (await fixture.items())[0]?.status, { timeout: 35_000 }).toBe("completed");
+  const [item] = await fixture.items();
+  expect(item.links.some((link: { kind: string; externalId?: string; provenance: string }) => link.kind === "commit" && link.externalId === "3f2a1c9" && link.provenance === "observed")).toBe(true);
+  const events = await fixture.api(`/api/work-items/${item.id}/events`, undefined, "GET");
+  expect(events.events.some((event: { kind: string; linkId?: string }) => event.kind === "output" && event.linkId)).toBe(true);
+}), 50_000);
+
 it("does not leave a loose worker thread when assignment admission is rejected", () => fixture(async fixture => {
   const { chief, engineer, plan } = fixture;
   const tasks = async () => (await fixture.api("/api/bots")).bots.find((bot: any) => bot.id === engineer.id).tasks;

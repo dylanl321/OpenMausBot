@@ -326,6 +326,7 @@ export const CLIENT_ALLOW: ReadonlyArray<{ methods: readonly string[]; path: Reg
   { methods: ["GET"], path: /^\/api\/work-items$/ },
   { methods: ["POST"], path: /^\/api\/work-items\/ensure$/ },
   { methods: ["GET", "PATCH"], path: /^\/api\/work-items\/[\w-]+$/ },
+  { methods: ["GET"], path: /^\/api\/work-items\/[\w-]+\/events$/ },
   { methods: ["POST"], path: /^\/api\/groups\/[\w-]+\/messages$/ },
   { methods: ["POST"], path: /^\/api\/groups\/[\w-]+\/interrupt$/ },
   { methods: ["POST"], path: /^\/api\/groups\/[\w-]+\/read$/ },

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { taskEventSchema } from "./work-links.ts";
 import { workItemSchema } from "./work-item.ts";
 
 export const MAX_TEAM_BACKUP_BYTES = 50 * 1024 * 1024;
@@ -102,6 +103,19 @@ const backupSchema = z.object({
     timeoutMinutes: z.number().int().min(5).max(240).optional(),
   })).max(2_000),
   workItems: z.array(workItemSchema.extend({ identity: z.string().min(1).max(240), inputHash: z.string().max(64) })).max(10_000).optional(),
+  workEvents: z.array(z.object({
+    workItemId: z.string().min(1).max(240),
+    events: z.array(taskEventSchema).max(2_000),
+  })).max(10_000).optional(),
+  taskConnections: z.array(z.object({
+    id: z.string().min(1).max(64),
+    connectorId: z.string().min(1).max(64),
+    label: z.string().min(1).max(80),
+    settings: z.record(z.string(), z.union([z.string().max(2_000), z.number(), z.boolean()])).default({}),
+    secretKeys: z.array(z.string().max(80)).max(20).default([]),
+    sections: z.array(z.string().max(200)).max(50).default([]),
+    enabled: z.boolean(),
+  })).max(100).optional(),
 });
 
 export type TeamBackup = z.infer<typeof backupSchema>;

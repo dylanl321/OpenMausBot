@@ -54,7 +54,7 @@ function messageText(message: Message): string {
   return parts.filter(Boolean).join("\n");
 }
 
-export function createTeamBackup(store: Store, routines: Routine[], name: string, workItems?: WorkItems): TeamBackup {
+export function createTeamBackup(store: Store, routines: Routine[], name: string, workItems?: WorkItems, extras?: { events?: { workItemId: string; events: unknown[] }[]; connections?: TeamBackup["taskConnections"] }): TeamBackup {
   const botIds = new Set(store.bots.map((bot) => bot.id));
   const warnings: string[] = [];
   const history = (record: BotRecord | GroupRecord): BackupTask[] => {
@@ -118,6 +118,8 @@ export function createTeamBackup(store: Store, routines: Routine[], name: string
     ...(workItems ? { workItems: [...workItems.records.values()].filter(item => store.groupTaskByThread(item.groupId, item.threadId) && botIds.has(item.coordinatorBotId))
       .map(item => ({ ...publicWorkItem(item), identity: item.identity, inputHash: item.inputHash,
         assignments: item.assignments.filter(assignment => store.taskByThread(assignment.botId, assignment.threadId)) })) } : {}),
+    ...(extras?.events?.length ? { workEvents: extras.events } : {}),
+    ...(extras?.connections?.length ? { taskConnections: extras.connections } : {}),
     routines: validRoutines.map((routine) => ({
       name: routine.name, prompt: routine.prompt, target: routine.target, botId: routine.botId,
       groupId: routine.groupId, runOn: routine.runOn, schedule: routine.schedule,
@@ -133,7 +135,7 @@ export function createTeamBackup(store: Store, routines: Routine[], name: string
 
 /** Import is always additive, including sections and Chiefs. Rollback owns
  * only the fresh records below and cannot touch any pre-existing bot/chat. */
-export function importTeamBackup(store: Store, routines: RoutineManager, input: unknown, selection: ModelSelection, options: { visibility?: BotVisibility; workItems?: WorkItems } = {}) {
+export function importTeamBackup(store: Store, routines: RoutineManager, input: unknown, selection: ModelSelection, options: { visibility?: BotVisibility; workItems?: WorkItems; importEvents?: (workItemId: string, events: unknown[]) => void } = {}) {
   const { workItems } = options;
   const backup = parseTeamBackup(input);
   const bots: BotRecord[] = [];
@@ -263,8 +265,10 @@ export function importTeamBackup(store: Store, routines: RoutineManager, input: 
         }) });
       store.linkGroupWorkItem(groupId, threadId, item.id);
       for (const assignment of item.assignments) store.patchTask(assignment.botId, assignment.threadId, { workItemId: item.id });
+      const bundled = backup.workEvents?.find(entry => entry.workItemId === source.id);
+      if (bundled) options.importEvents?.(item.id, bundled.events.map(event => ({ ...event, workItemId: item.id })));
     }
-    return { name: backup.name, bots, groups, routines: createdRoutines };
+    return { name: backup.name, bots, groups, routines: createdRoutines, taskConnections: backup.taskConnections ?? [] };
   } catch (error) {
     if (createdWorkIds.length) workItems?.discardImported(createdWorkIds);
     for (const routine of createdRoutines) routines.remove(routine.id);

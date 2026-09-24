@@ -238,10 +238,22 @@ const toolDefinitions = (externalRuntime: boolean) => [
       status: { type: "string", enum: ["blocked", "needs-input", "completed", "cancelled"] }, detail: { type: "string", maxLength: 4000 },
       decision: { type: "string", maxLength: 4000 }, evidence: { type: "array", items: { type: "string" }, maxItems: 100 },
       completed_criteria: { type: "array", items: { type: "string" }, maxItems: 20 },
+      criteria: { type: "array", maxItems: 20, items: { type: "object", additionalProperties: false, properties: {
+        index: { type: "integer", minimum: 0 }, state: { type: "string", enum: ["pending", "in_progress", "checked", "blocked"] },
+        evidence: { type: "array", items: { type: "string" }, maxItems: 20 },
+      }, required: ["index", "state", "evidence"] } },
       artifacts: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: false, properties: {
         ref: { type: "string" }, label: { type: "string" }, revision: { type: "string" },
       }, required: ["ref", "label"] } },
     }, required: ["work_item_id", "expected_revision"] },
+  },
+  {
+    name: "link_item",
+    description: "Record a link for work done outside your tools. Prefer ids already captured from tool calls. Resolved connector refs stay claimed until a later sync confirms them.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      work_item_id: { type: "string" }, ref_or_url: { type: "string", maxLength: 2000 },
+      role: { type: "string", enum: ["source", "output", "reference"] }, title: { type: "string", maxLength: 300 },
+    }, required: ["ref_or_url"] },
   },
   {
     name: "coordinate_bots",

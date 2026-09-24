@@ -479,6 +479,12 @@ export function frameForMember(payload: Record<string, unknown>, ctx: FrameConte
     }
     case "runtime":
       return visible.thread(str(field("event").threadId)) ? payload : undefined;
+    case "work.event":
+    case "work.link": {
+      const workItem = field("workItem");
+      const subject = { groupId: str(workItem.groupId), threadId: str(workItem.threadId), coordinatorBotId: str(workItem.coordinatorBotId) };
+      return workItemVisible(subject, visible) ? payload : undefined;
+    }
     case "screen":
       return visible.bot(str(payload.botId)) && visible.thread(str(payload.threadId)) ? payload : undefined;
     case "computer":

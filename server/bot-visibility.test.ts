@@ -207,6 +207,7 @@ describe("live frames for a member", () => {
       { kind: "webhook", webhook: { id: "hook-hr", botId: "hr" } },
       { kind: "webhook.attempt", attempt: { webhookId: "hook-hr" } },
       { kind: "future-kind", threadId: "t-hr" },
+      { kind: "work.event", workItem: { groupId: "room-mixed", threadId: "t-hr", coordinatorBotId: "hr" }, event: { id: "e1" } },
     ];
     for (const frame of hidden) expect(frameForMember(frame, ctx, seen()), JSON.stringify(frame)).toBeUndefined();
   });
@@ -216,6 +217,8 @@ describe("live frames for a member", () => {
     const ctx = context(bob);
     const message = { kind: "message", threadId: "t-pub-2", message: { id: "x" } };
     expect(frameForMember(message, ctx, seen())).toBe(message);
+    const work = { kind: "work.link", workItem: { groupId: "room-pub", threadId: "t-room-pub", coordinatorBotId: "pub" }, link: { id: "l1" } };
+    expect(frameForMember(work, ctx, seen())).toBe(work);
     const hook = { kind: "webhook.attempt", attempt: { webhookId: "hook-pub" } };
     expect(frameForMember(hook, ctx, seen())).toBe(hook);
     expect(frameForMember({ kind: "sections", sections: ["Ops", "People"] }, ctx, seen())).toEqual({ kind: "sections", sections: ["Ops"] });

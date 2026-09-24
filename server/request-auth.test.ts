@@ -99,6 +99,7 @@ describe("scopes", () => {
       ["POST", "/api/bots/x/compact"],
       ["PATCH", "/api/bots/x/cards/m"], ["POST", "/api/groups/g/messages"], ["PATCH", "/api/groups/g"],
       ["GET", "/api/work-items"], ["POST", "/api/work-items/ensure"], ["GET", "/api/work-items/w"], ["PATCH", "/api/work-items/w"],
+      ["GET", "/api/work-items/w/events"],
       ["PATCH", "/api/bots/x"], ["PATCH", "/api/bots/x/profile"], ["POST", "/api/attachments"],
       ["GET", "/api/attachments/a.png"], ["POST", "/api/routines"], ["POST", "/api/routines/r/run"],
       ["POST", "/api/routine-runs/seen-all"],

@@ -441,6 +441,13 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     const result = await api("/api/internal/work-items/update", { method: "POST", body: JSON.stringify({
       workItemId: args.work_item_id, expectedRevision: args.expected_revision, status: args.status, detail: args.detail,
       decision: args.decision, artifacts: args.artifacts, evidence: args.evidence, completedCriteria: args.completed_criteria,
+      criteria: args.criteria,
+    }) });
+    return { text: JSON.stringify(result), ...(result.error ? { isError: true } : {}) };
+  }
+  if (name === "link_item") {
+    const result = await api("/api/internal/work-items/link", { method: "POST", body: JSON.stringify({
+      workItemId: args.work_item_id, refOrUrl: args.ref_or_url, role: args.role, title: args.title,
     }) });
     return { text: JSON.stringify(result), ...(result.error ? { isError: true } : {}) };
   }

@@ -562,6 +562,7 @@ describe("agents-proxy MCP surface", () => {
       "ensure_work_item",
       "get_work_item",
       "update_work_item",
+      "link_item",
       "list_bots",
       "list_rooms",
       "ask_bot",
