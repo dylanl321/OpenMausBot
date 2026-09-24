@@ -1,0 +1,7 @@
+{
+  "title": "Bash",
+  "summary": "glab ci status",
+  "input": "glab ci status",
+  "output": "(running) • pipeline 9001\nhttps://gitlab.com/acme/payments/-/pipelines/9001\n",
+  "ok": true
+}

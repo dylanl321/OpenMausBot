@@ -1,7 +1,12 @@
 import { expect, it } from "vitest";
-import type { ConnectionContext, Connector } from "./types.ts";
+import type { CaptureCall, ConnectionContext, Connector } from "./types.ts";
 
-export function connectorContract(connector: Connector, ctx: ConnectionContext, samples: { ref: string; url: string }[]) {
+export function connectorContract(
+  connector: Connector,
+  ctx: ConnectionContext,
+  samples: { ref: string; url: string }[],
+  capture: CaptureCall = { title: "fake.issue", output: "Created PAY-1", ok: true },
+) {
   it(`${connector.manifest.id} publishes a manifest the settings screen can render`, () => {
     expect(connector.manifest.id).toMatch(/^[a-z][a-z0-9-]*$/);
     expect(connector.manifest.name.length).toBeGreaterThan(0);
@@ -36,7 +41,7 @@ export function connectorContract(connector: Connector, ctx: ConnectionContext, 
     }
     const rule = connector.capture[0];
     expect(rule).toBeTruthy();
-    const extracted = rule.extract({ title: "fake.issue", output: "Created PAY-1", ok: true });
+    const extracted = rule.extract(capture);
     expect(extracted?.externalId).toBeTruthy();
     expect(rule.event({ externalId: extracted!.externalId, title: extracted!.externalId })).toMatch(/\S/);
     const fetches: string[] = [];

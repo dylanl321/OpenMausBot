@@ -1,0 +1,4 @@
+[
+  { "id": 1, "name": "compile", "stage": "build", "status": "success" },
+  { "id": 2, "name": "unit", "stage": "test", "status": "running" }
+]

@@ -1,0 +1,6 @@
+{
+  "title": "create_merge_request",
+  "input": "{\"project\":\"acme/payments\",\"title\":\"[… preview shortened]\"}",
+  "output": "Created merge request [… preview shortened]",
+  "ok": true
+}

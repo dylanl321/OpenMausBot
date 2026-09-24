@@ -37,6 +37,16 @@ function toolCall(event: RuntimeEvent & { type: "item.completed" }, started?: { 
   };
 }
 
+function sameParentRef(existing: string | undefined, parentRef: string): boolean {
+  if (!existing) return false;
+  const left = existing.toLowerCase();
+  const right = parentRef.toLowerCase();
+  if (left === right) return true;
+  if (right.startsWith("!") && left.endsWith(right)) return true;
+  if (left.startsWith("!") && right.endsWith(left)) return true;
+  return false;
+}
+
 function matches(rule: CaptureRule, call: CaptureCall): boolean {
   if (rule.requireOk !== false && call.ok === false) return false;
   if (rule.match.tool && !rule.match.tool.test(call.title)) return false;
@@ -102,7 +112,7 @@ export class WorkCapture {
   private record(item: WorkRecord, actor: TaskEvent["actor"], at: number, rule: CaptureRule, extracted: NonNullable<ReturnType<CaptureRule["extract"]>>, connectorId?: string) {
     const parentRef = extracted.parentRef;
     const parent = parentRef
-      ? item.links?.find(link => link.kind === "work_item" && link.externalId?.toUpperCase() === parentRef.toUpperCase())
+      ? item.links?.find(link => (link.kind === "work_item" || link.kind === "change_request") && sameParentRef(link.externalId, parentRef))
       : undefined;
     const id = rule.produce.kind === "link" && extracted.url ? urlLinkId(extracted.url) : linkId(undefined, rule.produce.kind, extracted.externalId);
     const link = this.hooks.items.upsertLink(item, observedLink({
