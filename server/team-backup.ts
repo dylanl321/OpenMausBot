@@ -5,6 +5,8 @@ import { MAX_TEAM_BACKUP_BYTES, parseTeamBackup, type BackupTask, type TeamBacku
 import type { BotVisibility } from "../shared/wire.ts";
 import type { BotRecord, GroupRecord, Message, Store, TaskRecord } from "./store.ts";
 import type { Routine, RoutineManager } from "./routines.ts";
+import type { WatchManager } from "./watches.ts";
+import { isSourceChangeType, type Watch, type WatchAction } from "../shared/watches.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { publicWorkItem, type WorkItems } from "./work-items.ts";
 import {
@@ -54,7 +56,7 @@ function messageText(message: Message): string {
   return parts.filter(Boolean).join("\n");
 }
 
-export function createTeamBackup(store: Store, routines: Routine[], name: string, workItems?: WorkItems, extras?: { events?: { workItemId: string; events: unknown[] }[]; connections?: TeamBackup["taskConnections"] }): TeamBackup {
+export function createTeamBackup(store: Store, routines: Routine[], name: string, workItems?: WorkItems, extras?: { events?: { workItemId: string; events: unknown[] }[]; connections?: TeamBackup["taskConnections"]; watches?: Watch[] }): TeamBackup {
   const botIds = new Set(store.bots.map((bot) => bot.id));
   const warnings: string[] = [];
   const history = (record: BotRecord | GroupRecord): BackupTask[] => {
@@ -124,7 +126,33 @@ export function createTeamBackup(store: Store, routines: Routine[], name: string
       name: routine.name, prompt: routine.prompt, target: routine.target, botId: routine.botId,
       groupId: routine.groupId, runOn: routine.runOn, schedule: routine.schedule,
       durationMinutes: routine.durationMinutes, timeoutMinutes: routine.timeoutMinutes,
+      ...(routine.onlyIfChanged && extras?.watches?.find((watch) => watch.id === routine.onlyIfChanged)?.name
+        ? { onlyIfChanged: extras.watches.find((watch) => watch.id === routine.onlyIfChanged)!.name }
+        : {}),
     })),
+    ...(extras?.watches?.length ? {
+      watches: extras.watches.filter((watch) => {
+        if (watch.action.type !== "run_routine") return true;
+        return validRoutines.some((routine) => routine.id === watch.action.routineId);
+      }).map((watch) => {
+        const action = watch.action.type === "run_routine"
+          ? { type: "run_routine" as const, routineName: routines.find((routine) => routine.id === watch.action.routineId)?.name ?? watch.action.routineId }
+          : watch.action;
+        return {
+          name: watch.name,
+          source: watch.source,
+          events: watch.events,
+          filter: watch.filter,
+          check: watch.check,
+          batch: watch.batch,
+          action,
+          limits: watch.limits,
+          startFrom: "now" as const,
+          enabled: watch.enabled,
+          section: watch.section,
+        };
+      }),
+    } : {}),
   });
   // Never download a file our own importer cannot read; never truncate history.
   if (Buffer.byteLength(JSON.stringify(document)) > MAX_TEAM_BACKUP_BYTES) {
@@ -135,12 +163,13 @@ export function createTeamBackup(store: Store, routines: Routine[], name: string
 
 /** Import is always additive, including sections and Chiefs. Rollback owns
  * only the fresh records below and cannot touch any pre-existing bot/chat. */
-export function importTeamBackup(store: Store, routines: RoutineManager, input: unknown, selection: ModelSelection, options: { visibility?: BotVisibility; workItems?: WorkItems; importEvents?: (workItemId: string, events: unknown[]) => void } = {}) {
+export function importTeamBackup(store: Store, routines: RoutineManager, input: unknown, selection: ModelSelection, options: { visibility?: BotVisibility; workItems?: WorkItems; importEvents?: (workItemId: string, events: unknown[]) => void; watches?: WatchManager } = {}) {
   const { workItems } = options;
   const backup = parseTeamBackup(input);
   const bots: BotRecord[] = [];
   const groups: GroupRecord[] = [];
   const createdRoutines: Routine[] = [];
+  const createdWatches: Watch[] = [];
   const existingBotIds = new Set(store.bots.map((bot) => bot.id));
   const existingGroupIds = new Set(store.groups.map((group) => group.id));
   const botIds = new Map<string, string>();
@@ -249,8 +278,35 @@ export function importTeamBackup(store: Store, routines: RoutineManager, input: 
       }
     }
     for (const source of backup.routines) {
-      createdRoutines.push(routines.create({ ...source, botId: botIds.get(source.botId)!,
+      const { onlyIfChanged: _onlyIfChanged, ...routine } = source;
+      createdRoutines.push(routines.create({ ...routine, botId: botIds.get(source.botId)!,
         groupId: source.target === "room-goal" ? groupIds.get(source.groupId!) : undefined, enabled: false }));
+    }
+    for (const source of options.watches ? backup.watches ?? [] : []) {
+      const action: WatchAction = source.action.type === "run_routine"
+        ? { type: "run_routine", routineId: createdRoutines.find((routine) => routine.name === source.action.routineName)?.id ?? source.action.routineName }
+        : source.action.type === "notify"
+          ? { type: "notify", botId: source.action.botId ? botIds.get(source.action.botId) : undefined, threadId: source.action.threadId }
+          : source.action;
+      createdWatches.push(options.watches!.create({
+        name: source.name,
+        source: source.source,
+        events: source.events.filter(isSourceChangeType),
+        filter: source.filter as Watch["filter"],
+        check: source.check,
+        batch: source.batch,
+        action,
+        limits: source.limits,
+        startFrom: "now",
+        enabled: source.enabled,
+        section: source.section,
+      }));
+    }
+    for (const source of backup.routines) {
+      if (!source.onlyIfChanged) continue;
+      const routine = createdRoutines.find((item) => item.name === source.name);
+      const watch = createdWatches.find((item) => item.name === source.onlyIfChanged);
+      if (routine && watch) routines.update(routine.id, { onlyIfChanged: watch.id });
     }
     for (const source of workItems ? backup.workItems ?? [] : []) {
       const id = newId();
@@ -268,9 +324,10 @@ export function importTeamBackup(store: Store, routines: RoutineManager, input: 
       const bundled = backup.workEvents?.find(entry => entry.workItemId === source.id);
       if (bundled) options.importEvents?.(item.id, bundled.events.map(event => ({ ...event, workItemId: item.id })));
     }
-    return { name: backup.name, bots, groups, routines: createdRoutines, taskConnections: backup.taskConnections ?? [] };
+    return { name: backup.name, bots, groups, routines: createdRoutines, watches: createdWatches, taskConnections: backup.taskConnections ?? [] };
   } catch (error) {
     if (createdWorkIds.length) workItems?.discardImported(createdWorkIds);
+    for (const watch of createdWatches) options.watches?.remove(watch.id);
     for (const routine of createdRoutines) routines.remove(routine.id);
     // createBot/createGroup can throw during persistence before returning.
     // This synchronous import cannot interleave another writer, so include

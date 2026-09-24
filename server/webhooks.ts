@@ -71,6 +71,13 @@ export interface WebhookManagerOptions {
   post?: (botId: string, text: string) => void;
   /** The execution store commits this identity together with the queued run. */
   findRun?: (webhookId: string, deliveryId: string) => { id: string } | null;
+  /** After an accepted delivery is durable, so watches can map the payload. */
+  onDelivery?: (input: {
+    webhookId: string;
+    deliveryId: string;
+    eventName?: string;
+    payload: unknown;
+  }) => void;
 }
 
 export type WebhookManagerEvent =
@@ -502,6 +509,7 @@ export class WebhookManager {
       this.appendAttempt(trigger, event, { outcome: "accepted", statusCode: 202, deliveryId, reason: "Posted to chat (no task run)" });
       this.save();
       this.emit(trigger);
+      this.notifyDelivery(trigger.id, deliveryId, event);
       return { deliveryId, duplicate: false };
     }
     const run = this.options.enqueue({
@@ -529,7 +537,21 @@ export class WebhookManager {
     });
     this.save();
     this.emit(trigger);
+    this.notifyDelivery(trigger.id, deliveryId, event);
     return { runId: run.id, deliveryId, duplicate: false };
+  }
+
+  private notifyDelivery(webhookId: string, deliveryId: string, event: WebhookEvent): void {
+    try {
+      this.options.onDelivery?.({
+        webhookId,
+        deliveryId,
+        eventName: event.eventName,
+        payload: event.payload,
+      });
+    } catch (error) {
+      console.error("webhook: watch delivery hook failed", error);
+    }
   }
 
   private captureVerification(trigger: StoredWebhookTrigger, event: WebhookEvent): WebhookReceiveResult {

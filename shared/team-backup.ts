@@ -3,8 +3,8 @@ import { taskEventSchema } from "./work-links.ts";
 import { workItemSchema } from "./work-item.ts";
 
 export const MAX_TEAM_BACKUP_BYTES = 50 * 1024 * 1024;
-export const TEAM_BACKUP_CONTENTS = "Bot profiles, instructions, sections, rooms, shared task state, playbooks, routines, each bot's memory (MEMORY.md, topic notes and daily logs) and conversation text (all tasks and branches).";
-export const TEAM_BACKUP_EXCLUSIONS = "Files, images, custom avatars, account connections, model settings and permissions are not included. Action cards are saved as text. Memory is saved with secrets removed. Imported routines start paused.";
+export const TEAM_BACKUP_CONTENTS = "Bot profiles, instructions, sections, rooms, shared task state, playbooks, routines, watches, each bot's memory (MEMORY.md, topic notes and daily logs) and conversation text (all tasks and branches).";
+export const TEAM_BACKUP_EXCLUSIONS = "Files, images, custom avatars, account connections, model settings and permissions are not included. Action cards are saved as text. Memory is saved with secrets removed. Imported routines start paused. Watch cursors reset on import.";
 
 const key = z.string().min(1).max(200);
 const name = z.string().trim().min(1).max(200);
@@ -101,7 +101,38 @@ const backupSchema = z.object({
     runOn: z.enum(["maus", "cloud"]), schedule,
     durationMinutes: z.number().finite().positive(),
     timeoutMinutes: z.number().int().min(5).max(240).optional(),
+    onlyIfChanged: z.string().trim().min(1).max(80).optional(),
   })).max(2_000),
+  watches: z.array(z.object({
+    name,
+    source: z.discriminatedUnion("type", [
+      z.object({ type: z.literal("git"), remote: z.string().trim().min(1).max(2_000), cwd: z.string().max(4_096).optional() }),
+      z.object({ type: z.literal("webhook"), webhookId: z.string().min(1).max(200), fieldMap: z.record(z.string(), z.string().max(200)).optional() }),
+      z.object({ type: z.literal("connection"), connectionId: z.string().min(1).max(64), scope: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional() }),
+    ]),
+    events: z.array(z.string().min(1).max(40)).max(20).default([]),
+    filter: z.unknown().optional(),
+    check: z.discriminatedUnion("type", [
+      z.object({ type: z.literal("once"), at: timestamp }),
+      z.object({ type: z.literal("daily"), time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), weekdays: z.array(z.number().int().min(0).max(6)).min(1).max(7) }),
+      z.object({ type: z.literal("interval"), everyMinutes: z.number().int().min(5).max(1440), anchorAt: z.number().int().min(0).max(8_640_000_000_000_000) }),
+      z.object({ type: z.literal("cron"), expression: z.string().min(1).max(256), timeZone: z.string().min(1).max(128) }),
+    ]),
+    batch: z.object({ windowSeconds: z.number().int().min(1).max(3_600), max: z.number().int().min(1).max(100) }).optional(),
+    action: z.discriminatedUnion("type", [
+      z.object({ type: z.literal("record") }),
+      z.object({ type: z.literal("notify"), botId: key.optional(), threadId: key.optional() }),
+      z.object({ type: z.literal("run_routine"), routineName: name }),
+      z.object({ type: z.literal("task_update") }),
+    ]),
+    limits: z.object({
+      maxActionsPerDay: z.number().int().min(1).max(1_000).optional(),
+      quietHours: z.string().max(20).optional(),
+    }).optional(),
+    startFrom: z.enum(["now", "backfill"]).default("now"),
+    enabled: z.boolean(),
+    section: z.string().max(80).optional(),
+  })).max(500).optional(),
   workItems: z.array(workItemSchema.extend({ identity: z.string().min(1).max(240), inputHash: z.string().max(64) })).max(10_000).optional(),
   workEvents: z.array(z.object({
     workItemId: z.string().min(1).max(240),
@@ -177,6 +208,21 @@ export function parseTeamBackup(input: unknown): TeamBackup {
       if (!groups.has(routine.groupId ?? "") || !group || group.dm || !group.memberIds.includes(routine.botId)) {
         throw new Error("Invalid backup: unknown routine room or coordinator");
       }
+    }
+  }
+  const watchNames = unique((backup.watches ?? []).map((watch) => watch.name), "watch name");
+  const routineNames = new Set(backup.routines.map((routine) => routine.name));
+  for (const watch of backup.watches ?? []) {
+    if (watch.action.type === "run_routine" && !routineNames.has(watch.action.routineName)) {
+      throw new Error("Invalid backup: unknown watch routine");
+    }
+    if (watch.action.type === "notify" && watch.action.botId && !bots.has(watch.action.botId)) {
+      throw new Error("Invalid backup: unknown watch bot");
+    }
+  }
+  for (const routine of backup.routines) {
+    if (routine.onlyIfChanged && !watchNames.has(routine.onlyIfChanged)) {
+      throw new Error("Invalid backup: unknown routine watch gate");
     }
   }
   for (const entry of [...backup.bots, ...backup.groups]) {

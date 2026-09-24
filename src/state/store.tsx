@@ -3730,6 +3730,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "webhook.deleted":
           rawDispatch({ type: "webhookDeleted", webhookId: frame.webhookId });
           break;
+        case "watch":
+        case "watch.deleted":
+          break;
         case "runtime": {
           const event = frame.event;
           if (event.type === "turn.started" || event.type === "session.model-variants" || event.type === "turn.completed") {
