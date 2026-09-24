@@ -138,8 +138,8 @@ describe("ensure_task", () => {
     expect(records[0]).toMatchObject({
       identity: "fake:fake-acme:PAY-8",
       title: "Ready story",
-      rootId: undefined,
     });
+    expect(records[0]!.rootId).toBeUndefined();
     expect(records[0]!.objective).toContain("labelled payments story");
     await watches.check(created.id);
     expect(items.records.size).toBe(1);

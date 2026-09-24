@@ -318,7 +318,11 @@ export function importTeamBackup(store: Store, routines: RoutineManager, input: 
       if (!source.onlyIfChanged) continue;
       const routine = createdRoutines.find((item) => item.name === source.name);
       const watch = createdWatches.find((item) => item.name === source.onlyIfChanged);
-      if (routine && watch) routines.update(routine.id, { onlyIfChanged: watch.id });
+      if (routine && watch) {
+        const updated = routines.update(routine.id, { onlyIfChanged: watch.id });
+        const index = createdRoutines.findIndex((item) => item.id === routine.id);
+        if (updated && index >= 0) createdRoutines[index] = updated;
+      }
     }
     for (const source of workItems ? backup.workItems ?? [] : []) {
       const id = newId();

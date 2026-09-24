@@ -51,7 +51,9 @@ function fixtureFetch(input: Parameters<typeof fetch>[0], init?: RequestInit): P
     return Promise.resolve(jsonResponse(searchJql));
   }
   if (url.includes("/rest/api/2/search") && method === "GET") {
-    if (url.includes("expand=changelog") || url.includes("updated")) return Promise.resolve(jsonResponse(searchChanges));
+    if (url.includes("expand=changelog") || url.includes("updated+%3E") || url.includes("updated >")) {
+      return Promise.resolve(jsonResponse(searchChanges));
+    }
     return Promise.resolve(jsonResponse(dcSearch));
   }
   return Promise.resolve(new Response("not found", { status: 404 }));

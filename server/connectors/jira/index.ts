@@ -21,6 +21,12 @@ const COMMENT_FIELDS = [...ISSUE_FIELDS, "comment"] as const;
 const FETCH_BATCH = 100;
 
 const STATUS_DEFAULTS: Record<string, StatusCategory> = {
+  "to do": "todo",
+  todo: "todo",
+  backlog: "todo",
+  "in progress": "in_progress",
+  "in-progress": "in_progress",
+  done: "done",
   "in review": "in_review",
   review: "in_review",
   "ready for review": "in_review",
