@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  composerPursueAvailable,
   composerSlashTrigger,
   goalTextFromComposer,
   replaceComposerSlashTrigger,
@@ -30,6 +31,14 @@ describe("composer slash commands", () => {
     );
     expect(goalTextFromComposer("/goalie says hello")).toBeNull();
     expect(goalTextFromComposer("discuss /goal later")).toBeNull();
+  });
+
+  it("hides /pursue when the session cannot POST /api/goals", () => {
+    expect(composerPursueAvailable(true, undefined)).toBe(true);
+    expect(composerPursueAvailable(true, { dm: false })).toBe(true);
+    expect(composerPursueAvailable(true, { dm: true })).toBe(false);
+    expect(composerPursueAvailable(false, undefined)).toBe(false);
+    expect(composerPursueAvailable(false, { dm: false })).toBe(false);
   });
 
   it("offers setup as a slash command id and keeps the typed token", () => {

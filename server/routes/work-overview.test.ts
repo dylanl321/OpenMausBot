@@ -29,9 +29,12 @@ async function serve(includeConversations = false) {
   const publicGroup = { id: "public", threadId: "room", tasks: [{ threadId: "hub" }, { threadId: "group-task" }], memberIds: ["lead"] };
   const privateGroup = { id: "private", threadId: "private-room", tasks: [{ threadId: "private-hub" }], memberIds: ["secret"] };
   const visible = new VisibleSet([publicBot, financeBot, privateBot], [publicGroup, privateGroup], { kind: "member", email: "requester@example.invalid" });
-  const authFor = (header: string | undefined): RequestAuth => ({ kind: "session", via: "bearer", scopes: ["client"],
-    session: { id: header ?? "requester", tokenHash: "0".repeat(64), label: header ?? "requester", scopes: ["client"],
-      createdAt: 0, lastSeenAt: 0, expiresAt: 100_000, email: `${header ?? "requester"}@example.invalid` } });
+  const authFor = (header: string | undefined): RequestAuth => {
+    const scopes = header === "admin" ? ["admin", "client"] as const : ["client"] as const;
+    return { kind: "session", via: "bearer", scopes,
+      session: { id: header ?? "requester", tokenHash: "0".repeat(64), label: header ?? "requester", scopes: [...scopes],
+        createdAt: 0, lastSeenAt: 0, expiresAt: 100_000, email: `${header ?? "requester"}@example.invalid` } };
+  };
   const visibleFor = () => visible;
   const backlog = emptyTeamBacklog("Delivery");
   backlog.choices = [
@@ -88,7 +91,7 @@ async function serve(includeConversations = false) {
   });
   servers.push(server);
   await new Promise<void>(ready => server.listen(0, "127.0.0.1", ready));
-  return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, goal, subtitle };
+  return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, goal, subtitle, goals };
 }
 
 describe("permission-filtered Work overview", () => {
@@ -155,5 +158,18 @@ describe("permission-filtered Work overview", () => {
     expect(filtered.teams).toEqual(["Delivery", "Finance"]);
     expect(filtered.entries.map((entry: any) => entry.id)).toEqual(["thread:finance-thread"]);
     expect(filtered.counts).toMatchObject({ "needs-you": 0, waiting: 0, working: 1, completed: 0 });
+  });
+
+  it("does not give a client session canRenew on a budget-paused goal", async () => {
+    const { base, goals } = await serve();
+    const budget = goals.create({ ownerBotId: "lead", sourceThreadId: "lead-thread", objective: "Keep shipping" }, "direct-task");
+    const paused = goals.control(budget.id, { expectedRevision: budget.revision, action: "pause",
+      detail: "Goal budget exhausted; explicitly renew it to continue." });
+    const client = await (await fetch(`${base}/api/work/overview`)).json() as any;
+    const clientGoal = client.entries.find((entry: any) => entry.id === paused.id);
+    expect(clientGoal).toMatchObject({ status: "paused" });
+    expect(clientGoal.canRenew).toBeUndefined();
+    const admin = await (await fetch(`${base}/api/work/overview`, { headers: { "x-fixture-actor": "admin" } })).json() as any;
+    expect(admin.entries.find((entry: any) => entry.id === paused.id).canRenew).toBe(true);
   });
 });

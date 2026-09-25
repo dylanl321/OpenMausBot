@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   clearSessionCookie,
   clientBotPatchViolation,
+  clientGoalPatchViolation,
   clientGroupPatchViolation,
   ipcPeer,
   isAllowedOrigin,
@@ -106,6 +107,7 @@ describe("scopes", () => {
       ["GET", "/api/groups/g/task-board"], ["PATCH", "/api/groups/g/task-board"],
       ["POST", "/api/work-items/w/answer"],
       ["GET", "/api/work/overview"], ["POST", "/api/goals/g/scope-choice"],
+      ["GET", "/api/goals"], ["GET", "/api/goals/g"], ["POST", "/api/goals"], ["PATCH", "/api/goals/g"],
       ["PATCH", "/api/bots/x"], ["PATCH", "/api/bots/x/profile"], ["POST", "/api/attachments"],
       ["GET", "/api/attachments/a.png"], ["POST", "/api/routines"], ["POST", "/api/routines/r/run"],
       ["POST", "/api/routine-runs/seen-all"],
@@ -126,6 +128,8 @@ describe("scopes", () => {
       ["POST", "/api/bots/x/slack-management"], ["GET", "/api/bots/x/slack-management/extra"],
       ["PUT", "/api/config"], ["POST", "/api/auth/pairing"], ["GET", "/api/auth/sessions"], ["DELETE", "/api/auth/sessions/abc"],
       ["POST", "/api/auth/pair"], // handled before the gate; the gate itself never grants it
+      ["POST", "/api/goals/g/work-items"],
+      ["GET", "/api/setup-wizard/options"], ["POST", "/api/setup-wizard/assist"], ["POST", "/api/setup-wizard/commit"],
       ["GET", "/api/something-new"], // anything unlisted is admin until listed
     ] as const) expect(requiredScope(method, path), `${method} ${path}`).toBe("admin");
   });
@@ -139,6 +143,10 @@ describe("scopes", () => {
     expect(clientGroupPatchViolation({ name: "Ops", unread: false })).toBeNull();
     expect(clientGroupPatchViolation({ cwd: "/tmp" })).toBe("cwd");
     expect(clientGroupPatchViolation({ memberIds: [] })).toBe("memberIds");
+    expect(clientGoalPatchViolation({ expectedRevision: 1, action: "pause" })).toBeNull();
+    expect(clientGoalPatchViolation({ expectedRevision: 1, action: "stop" })).toBeNull();
+    expect(clientGoalPatchViolation({ expectedRevision: 1, action: "wake" })).toBeNull();
+    expect(clientGoalPatchViolation({ expectedRevision: 1, action: "resume" })).toBe("resume");
   });
 });
 

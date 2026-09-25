@@ -60,6 +60,22 @@ export function isOwnerOrAdmin(state: SessionState | null): boolean {
   return state.kind === "loopback" ? state.trust !== "service" : state.kind === "session" && state.scopes.includes("admin");
 }
 
+/** Goal routes this session may call. Mirrors CLIENT_ALLOW: POST /api/goals
+ * and PATCH pause|stop|wake are client-scoped; PATCH resume (budget renew)
+ * stays admin. Do not infer these from a 403 after click. */
+export interface GoalCapabilities {
+  canCreate: boolean;
+  canControl: boolean;
+  canResume: boolean;
+}
+
+const NO_GOAL_CAPABILITIES: GoalCapabilities = { canCreate: false, canControl: false, canResume: false };
+
+export function goalCapabilities(state: SessionState | null): GoalCapabilities {
+  if (!isConnected(state)) return NO_GOAL_CAPABILITIES;
+  return { canCreate: true, canControl: true, canResume: isOwnerOrAdmin(state) };
+}
+
 /** Pull `#code=…` off the URL and out of history, the way a pairing link is meant to be consumed. */
 export function takePairingCodeFromLocation(): string | null {
   const m = /[#&]code=([^&]+)/.exec(location.hash);

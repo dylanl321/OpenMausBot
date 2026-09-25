@@ -463,6 +463,7 @@ import { ProviderAuthSessions } from "./provider-auth-sessions.ts";
 import {
   clearSessionCookie,
   clientBotPatchViolation,
+  clientGoalPatchViolation,
   clientGroupPatchViolation,
   isLoopbackHost,
   isProxied,
@@ -16219,8 +16220,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const goal = ongoingGoals?.records.get(ongoingGoalMatch[1]);
       if (!goal || !workGoalVisible(goal, visible, workCoordination.items.records)) return json(res, 404, { error: "No such goal" });
       if (method === "GET") return json(res, 200, { goal });
+      const body = await readBody(req);
+      if (!auth.scopes.includes("admin")) {
+        const violation = clientGoalPatchViolation(body);
+        if (violation) return json(res, 403, { error: `forbidden: this session may pause, stop or wake a visible goal, not "${violation}" (needs the admin scope)` });
+      }
       const runningGoalTurn = Boolean(goal.inFlightAt && ongoingGoalItems.has(goal.executionThreadId));
-      const updated = ongoingGoals!.control(goal.id, await readBody(req));
+      const updated = ongoingGoals!.control(goal.id, body);
       if (updated.status === "stopped") {
         if (runningGoalTurn && ongoingGoalItems.has(goal.executionThreadId)) await interruptDirectThread(goal.ownerBotId, goal.executionThreadId);
         for (const id of updated.ownedWorkItemIds) {

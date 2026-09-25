@@ -273,9 +273,9 @@ export function clearSessionCookie(name: string): string {
 /** What a `client` session may do: chat, rooms, approvals, attachments,
  * routines, its own session, and reads that carry no secrets. Everything
  * else needs `admin`: default deny, so a new route is admin-only until it is
- * deliberately listed here. Two client-allowed PATCH routes carry a body
- * filter in the handler (bot and room edits: display fields only). Loopback
- * holds both scopes. */
+ * deliberately listed here. Three client-allowed PATCH routes carry a body
+ * filter in the handler (bot and room edits: display fields only; goal
+ * control: resume stays admin). Loopback holds both scopes. */
 export const CLIENT_ALLOW: ReadonlyArray<{ methods: readonly string[]; path: RegExp; feature?: "sharedComputers" }> = [
   // own session
   { methods: ["GET"], path: /^\/api\/auth\/session$/ },
@@ -295,6 +295,10 @@ export const CLIENT_ALLOW: ReadonlyArray<{ methods: readonly string[]; path: Reg
   { methods: ["GET"], path: /^\/api\/bots$/ },
   { methods: ["GET"], path: /^\/api\/team-map$/ },
   { methods: ["GET"], path: /^\/api\/work\/overview$/ },
+  // list/read/create and pause|stop|wake. resume (budget renew) is the same
+  // PATCH path but stays admin: see clientGoalPatchViolation.
+  { methods: ["GET", "POST"], path: /^\/api\/goals$/ },
+  { methods: ["GET", "PATCH"], path: /^\/api\/goals\/[\w-]+$/ },
   { methods: ["POST"], path: /^\/api\/goals\/[\w-]+\/scope-choice$/ },
   // a link into the organisation's Admin: identifiers only, and Admin authorizes its own visitor
   { methods: ["GET"], path: /^\/api\/bots\/[\w-]+\/slack-management$/ },
@@ -388,6 +392,13 @@ export function clientGroupPatchViolation(body: unknown): string | null {
   if (!body || typeof body !== "object" || Array.isArray(body)) return "body";
   for (const key of Object.keys(body)) if (!CLIENT_GROUP_PATCH_FIELDS.has(key)) return key;
   return null;
+}
+
+/** Goal PATCH is client-allowed for pause, stop and wake. Resume renews
+ * budgets (`canRenew`); a client session may not call it. */
+export function clientGoalPatchViolation(body: unknown): string | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  return (body as { action?: unknown }).action === "resume" ? "resume" : null;
 }
 
 export interface ResolveOptions {
