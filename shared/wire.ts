@@ -22,6 +22,7 @@ import type { RoutineRunCardData } from "./routine-run.ts";
 import type { GroupGoalRunCardData } from "./group-goal-run.ts";
 import type { WorkItem } from "./work-item.ts";
 import type { LinkedItem, TaskEvent } from "./work-links.ts";
+import type { TeamBacklog } from "./team-backlog.ts";
 import type { RuntimeEvent } from "./runtime-events.ts";
 import type { Notification } from "./notification.ts";
 import type { Routine, RoutineRun } from "./routines.ts";
@@ -548,6 +549,19 @@ export interface WireGroup {
  * `bot.queued` frame carries them: threadId → queued items. */
 export type BotQueuedMessages = Record<string, Array<{ queueId: string; text: string; reason?: "capacity" }>>;
 
+export type GoalLiveWorkItem = { id: string; groupId: string; threadId: string; coordinatorBotId: string };
+
+/** Live goal snapshot: status and inventory counts, not full mission targets. */
+export type GoalLiveUpdate = {
+  id: string;
+  revision: number;
+  status: string;
+  detail: string;
+  scan?: TeamBacklog["scan"];
+  gateCount: number;
+  gateCounts: Record<string, number>;
+};
+
 export type ServerFrame =
   | { kind: "sections"; sections: string[] }
   | { kind: "bot.queued"; queues: BotQueuedMessages }
@@ -573,6 +587,8 @@ export type ServerFrame =
   | { kind: "bot.deleted"; botId: string }
   | { kind: "work.event"; event: TaskEvent; workItem: { groupId: string; threadId: string; coordinatorBotId: string } }
   | { kind: "work.link"; link: LinkedItem; workItem: { groupId: string; threadId: string; coordinatorBotId: string } }
+  | { kind: "goal"; goal: GoalLiveUpdate; ownerBotId: string; sourceThreadId: string;
+      workItemIds: string[]; workItems: GoalLiveWorkItem[]; scopeGroupIds: string[] }
   /** The config status object spread flat into the frame; its full typing
    * is the deferred client-model extraction (see j1-phase-bc-progress). */
   | ({ kind: "config" } & Record<string, unknown>);

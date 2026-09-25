@@ -1,7 +1,8 @@
 import { z } from "zod";
-import { memberWorkItem, workItemVisible, type VisibleSet } from "../bot-visibility.ts";
+import { memberWorkItem, workGoalVisible, workItemVisible, type VisibleSet } from "../bot-visibility.ts";
 import type { WorkRecord } from "../work-items.ts";
 import type { OngoingGoal } from "../../shared/ongoing-goal.ts";
+import { sourceRowDetail } from "../../shared/team-backlog.ts";
 import type { WorkOverview, WorkOverviewCard, WorkOverviewEntry, WorkQueue } from "../../shared/work-overview.ts";
 import type { OptionCardData } from "../../shared/wire.ts";
 import type { RequestAuth } from "../request-auth.ts";
@@ -40,17 +41,7 @@ export interface WorkOverviewDeps {
   chooseScope(goal: OngoingGoal, expectedRevision: number, ids: string[]): OngoingGoal;
 }
 
-/** A backlog goal can name a board elsewhere in its team. Do not expose its
- * issue names or private task ids if the viewer cannot also see that room. */
-export function workGoalVisible(goal: OngoingGoal, visible: VisibleSet, tasks: ReadonlyMap<string, WorkRecord>): boolean {
-  if (!visible.bot(goal.ownerBotId) || !visible.thread(goal.sourceThreadId)) return false;
-  if (goal.teamBacklog?.scopes.some(scope => scope.groupId && !visible.group(scope.groupId))) return false;
-  if (goal.teamBacklog?.choices.some(scope => scope.groupId && !visible.group(scope.groupId))) return false;
-  return goal.workItemIds.every(id => {
-    const item = tasks.get(id);
-    return Boolean(item && workItemVisible(item, visible));
-  });
-}
+export { workGoalVisible };
 
 export function createWorkOverviewRoutes(deps: WorkOverviewDeps): RouteHandler {
   return async ({ req, res, url, path, method, auth, json, readBody }) => {
@@ -152,7 +143,7 @@ export function createWorkOverviewRoutes(deps: WorkOverviewDeps): RouteHandler {
             title: `${target.externalId} · ${target.title}`, status: target.label, queue,
             owner: { id: item?.coordinatorBotId ?? goal.ownerBotId,
               name: deps.botName(item?.coordinatorBotId ?? goal.ownerBotId) ?? "Coordinator" },
-            detail: target.requirements ?? `${target.connectorId === "jira" ? "Jira issue" : "GitLab MR"}: ${target.label}`,
+            detail: sourceRowDetail(target),
             nextCheckpoint: targetGates[0]?.detail ?? (item?.status === "active" ? item.detail :
               target.state === "done" ? target.result : "Dispatch or recheck this source item."),
             evidence: [...(target.result ? [target.result] : []), ...(target.headSha ? [`Current head: ${target.headSha}`] : [])],

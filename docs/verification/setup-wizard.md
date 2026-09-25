@@ -35,8 +35,10 @@ manual, companion and direct-import tests above remain in the regression run.
 
 Codex drafting is a separate ephemeral CLI child with an empty temporary cwd,
 read-only sandbox, disabled tool and integration surfaces, selected account
-only, a bounded Stop, and strict JSON validation. The fake CLI test checks its
-argv, environment, missing-flag refusal and child cleanup. These fixtures do
+only, a bounded Stop, and strict JSON validation. Assist picks
+`engine.models.find(m => m.model === instanceDefault) ?? engine.models[0]`;
+an explicit assist `model` must be on that engine’s list. The fake CLI test
+checks its argv, environment, missing-flag refusal and child cleanup. These fixtures do
 not establish the quality of a real model's questions or proposals, nor that
 an installed third-party CLI honors every advertised flag. The CLI isolation
 settings follow the [official Codex CLI reference](https://developers.openai.com/codex/cli/reference)

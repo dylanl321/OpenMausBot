@@ -5,7 +5,7 @@ loopback-only synthetic Jira/GitLab service; it never connects to an account or
 the user's running app.
 
 ```sh
-pnpm exec vitest run server/work-coordination.test.ts server/work-items.test.ts server/connectors/jira/jira.test.ts server/connectors/jira/actions.test.ts server/connectors/gitlab/gitlab.test.ts server/connectors/gitlab/actions.test.ts server/connectors/contract-suite.test.ts server/ongoing-goals.test.ts server/ongoing-goals.e2e.test.ts server/team-backlog.e2e.test.ts server/team-backlog.test.ts server/team-work-kits.test.ts server/team-backlog-actions.test.ts server/routes/work-overview.test.ts src/components/WorkPage.test.ts scripts/check-connector-pr.test.ts --maxWorkers=2
+pnpm exec vitest run server/work-coordination.test.ts server/work-items.test.ts server/connectors/jira/jira.test.ts server/connectors/jira/actions.test.ts server/connectors/gitlab/gitlab.test.ts server/connectors/gitlab/actions.test.ts server/connectors/contract-suite.test.ts server/ongoing-goals.test.ts server/ongoing-goals.e2e.test.ts server/team-backlog.e2e.test.ts server/team-backlog.test.ts server/team-work-kits.test.ts server/team-backlog-actions.test.ts server/routes/work-overview.test.ts server/bot-visibility.test.ts server/goal-live.test.ts src/components/WorkPage.test.ts src/lib/serial-refresh.test.ts src/lib/goal-live.test.ts scripts/check-connector-pr.test.ts --maxWorkers=2
 ```
 
 With the pinned UI browser installed, run the real Work renderer against its
@@ -21,7 +21,11 @@ refresh. It never connects to the user's active workspace.
 
 The overview route fixture also checks direct bot tasks, team-room tasks and
 pending main-conversation decisions, including hidden-thread filtering and
-deduplication against shared work hubs.
+deduplication against shared work hubs. Source rows use kind-driven copy
+(work item / change request), not Jira or MR labels. Work subscribes to
+`goal` and `work.*` SSE frames and keeps a 30s fallback poll that does not
+overlap an in-flight refresh. A member without hub access does not receive
+another team’s mission `goal` frame.
 
 The e2e case sends the exact misspelled backlog prompt into a team with an
 assigned Jira board. It proves that an empty backlog is complete only after

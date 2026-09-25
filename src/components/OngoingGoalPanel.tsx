@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type Bot } from "@/state/store";
 import { t } from "@/lib/i18n";
+import { subscribeGoalLive } from "@/lib/goal-live";
+import { createSerialRefresh, WORK_FALLBACK_POLL_MS } from "@/lib/serial-refresh";
 import { useGoalCapabilities } from "@/lib/use-goal-capabilities";
 import type { GoalCapabilities } from "@/lib/session";
 import type { OngoingGoal } from "../../shared/ongoing-goal";
@@ -39,12 +41,21 @@ export function OngoingGoalPanel({ ownerBots, sourceThreadId, open, onClose, onO
   }, [ownerBots, ownerBotId]);
   useEffect(() => {
     let live = true;
-    const refresh = () => { void loadThreadGoals(sourceThreadId)
-      .then(next => { if (live) { setGoals(next); setError(""); } })
-      .catch(cause => { if (live) setError(goalRequestError(cause)); }); };
+    const poll = createSerialRefresh(async request => {
+      try {
+        const next = await loadThreadGoals(sourceThreadId);
+        if (live && poll.isCurrent(request)) { setGoals(next); setError(""); }
+      } catch (cause) {
+        if (live && poll.isCurrent(request)) setError(goalRequestError(cause));
+      }
+    });
+    const refresh = () => { void poll.refresh(); };
     refresh();
-    const timer = window.setInterval(refresh, 5_000);
-    return () => { live = false; window.clearInterval(timer); };
+    const timer = window.setInterval(refresh, WORK_FALLBACK_POLL_MS);
+    const stopLive = subscribeGoalLive(frame => {
+      if (frame.sourceThreadId === sourceThreadId) refresh();
+    });
+    return () => { live = false; poll.invalidate(); window.clearInterval(timer); stopLive(); };
   }, [sourceThreadId]);
 
   const refresh = async () => {

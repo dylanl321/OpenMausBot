@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, ChevronRight, RefreshCw } from "lucide-react";
 import { api, openThread, useStore } from "@/state/store";
+import { createSerialRefresh, subscribeWorkOverviewLive, WORK_FALLBACK_POLL_MS } from "@/lib/serial-refresh";
 import { formatQuestionAnswers } from "../../shared/ask-question";
 import { reviewedSkillSha256 } from "../../shared/skill-request";
 import { canSubmitScopeChoice, scopeChoiceLabel } from "../../shared/team-backlog";
@@ -8,6 +9,8 @@ import type { BacklogScope } from "../../shared/team-backlog";
 import type { WorkOverview, WorkOverviewCard, WorkOverviewEntry, WorkQueue } from "../../shared/work-overview";
 import { SkillRequestPreview } from "./SkillRequestPreview";
 import { loadTaskConnectors, type TaskConnectorManifest } from "./work/model";
+
+export { WORK_FALLBACK_POLL_MS };
 
 const labels: Record<WorkQueue, string> = {
   "needs-you": "Needs You", waiting: "Waiting on Others", working: "Working", completed: "Completed",
@@ -166,9 +169,7 @@ export function WorkPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [connectors, setConnectors] = useState<TaskConnectorManifest[]>([]);
-  const serial = useRef(0);
-  const refresh = useCallback(async () => {
-    const request = ++serial.current;
+  const fetchOverview = useCallback(async (isCurrent: (request: number) => boolean, request: number) => {
     let cursor: string | undefined;
     let result: WorkOverview | undefined;
     for (let page = 0; page < pages; page += 1) {
@@ -178,10 +179,15 @@ export function WorkPage() {
       const next = await api<WorkOverview>(`/api/work/overview?${query}`, { timeoutMs: 30_000 });
       result = result ? { ...next, entries: [...result.entries, ...next.entries], cards: [...result.cards, ...next.cards] } : next;
       cursor = next.nextCursor;
-      if (!cursor || request !== serial.current) break;
+      if (!cursor || !isCurrent(request)) break;
     }
-    if (request === serial.current && result) { setOverview(result); setTeamOptions(result.teams); setError(""); setLoading(false); }
+    if (isCurrent(request) && result) { setOverview(result); setTeamOptions(result.teams); setError(""); setLoading(false); }
   }, [team, status, pages]);
+  const fetchOverviewRef = useRef(fetchOverview);
+  fetchOverviewRef.current = fetchOverview;
+  const poll = useRef<ReturnType<typeof createSerialRefresh> | null>(null);
+  poll.current ??= createSerialRefresh(request => fetchOverviewRef.current(generation => poll.current!.isCurrent(generation), request));
+  const refresh = useCallback(() => poll.current!.refresh(), []);
   useEffect(() => {
     let live = true;
     void loadTaskConnectors(path => api(path)).then(list => { if (live) setConnectors(list); });
@@ -189,9 +195,10 @@ export function WorkPage() {
       setError(cause instanceof Error ? cause.message : String(cause)); setLoading(false);
     } }); };
     update();
-    const timer = window.setInterval(update, 5_000);
-    return () => { live = false; serial.current += 1; window.clearInterval(timer); };
-  }, [refresh]);
+    const timer = window.setInterval(update, WORK_FALLBACK_POLL_MS);
+    const stopLive = subscribeWorkOverviewLive(update);
+    return () => { live = false; poll.current?.invalidate(); window.clearInterval(timer); stopLive(); };
+  }, [refresh, team, status, pages]);
   const loadMore = () => {
     if (!overview?.nextCursor || loading) return;
     setLoading(true); setPages(count => count + 1);

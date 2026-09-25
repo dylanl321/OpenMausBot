@@ -355,6 +355,44 @@ export function workItemVisible(item: Pick<WorkItem, "groupId" | "threadId" | "c
   return visible.group(item.groupId) && visible.thread(item.threadId) && visible.bot(item.coordinatorBotId);
 }
 
+/** A backlog goal can name a board elsewhere in its team. Do not expose its
+ * issue names or private task ids if the viewer cannot also see that room. */
+export function workGoalVisible(
+  goal: {
+    ownerBotId: string;
+    sourceThreadId: string;
+    workItemIds: readonly string[];
+    teamBacklog?: { scopes: readonly { groupId?: string }[]; choices: readonly { groupId?: string }[] };
+  },
+  visible: VisibleSet,
+  tasks: ReadonlyMap<string, Pick<WorkItem, "groupId" | "threadId" | "coordinatorBotId">>,
+): boolean {
+  if (!visible.bot(goal.ownerBotId) || !visible.thread(goal.sourceThreadId)) return false;
+  if (goal.teamBacklog?.scopes.some(scope => scope.groupId && !visible.group(scope.groupId))) return false;
+  if (goal.teamBacklog?.choices.some(scope => scope.groupId && !visible.group(scope.groupId))) return false;
+  return goal.workItemIds.every(id => {
+    const item = tasks.get(id);
+    return Boolean(item && workItemVisible(item, visible));
+  });
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+function liveWorkItems(value: unknown): Array<Pick<WorkItem, "id" | "groupId" | "threadId" | "coordinatorBotId">> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap(entry => {
+    if (!entry || typeof entry !== "object") return [];
+    const item = entry as Record<string, unknown>;
+    const id = typeof item.id === "string" ? item.id : "";
+    const groupId = typeof item.groupId === "string" ? item.groupId : "";
+    const threadId = typeof item.threadId === "string" ? item.threadId : "";
+    const coordinatorBotId = typeof item.coordinatorBotId === "string" ? item.coordinatorBotId : "";
+    return id && groupId && threadId && coordinatorBotId ? [{ id, groupId, threadId, coordinatorBotId }] : [];
+  });
+}
+
 /** Specialists may acquire a narrower audience after a task was shared.
  * Apply the current visibility rules to both HTTP answers and live frames. */
 export function memberWorkItem<T extends WorkItem>(item: T, visible: VisibleSet): T {
@@ -484,6 +522,17 @@ export function frameForMember(payload: Record<string, unknown>, ctx: FrameConte
       const workItem = field("workItem");
       const subject = { groupId: str(workItem.groupId), threadId: str(workItem.threadId), coordinatorBotId: str(workItem.coordinatorBotId) };
       return workItemVisible(subject, visible) ? payload : undefined;
+    }
+    case "goal": {
+      const workItemIds = stringList(payload.workItemIds);
+      const workItems = liveWorkItems(payload.workItems);
+      const tasks = new Map(workItems.map(item => [item.id, item]));
+      return workGoalVisible({
+        ownerBotId: str(payload.ownerBotId),
+        sourceThreadId: str(payload.sourceThreadId),
+        workItemIds,
+        teamBacklog: { scopes: stringList(payload.scopeGroupIds).map(groupId => ({ groupId })), choices: [] },
+      }, visible, tasks) ? payload : undefined;
     }
     case "screen":
       return visible.bot(str(payload.botId)) && visible.thread(str(payload.threadId)) ? payload : undefined;

@@ -134,7 +134,14 @@ describe("permission-filtered Work overview", () => {
     const overview = await (await fetch(`${base}/api/work/overview`)).json() as any;
     const source = overview.entries.find((entry: any) => entry.kind === "source");
     expect(source).toMatchObject({ title: "PAY-1 · Blocked refund", queue: "waiting",
-      owner: { id: "lead" }, gates: [expect.objectContaining({ decisionMaker: "Owning task team" })] });
+      owner: { id: "lead" }, detail: "Work item: Blocked",
+      gates: [expect.objectContaining({ decisionMaker: "Owning task team" })] });
+    expect(source.detail).not.toMatch(/Jira|GitLab MR/);
+    goal.teamBacklog!.targets = [{ ...target, identity: "gitlab:gitlab-main:acme/app!10",
+      connectorId: "gitlab", connectionId: "gitlab-main", externalId: "acme/app!10",
+      kind: "change_request", title: "Refund review", label: "Review" }];
+    const change = await (await fetch(`${base}/api/work/overview`)).json() as any;
+    expect(change.entries.find((entry: any) => entry.kind === "source").detail).toBe("Change request: Review");
   });
 
   it("includes accessible direct and team-room task conversations, but not hidden or duplicate hubs", async () => {

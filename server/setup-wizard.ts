@@ -26,6 +26,27 @@ export interface WizardModelChoice {
   effortLevels: readonly string[];
 }
 
+export type WizardAssistModelResult =
+  | { ok: true; model: string }
+  | { ok: false; status: number; error: string };
+
+/** Codex (and any later explicit assist model) must be a listed engine id.
+ * Prefer the instance default over catalog order. */
+export function setupWizardAssistModel(
+  engine: { models: ReadonlyArray<{ model: string }> },
+  instanceDefault?: string,
+  requested?: string,
+): WizardAssistModelResult {
+  if (!engine.models.length) return { ok: false, status: 409, error: "This engine has no listed models" };
+  if (requested) {
+    const listed = engine.models.find(choice => choice.model === requested);
+    if (!listed) return { ok: false, status: 409, error: "Choose a listed model for this Setup Guide engine" };
+    return { ok: true, model: listed.model };
+  }
+  const preferred = engine.models.find(choice => choice.model === instanceDefault) ?? engine.models[0];
+  return { ok: true, model: preferred!.model };
+}
+
 interface WizardState {
   teams: readonly string[];
   bots: ReadonlyArray<{ name: string; section?: string; chiefOfStaff?: boolean }>;
