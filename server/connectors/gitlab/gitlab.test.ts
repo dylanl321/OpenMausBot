@@ -409,3 +409,19 @@ describe("gitlab connector", () => {
     expect(text).not.toMatch(/PRIVATE-TOKEN|Bearer /i);
   });
 });
+
+describe("gitlab mission scope", () => {
+  it("accepts complete project paths and ignores search-only watch query text", () => {
+    const scope = gitlabConnector.missionScope!;
+    expect(scope.queryUsable?.("acme/app")).toBe(true);
+    expect(scope.queryUsable?.("unqualified")).toBe(false);
+    expect(scope.fromWatch?.({
+      scope: { project: "acme/app", query: "refunds" },
+      settings: { project: "acme/other" },
+      hasBoard: true,
+    })).toEqual({ query: "acme/app" });
+    expect(scope.fromLinkedId?.("acme/app!10")).toBe("acme/app");
+    expect(scope.contains?.("acme/app", { externalId: "acme/app!10" })).toBe(true);
+    expect(scope.contains?.("acme/app", { externalId: "acme/other!10" })).toBe(false);
+  });
+});

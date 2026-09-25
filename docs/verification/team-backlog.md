@@ -22,7 +22,7 @@ Evidenced ready items record an `access` gate and send **no**
 PUT/POST/PATCH/DELETE.
 
 ```sh
-pnpm exec vitest run server/work-coordination.test.ts server/work-items.test.ts server/connectors/jira/jira.test.ts server/connectors/jira/actions.test.ts server/connectors/gitlab/gitlab.test.ts server/connectors/gitlab/actions.test.ts server/connectors/contract-suite.test.ts server/ongoing-goals.test.ts server/ongoing-goals.e2e.test.ts server/team-backlog.e2e.test.ts server/team-backlog.test.ts server/team-work-kits.test.ts server/team-backlog-actions.test.ts server/routes/work-overview.test.ts server/bot-visibility.test.ts server/goal-live.test.ts src/components/WorkPage.test.ts src/lib/serial-refresh.test.ts src/lib/goal-live.test.ts scripts/check-connector-pr.test.ts --maxWorkers=2
+pnpm exec vitest run server/work-coordination.test.ts server/work-items.test.ts server/connectors/jira/jira.test.ts server/connectors/jira/actions.test.ts server/connectors/gitlab/gitlab.test.ts server/connectors/gitlab/actions.test.ts server/connectors/contract-suite.test.ts server/ongoing-goals.test.ts server/ongoing-goals.e2e.test.ts server/team-backlog.e2e.test.ts server/team-backlog.test.ts server/team-work-kits.test.ts server/modularity.test.ts server/team-backlog-actions.test.ts server/routes/work-overview.test.ts server/bot-visibility.test.ts server/goal-live.test.ts src/components/WorkPage.test.ts src/lib/serial-refresh.test.ts src/lib/goal-live.test.ts scripts/check-connector-pr.test.ts --maxWorkers=2
 ```
 
 With the pinned UI browser installed, run the real Work renderer against its

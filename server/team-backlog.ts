@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { connectionForSection, queryConnection } from "./task-connections.ts";
 import { connectorById } from "./connectors/registry.ts";
 import { connectionContext } from "./task-connections.ts";
-import type { StoredConnection } from "./connectors/types.ts";
+import type { ConnectorMissionScope, StoredConnection } from "./connectors/types.ts";
 import type { GroupRecord } from "./store.ts";
 import { sectionKey } from "./store.ts";
 import type { WorkRecord } from "./work-items.ts";
@@ -27,48 +27,36 @@ import {
 const MAX_PAGES = 1_000;
 const MAX_TARGETS = 10_000;
 const PROJECT_KEY = /^[A-Z][A-Z0-9_]*$/i;
-const GITLAB_PROJECT = /^(?:[\w.-]+\/)+[\w.-]+$/;
+const PROJECT_PATH = /^(?:[\w.-]+\/)+[\w.-]+$/;
 const unfinished = (item: { state?: { category: string } }) => !["done", "cancelled"].includes(item.state?.category ?? "unknown");
 const scopeId = (connectionId: string, query: string) =>
   `scope:${createHash("sha256").update(JSON.stringify([connectionId, query])).digest("hex").slice(0, 20)}`;
 
-function jiraProjectQuery(projects: readonly string[]): string {
-  const project = projects.length === 1 ? `project = ${projects[0]}` : `project in (${projects.join(", ")})`;
-  return `${project} AND statusCategory != Done`;
-}
-
-/** The board can be filtered to today's sprint or one assignee. Its project
- * clause identifies the team's projects; those other filters must not hide
- * unfinished issues. Complex JQL is a scope gate, not a narrow inventory. */
-export function jiraProjectsFromBoard(query: string): string[] | null {
-  if (/\b(?:OR|NOT)\b/i.test(query) || [...query.matchAll(/\bproject\b/gi)].length !== 1) return null;
-  const single = /\bproject\s*=\s*(?:"([A-Z][A-Z0-9_]*)"|([A-Z][A-Z0-9_]*))(?=\W|$)/i.exec(query);
-  if (single) return [(single[1] ?? single[2]).toUpperCase()];
-  const list = /\bproject\s+in\s*\(([^)]+)\)/i.exec(query);
-  if (!list) return null;
-  const projects = list[1].split(",").map(value => value.trim().replace(/^"|"$/g, "").toUpperCase());
-  return projects.length > 0 && projects.length <= 20 && projects.every(value => PROJECT_KEY.test(value))
-    ? [...new Set(projects)] : null;
-}
-
-function projectsFromScopeQuery(query: string): string[] | null {
-  return jiraProjectsFromBoard(query) ?? (PROJECT_KEY.test(query.trim()) ? [query.trim().toUpperCase()] : null);
+function missionScopeOf(connectorId: string): ConnectorMissionScope | undefined {
+  return connectorById(connectorId)?.missionScope;
 }
 
 function queryUsable(connectorId: string, query: string): boolean {
   if (!query.trim()) return false;
-  if (connectorId === "gitlab") return GITLAB_PROJECT.test(query.trim());
-  return true;
+  return missionScopeOf(connectorId)?.queryUsable?.(query) ?? true;
 }
 
 function queryFromSettings(connection: StoredConnection): string {
-  const project = String(connection.settings.project ?? "").trim();
-  if (connection.connectorId === "jira") return PROJECT_KEY.test(project) ? jiraProjectQuery([project.toUpperCase()]) : "";
-  return project;
+  const hook = missionScopeOf(connection.connectorId)?.queryFromSettings;
+  if (hook) return hook(connection.settings);
+  return String(connection.settings.project ?? "").trim();
 }
 
 function queryCapable(connection: StoredConnection): boolean {
   return connection.enabled && isQueryCapableConnector(connection.connectorId) && isKnownConnectorId(connection.connectorId);
+}
+
+function defaultContains(query: string, externalId: string): boolean {
+  if (PROJECT_PATH.test(query)) {
+    return externalId.startsWith(`${query}!`) || externalId.startsWith(`${query}#`);
+  }
+  const key = /^([A-Z][A-Z0-9_]*)-\d+(?=$|:)/i.exec(externalId)?.[1];
+  return Boolean(key && PROJECT_KEY.test(query.trim()) && query.trim().toUpperCase() === key.toUpperCase());
 }
 
 /** A source change may wake this team mission without widening it to every
@@ -77,20 +65,18 @@ export function backlogScopeContains(scope: BacklogScope, item: SyncedItem): boo
   if (scope.connectionId !== item.connectionId || scope.connectorId !== item.connectorId || !item.externalId) return false;
   const kinds = scopeKinds(scope);
   if (item.kind && !kinds.includes(item.kind as MissionKind)) return false;
-  if (GITLAB_PROJECT.test(scope.query)) {
-    return item.externalId.startsWith(`${scope.query}!`) || item.externalId.startsWith(`${scope.query}#`);
-  }
-  const key = /^([A-Z][A-Z0-9_]*)-\d+(?=$|:)/i.exec(item.externalId)?.[1];
-  return Boolean(key && projectsFromScopeQuery(scope.query)?.includes(key.toUpperCase()));
+  const hook = missionScopeOf(scope.connectorId)?.contains;
+  return hook ? hook(scope.query, item) : defaultContains(scope.query, item.externalId);
 }
 
 function projectFromLinkedId(connectorId: string, externalId: string): string {
-  if (connectorId === "gitlab" || GITLAB_PROJECT.test(externalId.split(/[#!]/)[0] ?? "")) {
+  const hook = missionScopeOf(connectorId)?.fromLinkedId;
+  if (hook) return hook(externalId);
+  if (PROJECT_PATH.test(externalId.split(/[#!]/)[0] ?? "")) {
     return /^(.+)[#!]\d+$/.exec(externalId)?.[1] ?? "";
   }
   const project = /^([A-Z][A-Z0-9_]*)-\d+$/i.exec(externalId);
-  if (!project) return "";
-  return connectorId === "jira" ? jiraProjectQuery([project[1].toUpperCase()]) : project[1].toUpperCase();
+  return project ? project[1].toUpperCase() : "";
 }
 
 /** A board is the team's tracker source of truth. Global connections only fill
@@ -127,35 +113,32 @@ export function inferTeamBacklog(input: {
     const connection = connectionForSection([...input.connections], section, board.connectionId);
     if (!connection || !queryCapable(connection)) continue;
     const name = connectorDisplayName(connection.connectorId);
-    if (connection.connectorId === "jira") {
-      const projects = jiraProjectsFromBoard(board.query);
-      if (projects?.length) add(owned, connection.connectorId, board.connectionId, jiraProjectQuery(projects),
-        `${group.name} ${name} projects`, group.id);
-      else uncertainBoard = true;
+    const scoped = missionScopeOf(connection.connectorId);
+    if (scoped?.fromBoard) {
+      const next = scoped.fromBoard(board.query);
+      if ("uncertain" in next) uncertainBoard = true;
+      else add(owned, connection.connectorId, board.connectionId, next.query,
+        `${group.name} ${name} ${scoped.boardNoun ?? "board"}`, group.id);
     } else if (queryUsable(connection.connectorId, board.query)) {
       add(owned, connection.connectorId, board.connectionId, board.query, `${group.name} ${name} board`, group.id);
     } else uncertainBoard = true;
   }
-  const hasJiraBoard = owned.some(scope => scope.connectorId === "jira");
   for (const watch of input.watches) {
     if (!watch.enabled || sectionKey(watch.section) !== section || watch.source.type !== "connection") continue;
     const connection = connectionForSection([...input.connections], section, watch.source.connectionId);
     if (!connection || !queryCapable(connection)) continue;
     const name = connectorDisplayName(connection.connectorId);
+    const scoped = missionScopeOf(connection.connectorId);
+    const hasBoard = owned.some(scope => scope.connectorId === connection.connectorId);
+    if (scoped?.fromWatch) {
+      const next = scoped.fromWatch({ scope: watch.source.scope, settings: connection.settings, hasBoard });
+      if ("skip" in next) continue;
+      add(owned, connection.connectorId, connection.id, next.query,
+        `${watch.name} ${name} ${scoped.watchNoun ?? "watch"}`, boardGroup?.id);
+      continue;
+    }
     const project = typeof watch.source.scope?.project === "string" ? watch.source.scope.project.trim() : "";
     const query = typeof watch.source.scope?.query === "string" ? watch.source.scope.query.trim() : "";
-    if (connection.connectorId === "jira") {
-      if (hasJiraBoard) continue;
-      const projects = query ? jiraProjectsFromBoard(query) : PROJECT_KEY.test(project) ? [project.toUpperCase()] : null;
-      add(owned, "jira", connection.id, projects?.length ? jiraProjectQuery(projects) : "",
-        `${watch.name} ${name} watch`, boardGroup?.id);
-      continue;
-    }
-    if (connection.connectorId === "gitlab") {
-      add(owned, "gitlab", connection.id, project || String(connection.settings.project ?? ""),
-        `${watch.name} ${name} repository`, boardGroup?.id);
-      continue;
-    }
     add(owned, connection.connectorId, connection.id, project || query || queryFromSettings(connection),
       `${watch.name} ${name} watch`, boardGroup?.id);
   }
@@ -166,7 +149,7 @@ export function inferTeamBacklog(input: {
     if (!parts) continue;
     const connectorId = parts[1];
     const connectionId = parts[2];
-    if (connectorId === "jira" && configured.has("jira")) continue;
+    if (missionScopeOf(connectorId)?.skipLinkedWhenConfigured && configured.has(connectorId)) continue;
     const extracted = projectFromLinkedId(connectorId, parts[3]);
     if (!extracted) continue;
     const name = connectorDisplayName(connectorId);
@@ -201,7 +184,7 @@ export function inferTeamBacklog(input: {
     result.gates = [{
       kind: "scope",
       decisionMaker: "Conversation requester or workspace admin",
-      detail: `${uncertainBoard ? `The board query does not identify a project${owned.some(scope => scope.connectorId === "jira") ? "; confirm the listed project scope" : ""}. ` : ""}${
+      detail: `${uncertainBoard ? "The board query does not identify a project; confirm the listed project scope. " : ""}${
         result.scopes.length < 1 && !result.choices.length
           ? "Configure a team-owned query-capable connection. No external inventory has been claimed."
           : result.choices.length
@@ -242,7 +225,7 @@ function targetFrom(item: SyncedItem): BacklogTarget | null {
 /** A scan is atomic from the mission's perspective: any error retains the
  * previous inventory and its last successful timestamp. Missing known work
  * is fetched strictly, since disappearing from an open query is not proof of
- * completion (especially for an MR closed without merging). */
+ * completion (especially for a change request closed without merging). */
 export async function scanTeamBacklog(backlog: TeamBacklog, connections: StoredConnection[], fetchImpl?: typeof fetch): Promise<TeamBacklog> {
   const at = Date.now();
   const previous = new Map(backlog.targets.map(target => [target.identity, target]));
@@ -256,8 +239,9 @@ export async function scanTeamBacklog(backlog: TeamBacklog, connections: StoredC
     }
     const kinds = scopeKinds(scope);
     try {
-      if (scope.connectorId === "gitlab" && !GITLAB_PROJECT.test(scope.query)) {
-        throw new Error("The repository scope is not a complete GitLab project path");
+      const scoped = missionScopeOf(scope.connectorId);
+      if (scoped?.queryUsable && !scoped.queryUsable(scope.query)) {
+        throw new Error(scoped.queryError ?? "The inventory query is not a usable scope for this connection");
       }
       let cursor: string | undefined;
       const seen = new Set<string>();

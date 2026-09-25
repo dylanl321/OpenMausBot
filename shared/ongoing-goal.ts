@@ -57,7 +57,7 @@ export interface OngoingGoal {
   noProgress: number;
   lastProgress?: string;
   lastObserved?: string;
-  /** Server-owned inventory for an outcome-only team Jira/GitLab mission. */
+  /** Server-owned inventory for an outcome-only team mission. */
   teamBacklog?: TeamBacklog;
 }
 
