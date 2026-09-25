@@ -34,8 +34,11 @@ been explicitly reopened. A watch match can wake a waiting goal without
 redoing an already-recorded watch action.
 Removing the owner from the source or linked room parks the goal immediately,
 interrupts its active coordinator turn and cancels goal-owned active tasks.
-For a blanket request to finish *all* Jira or GitLab work, the fixture scripts
-a false completion claim. The server must not accept or repeat it: without
-named project/repository scope and an independently observed inventory, it
-records the missing decision as `needs-input`. This test never reads or mutates
-live Jira issues or merge requests.
+For a blanket request to finish *all* current inventory work, the fixture
+scripts a false completion claim. The server must not accept or repeat it:
+without named project/repository scope and an independently observed
+inventory, it records the missing decision as `needs-input`. Naming a
+registered connector or “merge requests” is enough to start a mission; the
+detector does not require both “jira” and “gitlab”. A named issue or MR
+(`PAY-123`, `group/project!10`) stays a deliverable and is not widened. This
+test never reads or mutates live tracker issues or merge requests.

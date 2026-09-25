@@ -119,7 +119,7 @@ describe("permission-filtered Work overview", () => {
       headers: { "content-type": "application/json", ...(actor ? { "x-fixture-actor": actor } : {}) }, body: JSON.stringify(body) });
     expect((await choose({ expectedRevision: goal.revision, scopeIds: ["jira", "repo"] }, "other")).status).toBe(403);
     expect((await choose({ expectedRevision: goal.revision, scopeIds: ["jira", "not-listed"] })).status).toBe(409);
-    expect((await choose({ expectedRevision: goal.revision, scopeIds: ["jira", "repo"] })).status).toBe(200);
+    expect((await choose({ expectedRevision: goal.revision, scopeIds: ["jira"] })).status).toBe(200);
     expect((await choose({ expectedRevision: goal.revision, scopeIds: ["jira", "repo"] })).status).toBe(409);
   });
 

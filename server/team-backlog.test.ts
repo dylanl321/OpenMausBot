@@ -1,6 +1,7 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { emptyTeamBacklog, type BacklogScope } from "../shared/team-backlog.ts";
 import type { StoredConnection } from "./connectors/types.ts";
@@ -194,8 +195,9 @@ describe("team backlog scope and inventory", () => {
     const unrelated = { ...watch, section: "Finance", source: { ...watch.source, scope: { project: "finance/private" } } } as Watch;
     const inferred = inferTeamBacklog({ section: "Delivery", ownerBotId: "lead", groups: [group],
       watches: [watch, unrelated], connections, work: [] });
-    expect(inferred.scopes.map(scope => [scope.connectorId, scope.query])).toEqual([
-      ["jira", "project = PAY AND statusCategory != Done"], ["gitlab", "acme/app"],
+    expect(inferred.scopes.map(scope => [scope.connectorId, scope.query, scope.kinds])).toEqual([
+      ["jira", "project = PAY AND statusCategory != Done", ["work_item"]],
+      ["gitlab", "acme/app", ["change_request"]],
     ]);
     expect(inferred.choices).toHaveLength(0);
     expect(inferred.gates).toHaveLength(0);
@@ -246,7 +248,8 @@ describe("team backlog scope and inventory", () => {
       connections: connections.map(connection => connection.connectorId === "gitlab" ? { ...connection, settings: { ...connection.settings, project: "unqualified" } } : connection),
       work: [] });
     expect(inferred.scopes.map(scope => scope.query)).toEqual(["project = PAY AND statusCategory != Done", "project = SHIP AND statusCategory != Done"]);
-    expect(inferred.gates[0]?.kind).toBe("scope");
+    expect(inferred.choices).toEqual([]);
+    expect(inferred.gates).toEqual([]);
     const scan = await scanTeamBacklog({ ...emptyTeamBacklog("Delivery"), scopes: [{ ...scopes[1], query: "unqualified" }] }, connections);
     expect(scan.scan.status).toBe("incomplete");
     expect(scan.scan.errors[0]).toMatch(/repository scope/);
@@ -535,5 +538,110 @@ describe("team backlog scope and inventory", () => {
     expect(api.requested.some(request => request.startsWith("POST ") && request.includes("/transitions"))).toBe(true);
     expect(goal.teamBacklog?.targets.every(target => target.state === "done")).toBe(true);
     expect(goal.teamBacklog?.gates.filter(gate => gate.kind === "access")).toEqual([]);
+  });
+
+  it("does not pin backlog connector ids to a jira/gitlab enum", () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../shared/team-backlog.ts"), "utf8");
+    expect(source).not.toMatch(/z\.enum\(\s*\[\s*["']jira["']\s*,\s*["']gitlab["']/);
+  });
+
+  it("treats a GitLab-only team with a project setting as ready and inventories issues plus MRs", async () => {
+    const gitlabOnly = [connections[1]];
+    const inferred = inferTeamBacklog({ section: "Delivery", ownerBotId: "lead",
+      groups: [{ ...group, taskBoard: undefined }], watches: [], connections: gitlabOnly, work: [] });
+    expect(inferred.choices).toEqual([]);
+    expect(inferred.gates).toEqual([]);
+    expect(inferred.scopes).toEqual([expect.objectContaining({
+      connectorId: "gitlab", query: "acme/app", kinds: ["work_item", "change_request"],
+    })]);
+    const api = mockApi();
+    const scanned = await scanTeamBacklog({ ...emptyTeamBacklog("Delivery"), scopes: inferred.scopes }, gitlabOnly, api.fetchImpl);
+    expect(scanned.scan).toMatchObject({ status: "complete", itemCount: 2 });
+    expect(scanned.targets.map(target => target.externalId).sort()).toEqual(["acme/app!10", "acme/app#71"]);
+  });
+
+  it("treats a Jira-only team as ready and never asks for GitLab", async () => {
+    const jiraOnly = [connections[0]];
+    const inferred = inferTeamBacklog({ section: "Delivery", ownerBotId: "lead", groups: [group],
+      watches: [], connections: jiraOnly, work: [] });
+    expect(inferred.choices).toEqual([]);
+    expect(inferred.gates).toEqual([]);
+    expect(inferred.scopes).toEqual([expect.objectContaining({
+      connectorId: "jira", kinds: ["work_item"],
+    })]);
+    const api = mockApi();
+    const scanned = await scanTeamBacklog({ ...emptyTeamBacklog("Delivery"), scopes: inferred.scopes }, jiraOnly, api.fetchImpl);
+    expect(scanned.scan.status).toBe("complete");
+    expect(scanned.targets.every(target => target.connectorId === "jira")).toBe(true);
+    expect(scanned.targets.some(target => target.externalId.includes("!"))).toBe(false);
+  });
+
+  it("treats a Plane-only team as ready and scans work items", async () => {
+    const plane: StoredConnection = {
+      id: "plane-main", connectorId: "plane", label: "Plane",
+      settings: { site: "https://api.plane.so", workspace: "acme", project: "PAY" },
+      secrets: { apiKey: "fixture" }, sections: ["Delivery"], enabled: true,
+    };
+    const inferred = inferTeamBacklog({ section: "Delivery", ownerBotId: "lead",
+      groups: [{ ...group, taskBoard: undefined }], watches: [], connections: [plane], work: [] });
+    expect(inferred.scopes).toEqual([expect.objectContaining({
+      connectorId: "plane", query: "PAY", kinds: ["work_item"],
+    })]);
+    expect(inferred.choices).toEqual([]);
+    const projects = { results: [{ id: "4af68566-94a4-4eb3-94aa-50dc9427067b", identifier: "PAY", name: "Payments" }] };
+    const items = [{
+      id: "550e8400-e29b-41d4-a716-446655440123", name: "Refund failures", sequence_id: 123,
+      project_id: "4af68566-94a4-4eb3-94aa-50dc9427067b", project_identifier: "PAY",
+      state: { name: "In Progress", group: "started" }, updated_at: "2026-09-23T14:22:00.000Z",
+    }];
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      const body = url.includes("/work-items") ? { results: items } : projects;
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const scanned = await scanTeamBacklog({ ...emptyTeamBacklog("Delivery"), scopes: inferred.scopes }, [plane], fetchImpl);
+    expect(scanned.scan).toMatchObject({ status: "complete", itemCount: 1 });
+    expect(scanned.targets).toEqual([expect.objectContaining({ externalId: "PAY-123", kind: "work_item", connectorId: "plane" })]);
+  });
+
+  it("keeps dropping GitLab issues for the jira-gitlab kit and keeps them when kinds include work_item", async () => {
+    const api = mockApi();
+    const kit = await scanTeamBacklog({ ...emptyTeamBacklog("Delivery"), scopes }, connections, api.fetchImpl);
+    expect(kit.targets.map(target => target.externalId).sort()).toEqual(["PAY-1", "PAY-2", "PAY-3", "acme/app!10"]);
+    const gitlabKit: BacklogScope[] = [{ ...scopes[1], kinds: ["work_item", "change_request"] }];
+    const included = await scanTeamBacklog({ ...emptyTeamBacklog("Delivery"), scopes: gitlabKit }, connections, api.fetchImpl);
+    expect(included.targets.map(target => target.externalId).sort()).toEqual(["acme/app!10", "acme/app#71"]);
+  });
+
+  it("leaves needs-input after inferring ambiguous globals, then runs after a one-sided choice", async () => {
+    const global = connections.map(connection => ({ ...connection, sections: [],
+      settings: { ...connection.settings, ...(connection.connectorId === "jira" ? { project: "PAY" } : {}) } }));
+    const inferred = inferTeamBacklog({ section: "Delivery", ownerBotId: "lead",
+      groups: [{ ...group, taskBoard: undefined }], watches: [], connections: global, work: [] });
+    expect(inferred.scopes).toEqual([]);
+    expect(inferred.choices.length).toBeGreaterThan(1);
+    expect(inferred.gates[0]?.kind).toBe("scope");
+    const dir = mkdtempSync(join(tmpdir(), "omb-backlog-oneside-")); dirs.push(dir);
+    const goals = new OngoingGoals(join(dir, "goals.json"));
+    const goal = goals.create({ ownerBotId: "lead", sourceThreadId: "room-thread",
+      objective: "finish our current GitLab merge requests" }, "execution", inferred);
+    expect(goal.status).toBe("working");
+    const gitlabId = inferred.choices.find(choice => choice.connectorId === "gitlab")!.id;
+    goals.chooseBacklogScopes(goal, goal.revision, [gitlabId]);
+    const api = mockApi();
+    const coordination = {
+      items: { records: new Map(), find: () => undefined },
+      accessible: () => true, evidenceProvenance: () => "observed",
+      ensure: async (input: { identity: string; title: string; acceptanceCriteria: string[] }) => {
+        const item = { id: input.identity, identity: input.identity, status: "active", revision: 1,
+          detail: "Working", acceptanceCriteria: input.acceptanceCriteria } as WorkRecord;
+        return { workItem: item, created: true, started: true };
+      },
+    } as unknown as WorkCoordination;
+    await advanceTeamBacklog(goal, { goals, coordination, connections: () => connections, groups: () => [group],
+      watches: () => [], ownerSection: () => "Delivery", fetchImpl: api.fetchImpl });
+    expect(goal.status).not.toBe("needs-input");
+    expect(goal.teamBacklog?.scopes).toEqual([expect.objectContaining({ connectorId: "gitlab" })]);
+    expect(goal.teamBacklog?.targets.map(target => target.externalId).sort()).toEqual(["acme/app!10", "acme/app#71"]);
   });
 });

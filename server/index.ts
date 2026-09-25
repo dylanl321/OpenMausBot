@@ -545,7 +545,8 @@ import { createWorkOverviewRoutes, workGoalVisible } from "./routes/work-overvie
 import { WorkCapture } from "./connectors/capture.ts";
 import { linkId, observedLink } from "./connectors/types.ts";
 import { connectorById } from "./connectors/registry.ts";
-import { connectionContext, parseStoredConnections, queryConnection, sourceLinkedItem } from "./task-connections.ts";
+import { connectionContext, connectionForSection, parseStoredConnections, queryConnection, sourceLinkedItem } from "./task-connections.ts";
+import { isQueryCapableConnector } from "./team-work-kits.ts";
 import { WorkEvents } from "./work-events.ts";
 import { describeBedrockSettings } from "./drivers/bedrock.ts";
 import { mergeBedrockConfig, publicBedrockSettings } from "./bedrock-config.ts";
@@ -16166,8 +16167,11 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       const previous = ongoingGoals?.findRequest(input);
       if (previous) return json(res, 200, { goal: previous });
-      const backlogObjective = isTeamBacklogObjective(input.objective);
       const originSection = sectionKey(group?.section ?? owner.section);
+      const hasQueryCapableConnection = taskConnectionList().some(connection =>
+        connectionForSection(taskConnectionList(), originSection, connection.id)
+        && isQueryCapableConnector(connection.connectorId));
+      const backlogObjective = isTeamBacklogObjective(input.objective, { hasQueryCapableConnection });
       if (backlogObjective) {
         const sameTeam = [...(ongoingGoals?.records.values() ?? [])].find(candidate =>
           candidate.teamBacklog?.section === originSection && !["stopped", "completed"].includes(candidate.status));
