@@ -126,7 +126,7 @@ export function TaskView({ item, events: eventsProp, connectors: connectorsProp 
             </button>}
           </div>
           {eventsError && <p role="alert" className="mt-2 text-xs text-danger">{eventsError}</p>}
-          {feed.length === 0 ? <p className="mt-2 text-xs text-ink-secondary">{t("work.activityEmpty")}</p>}
+          {feed.length === 0 ? <p className="mt-2 text-xs text-ink-secondary">{t("work.activityEmpty")}</p>
             : <ol className="mt-1 divide-y divide-hairline/20">{feed.map(event => <EventRow key={event.id} event={event} links={links} connectors={connectors} />)}</ol>}
         </section>
         <section aria-label={t("work.outputs")} className="min-w-0">
