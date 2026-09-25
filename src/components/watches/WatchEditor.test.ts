@@ -170,4 +170,32 @@ describe("watch editor", () => {
     expect(html).toContain("Record");
     expect(html).toContain("Ensure task");
   });
+
+  it("does not preselect a webhook when starting a webhook watch", () => {
+    const html = renderToStaticMarkup(createElement(WatchEditor, {
+      draft: { name: "Inbox watch", source: { type: "webhook", webhookId: "" } },
+      bots: [],
+      connections: [],
+      connectors: [],
+      webhooks: [{
+        id: "wh-1",
+        endpointId: "ep-1",
+        name: "Inbox",
+        botId: "scout",
+        prompt: "",
+        runOn: "maus",
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+        deliveryCount: 0,
+      }],
+      routines: [],
+      groups: [],
+      onClose: vi.fn(),
+      onSaved: vi.fn(),
+    }));
+    expect(html).toContain('data-watch-source-kind="webhook"');
+    expect(html).toContain("Choose…");
+    expect(html).not.toContain('value="wh-1" selected');
+  });
 });

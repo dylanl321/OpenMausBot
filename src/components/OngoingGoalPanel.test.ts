@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { OngoingGoal } from "../../shared/ongoing-goal";
-import { goalRequestError, loadThreadGoals, OngoingGoalPanel } from "./OngoingGoalPanel";
+import { goalRequestError, goalStatusLabel, loadThreadGoals, OngoingGoalPanel } from "./OngoingGoalPanel";
 
 const owner = { canCreate: true, canControl: true, canResume: true };
 const client = { canCreate: true, canControl: true, canResume: false };
@@ -61,6 +61,14 @@ describe("ongoing goal creation", () => {
     expect(withGoal).not.toContain("Resume with renewed limits");
     expect(withGoal).not.toContain("Start pursuing");
     expect(render({ capabilities: owner, initialGoals: [pausedGoal], open: false })).toContain("Resume with renewed limits");
+  });
+
+  it("labels goal status instead of showing the raw token", () => {
+    expect(goalStatusLabel("paused")).toBe("Paused");
+    expect(goalStatusLabel("needs-input")).toBe("Needs input");
+    const html = render({ capabilities: owner, initialGoals: [pausedGoal], open: false });
+    expect(html).toContain("Finish the release · Paused");
+    expect(html).not.toContain("Finish the release · paused");
   });
 
   it("surfaces a failed goals list instead of swallowing it", async () => {

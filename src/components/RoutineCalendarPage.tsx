@@ -55,6 +55,7 @@ import { CronScheduleFields, CronSchedulePreview } from "@/components/routines/C
 import { cronChoiceFor, cronDraftFor, cronEditorValue, isCronChoice, type CronChoice } from "@/components/routines/cron-editor";
 import { routineRunLabel } from "@/lib/routine-display";
 import { t } from "@/lib/i18n";
+import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
 import { useDesktopCapabilities } from "@/components/DesktopCapabilities";
 import { WebhooksPanel } from "@/components/WebhooksPanel";
 import type { CalendarCall, CalendarCallAttachment, CalendarCallInput } from "@/lib/calendar-calls";
@@ -1626,6 +1627,7 @@ export function RoutineEditor({
 export function RoutinesPage({ onBack, onOpenRoom }: { onBack: () => void; onOpenRoom: (id: string) => void }) {
   const { state, dispatch } = useStore();
   const { capabilities } = useDesktopCapabilities();
+  const canManageWatches = useOwnerOrAdmin();
   const routinesOnly = window.ogb?.remoteClient?.active === true;
   const backButtonRef = useRef<HTMLButtonElement>(null);
   const newMenuRef = useRef<HTMLDetailsElement>(null);
@@ -1836,7 +1838,7 @@ export function RoutinesPage({ onBack, onOpenRoom }: { onBack: () => void; onOpe
                 <Webhook size={16} className="mt-0.5 shrink-0 text-accent" aria-hidden="true" />
                 <span><span className="block text-[12.5px] font-medium text-ink">Webhook</span><span className="mt-0.5 block text-[10.5px] leading-relaxed text-ink-secondary">Start a task when another app sends an event.</span></span>
               </button>}
-              <button type="button" aria-label={t("watches.createAria")} onClick={() => { newMenuRef.current?.removeAttribute("open"); setSection("watches"); setWatchCreateRequest((request) => request + 1); }} className="flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-raised">
+              <button type="button" aria-label={t("watches.createAria")} disabled={canManageWatches !== true} title={canManageWatches === false ? t("watches.adminOnly") : undefined} onClick={() => { newMenuRef.current?.removeAttribute("open"); setSection("watches"); setWatchCreateRequest((request) => request + 1); }} className="flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-raised disabled:cursor-not-allowed disabled:opacity-40">
                 <Radar size={16} className="mt-0.5 shrink-0 text-accent" aria-hidden="true" />
                 <span><span className="block text-[12.5px] font-medium text-ink">{t("watches.newMenu")}</span><span className="mt-0.5 block text-[10.5px] leading-relaxed text-ink-secondary">{t("watches.newMenuHelp")}</span></span>
               </button>

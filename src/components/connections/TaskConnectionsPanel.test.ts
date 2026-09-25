@@ -10,6 +10,11 @@ const fixture = vi.hoisted(() => ({
   state: undefined as AppState | undefined,
   dispatch: vi.fn(),
   api: vi.fn(),
+  admin: true as boolean | null,
+}));
+
+vi.mock("@/lib/use-owner-or-admin", () => ({
+  useOwnerOrAdmin: () => fixture.admin,
 }));
 
 vi.mock("@/state/store", async (importOriginal) => {
@@ -54,6 +59,7 @@ function markup(props: {
 
 beforeEach(() => {
   fixture.dispatch.mockClear();
+  fixture.admin = true;
   fixture.api.mockReset();
   fixture.api.mockImplementation(async (path: string) => {
     if (path === "/api/task-connectors") {
@@ -84,6 +90,8 @@ describe("task connections panel", () => {
     expect(html).toContain("Test");
     expect(html).toContain("Disable connection");
     expect(html).toContain("Enable connection");
+    expect(html).toContain("Enabled");
+    expect(html).not.toContain("Link Jira, GitLab, Plane");
     expect(html).toContain('data-connection-row="jira-acme"');
     expect(html).toContain('data-connection-row="plane-ops"');
     expect(html).not.toContain("super-secret");
@@ -99,5 +107,18 @@ describe("task connections panel", () => {
     const html = markup({ connectors: [jiraConnector.manifest], connections: [] });
     expect(html).toContain("No task connections yet");
     expect(html).toContain("Add a connection");
+  });
+
+  it("hides connection edits when the session is not an admin", () => {
+    fixture.admin = false;
+    const html = markup({
+      connectors: [jiraConnector.manifest, planeConnector.manifest],
+      connections,
+    });
+    expect(html).toContain("Workspace admins manage task connections.");
+    expect(html).toContain("Acme Jira");
+    expect(html).not.toContain("Add connection");
+    expect(html).not.toContain("Disable connection");
+    expect(html).not.toContain("Delete connection");
   });
 });

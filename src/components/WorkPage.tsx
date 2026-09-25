@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, ChevronRight, RefreshCw } from "lucide-react";
 import { api, openThread, useStore } from "@/state/store";
-import { createSerialRefresh, subscribeWorkOverviewLive, WORK_FALLBACK_POLL_MS } from "@/lib/serial-refresh";
+import { createSerialRefresh, startWorkFallbackPoll, subscribeWorkOverviewLive, WORK_FALLBACK_POLL_MS } from "@/lib/serial-refresh";
 import { formatQuestionAnswers } from "../../shared/ask-question";
 import { reviewedSkillSha256 } from "../../shared/skill-request";
 import { canSubmitScopeChoice, scopeChoiceLabel } from "../../shared/team-backlog";
@@ -15,7 +15,32 @@ export { WORK_FALLBACK_POLL_MS };
 const labels: Record<WorkQueue, string> = {
   "needs-you": "Needs You", waiting: "Waiting on Others", working: "Working", completed: "Completed",
 };
+const kindLabels: Record<WorkOverviewEntry["kind"], string> = { task: "Task", goal: "Goal", source: "Source" };
+const statusLabels: Record<string, string> = {
+  active: "In progress", blocked: "Blocked", "needs-input": "Needs input", completed: "Completed",
+  cancelled: "Stopped", queued: "Queued", running: "Working", waiting: "Waiting", failed: "Failed",
+  working: "Working", idle: "Idle", paused: "Paused", stopped: "Stopped", open: "Open",
+};
+const scanStatusLabels: Record<string, string> = {
+  "not-scanned": "not scanned", stale: "stale", incomplete: "incomplete", complete: "complete",
+};
 const activeQueues: WorkQueue[] = ["needs-you", "waiting", "working", "completed"];
+
+export function workEntryChip(entry: Pick<WorkOverviewEntry, "kind" | "status">): string {
+  const status = entry.kind === "source" ? entry.status : (statusLabels[entry.status] ?? entry.status);
+  return `${kindLabels[entry.kind]} · ${status}`;
+}
+
+export function workGateText(gate: { detail: string; decisionMaker: string }): string {
+  return `${gate.detail} · ${gate.decisionMaker}`;
+}
+
+export function workScanText(scan: NonNullable<WorkOverviewEntry["scan"]>): string {
+  const count = `${scan.itemCount} ${scan.itemCount === 1 ? "item" : "items"}`;
+  const when = scan.completedAt ? ` · last complete ${new Date(scan.completedAt).toLocaleString()}` : " · no complete scan yet";
+  const errors = scan.errors.length ? ` · ${scan.errors.join("; ")}` : "";
+  return `Scan: ${scanStatusLabels[scan.status] ?? scan.status} · ${count}${when}${errors}`;
+}
 
 function requestDetails(card: WorkOverviewCard["card"]): string {
   if (card.fullRequest) return card.fullRequest;
@@ -96,7 +121,7 @@ export function WorkScopeForm({
   onSubmit: () => void;
 }) {
   return <form className="mt-3 space-y-2" onSubmit={event => { event.preventDefault(); onSubmit(); }}>
-    <p className="text-sm">Choose the team’s inventory scopes:</p>
+    <p className="text-sm">Choose what this team should track:</p>
     {choices.map(choice => {
       const connector = connectors.find(item => item.id === choice.connectorId);
       return <label key={choice.id} className="flex items-start gap-2 text-sm"><input type="checkbox" checked={selected.includes(choice.id)}
@@ -129,20 +154,18 @@ function WorkRow({ entry, cards, refresh, connectors }: {
         onClick={() => openThread(dispatch, { botId: entry.owner.id, threadId: entry.threadId }, state)}>
         <span>{entry.title}</span><ChevronRight size={14} aria-hidden="true" />
       </button>
-      <span className="rounded bg-control px-2 py-0.5 text-xs text-ink-secondary">{entry.kind} · {entry.status}</span>
+      <span className="rounded bg-control px-2 py-0.5 text-xs text-ink-secondary">{workEntryChip(entry)}</span>
     </div>
     <div className="mt-1 text-xs text-ink-secondary">{entry.team || "General"} · Owner: {entry.owner.name}</div>
     <p className="mt-2 whitespace-pre-wrap text-sm">{entry.detail}</p>
     {entry.nextCheckpoint && <p className="mt-2 text-xs text-ink-secondary">Next checkpoint: {entry.nextCheckpoint}</p>}
     {entry.scan && <p className="mt-2 text-xs text-ink-secondary" data-inventory-status={entry.scan.status}>
-      Inventory: {entry.scan.status} · {entry.scan.itemCount} recorded item(s)
-      {entry.scan.completedAt ? ` · last complete ${new Date(entry.scan.completedAt).toLocaleString()}` : " · no complete scan yet"}
-      {entry.scan.errors.length ? ` · ${entry.scan.errors.join("; ")}` : ""}
+      {workScanText(entry.scan)}
     </p>}
     {entry.evidence.length > 0 && <details className="mt-2 text-xs text-ink-secondary"><summary className="cursor-pointer">Evidence ({entry.evidence.length})</summary>
       <ul className="mt-1 list-inside list-disc break-all">{entry.evidence.map((value, index) => <li key={`${value}:${index}`}>{value}</li>)}</ul></details>}
     {entry.gates?.map((gate, index) => <p key={`${gate.kind}:${gate.identity ?? ""}:${index}`} className="mt-2 text-xs text-warning">
-      {gate.kind}: {gate.detail} · Decision-maker: {gate.decisionMaker}
+      {workGateText(gate)}
     </p>)}
     {entry.canChooseScope && entry.choices?.length ? <WorkScopeForm choices={entry.choices} connectors={connectors}
       selected={selected} busy={busy} onChange={setSelected}
@@ -154,7 +177,7 @@ function WorkRow({ entry, cards, refresh, connectors }: {
       <button type="submit" disabled={busy || !answer.trim()} className="rounded bg-accent px-3 py-1.5 text-sm text-white disabled:opacity-40">Send answer</button></form>}
     {entry.canRenew && <button type="button" disabled={busy} onClick={() => void action(`/api/goals/${entry.id}`,
       { expectedRevision: entry.revision, action: "resume" }, "PATCH")}
-      className="mt-3 rounded border border-warning/50 px-3 py-1.5 text-sm text-warning disabled:opacity-40">Renew goal limits</button>}
+      className="mt-3 rounded border border-warning/50 px-3 py-1.5 text-sm text-warning disabled:opacity-40">Renew limits</button>}
     {cards.map(card => <WorkCard key={`${card.threadId}:${card.messageId}`} pending={card} onResolved={refresh} />)}
     {error && <p role="alert" className="mt-2 text-xs text-danger">{error}</p>}
   </article>;
@@ -195,9 +218,9 @@ export function WorkPage() {
       setError(cause instanceof Error ? cause.message : String(cause)); setLoading(false);
     } }); };
     update();
-    const timer = window.setInterval(update, WORK_FALLBACK_POLL_MS);
+    const stopPoll = startWorkFallbackPoll(update);
     const stopLive = subscribeWorkOverviewLive(update);
-    return () => { live = false; poll.current?.invalidate(); window.clearInterval(timer); stopLive(); };
+    return () => { live = false; poll.current?.invalidate(); stopPoll(); stopLive(); };
   }, [refresh, team, status, pages]);
   const loadMore = () => {
     if (!overview?.nextCursor || loading) return;

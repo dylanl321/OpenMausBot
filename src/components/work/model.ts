@@ -154,6 +154,18 @@ export function visibleEvents(events: readonly TaskEvent[], filter: EventFilter,
     .sort((left, right) => right.at - left.at || right.id.localeCompare(left.id));
 }
 
+const CHIP_DETAIL_KEYS = ["revision", "branch", "key", "sha"] as const;
+
+/** Status and identity already have their own chips; only these details earn a slot. */
+export function chipDetailEntries(details?: Record<string, unknown>): Array<{ key: string; value: string }> {
+  if (!details) return [];
+  return CHIP_DETAIL_KEYS.flatMap(key => {
+    const value = details[key];
+    if (value == null || String(value).trim() === "") return [];
+    return [{ key, value: String(value) }];
+  });
+}
+
 export function statusCategoryClass(category: StatusCategory | undefined): string {
   if (category === "in_progress") return "text-accent";
   if (category === "in_review") return "text-warning";

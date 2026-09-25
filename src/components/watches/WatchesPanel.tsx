@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { t } from "@/lib/i18n";
 import { cn } from "@/lib/cn";
 import type { Watch } from "@/lib/watches";
+import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
 import { api, useStore } from "@/state/store";
 import { ProviderMark } from "../work/ProviderMark";
 import { loadTaskConnectors, type TaskConnectionListing, type TaskConnectorManifest } from "../work/model";
@@ -29,6 +30,7 @@ export function WatchesPanel({
   onConvertHandled: () => void;
 }) {
   const { state, dispatch } = useStore();
+  const canManage = useOwnerOrAdmin();
   const [editor, setEditor] = useState<Watch | WatchDraft | "new" | null>(null);
   const [connectors, setConnectors] = useState<TaskConnectorManifest[]>([]);
   const [connections, setConnections] = useState<TaskConnectionListing[]>([]);
@@ -48,17 +50,17 @@ export function WatchesPanel({
 
   useEffect(() => {
     if (createRequest > 0) {
-      setEditor("new");
+      if (canManage === true) setEditor("new");
       onCreateHandled();
     }
-  }, [createRequest, onCreateHandled]);
+  }, [createRequest, onCreateHandled, canManage]);
 
   useEffect(() => {
     if (convertDraft) {
-      setEditor(convertDraft);
+      if (canManage === true) setEditor(convertDraft);
       onConvertHandled();
     }
-  }, [convertDraft, onConvertHandled]);
+  }, [convertDraft, onConvertHandled, canManage]);
 
   const manifests = useMemo(
     () => [...connectors, GIT_WATCH_MANIFEST, WEBHOOK_WATCH_MANIFEST],
@@ -107,13 +109,13 @@ export function WatchesPanel({
             <h2 className="text-[17px] font-semibold text-ink">{t("watches.title")}</h2>
             <p className="mt-1 max-w-xl text-[12px] leading-relaxed text-ink-secondary">{t("watches.lede")}</p>
           </div>
-          <button
+          {canManage === true ? <button
             type="button"
             onClick={() => setEditor("new")}
             className="flex shrink-0 items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-[12px] font-semibold text-white hover:brightness-110"
           >
             <Plus size={14} />{t("watches.new")}
-          </button>
+          </button> : canManage === false ? <p className="max-w-xs text-right text-[12px] leading-relaxed text-ink-secondary">{t("watches.adminOnly")}</p> : null}
         </div>
         {error && <div role="alert" className="rounded-lg bg-danger/10 p-3 text-[12px] text-danger">{error}</div>}
         {failed && <div role="alert" className="rounded-lg bg-danger/10 p-3 text-[12px] text-danger">{t("watches.loadError")}</div>}
@@ -132,7 +134,7 @@ export function WatchesPanel({
             return (
               <article key={watch.id} className="rounded-xl border border-hairline/40 bg-card p-3.5" aria-label={watch.name} data-watch-id={watch.id}>
                 <div className="flex items-start gap-3">
-                  <button type="button" onClick={() => setEditor(watch)} className="min-w-0 flex-1 text-left">
+                  <button type="button" disabled={canManage !== true} onClick={() => setEditor(watch)} className="min-w-0 flex-1 text-left disabled:cursor-default">
                     <span className="flex items-center gap-2">
                       <ProviderMark connector={connector} />
                       <span className="truncate text-[13px] font-semibold text-ink">{watch.name}</span>
@@ -142,14 +144,14 @@ export function WatchesPanel({
                     </span>
                     <span className="mt-1 block text-[11.5px] text-ink-secondary">{source.name} · {source.detail}</span>
                   </button>
-                  <div className="flex shrink-0 items-center gap-1">
+                  {canManage === true && <div className="flex shrink-0 items-center gap-1">
                     <button type="button" disabled={working === watch.id} onClick={() => void toggle(watch)} aria-label={watch.enabled ? t("watches.pause") : t("watches.resume")} className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink">
                       {watch.enabled ? <Pause size={14} /> : <Play size={14} />}
                     </button>
                     <button type="button" disabled={working === watch.id} onClick={() => void remove(watch)} aria-label={t("watches.delete")} className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-danger">
                       <Trash2 size={14} />
                     </button>
-                  </div>
+                  </div>}
                 </div>
                 <dl className="mt-3 grid grid-cols-2 gap-2 text-[11.5px] sm:grid-cols-5">
                   <div>
@@ -180,7 +182,7 @@ export function WatchesPanel({
           })}
         </div>
       </div>
-      {editor && (
+      {editor && canManage === true && (
         <WatchEditor
           watch={typeof editor === "object" && "id" in editor ? editor : undefined}
           draft={typeof editor === "object" && !("id" in editor) ? editor : undefined}

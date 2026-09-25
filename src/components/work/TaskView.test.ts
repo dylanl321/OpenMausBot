@@ -69,12 +69,12 @@ describe("TaskView", () => {
     expect(html).toContain("data-provider=\"fake\"");
     expect(html).toContain("fix-refunds");
     expect(html).toContain("1/2 criteria");
-    expect(html).toContain("0/1 specialist work");
+    expect(html).toContain("0/1 specialists");
     expect(html).toContain("git push origin fix-refunds");
     expect(html).toContain("committed 3f2a1c9");
     expect(html).toContain("PAY-1 moved to In Progress");
     expect(html).toContain("Use the existing refund API");
-    expect(html).toContain("Specialist work (1)");
+    expect(html).toContain("Specialists (1)");
     expect(html).toContain("Implement and check refunds");
     expect(html).toContain("Link item");
     expect(html).not.toContain("git commit");

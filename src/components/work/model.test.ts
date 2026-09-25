@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { LINK_KINDS, type LinkedItem, type TaskEvent } from "../../../shared/work-links";
 import type { WorkItem } from "../../../shared/work-item";
-import { displayLinks, mergeTaskEvent, nowFrom, outputGroups, progressSegments, visibleEvents } from "./model";
+import { chipDetailEntries, displayLinks, mergeTaskEvent, nowFrom, outputGroups, progressSegments, visibleEvents } from "./model";
 
 const item = (patch: Partial<WorkItem> = {}): WorkItem => ({
   id: "work", groupId: "topic", threadId: "hub", title: "Refunds", objective: "Fix refunds",
@@ -50,6 +50,12 @@ describe("task view model", () => {
     expect(nowFrom(item({
       assignments: [{ id: "a", botId: "eng", threadId: "t", revision: 1, attempts: 1, message: "Implement", status: "running", result: "" }],
     }), [{ ...event("tool", "tool-1"), state: "running", actor: { type: "bot", botId: "eng", threadId: "t" }, summary: "running tests" }])?.summary).toBe("running tests");
+  });
+
+  it("keeps only identity details on chips", () => {
+    expect(chipDetailEntries({ revision: "abc123", branch: "fix-refunds", noise: "drop me", empty: "" }))
+      .toEqual([{ key: "revision", value: "abc123" }, { key: "branch", value: "fix-refunds" }]);
+    expect(chipDetailEntries({ assignee: "Ada", project: "PAY" })).toEqual([]);
   });
 
   it("hides tool events until asked and merges later tool completions by id", () => {

@@ -199,11 +199,11 @@ it("keeps 10+ tasks across 3 topics as compact unexpanded rows", () => {
     const beforeWorker = await ui("snapshot");
     writeFileSync(info!.logPath + ".shared-task.before-worker.json", JSON.stringify(beforeWorker, null, 2));
     const refs = beforeWorker.refs as Record<string, { role: string; name: string }>;
-    const disclosure = Object.entries(refs).find(([, ref]) => ref.name.includes("Specialist work (1)"));
-    expect(disclosure, "Specialist work disclosure").toBeDefined();
+    const disclosure = Object.entries(refs).find(([, ref]) => ref.name.includes("Specialists (1)"));
+    expect(disclosure, "Specialists disclosure").toBeDefined();
     await ui("click", "--ref", "@" + disclosure![0]);
-    await expect.poll(snapshot, { timeout: 10_000 }).toContain("Open Engineer's task work");
-    await click("Open Engineer's task work");
+    await expect.poll(snapshot, { timeout: 10_000 }).toContain("Open Engineer's work");
+    await click("Open Engineer's work");
     await expect.poll(snapshot, { timeout: 15_000 }).toContain("Refund boundary cases checked in the linked worker thread");
     await expect.poll(snapshot, { timeout: 10_000 }).toContain("This turn");
     expect(await snapshot()).toContain("Check refund boundary cases, then confirm.");

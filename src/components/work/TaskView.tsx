@@ -39,6 +39,7 @@ export function TaskView({ item, events: eventsProp, connectors: connectorsProp 
   const [filter, setFilter] = useState<EventFilter>("all");
   const [showTools, setShowTools] = useState(false);
   const [loadedEvents, setEvents] = useState<TaskEvent[]>([]);
+  const [eventsError, setEventsError] = useState("");
   const [loadedConnectors, setConnectors] = useState<TaskConnectorManifest[]>([]);
   const events = eventsProp ?? loadedEvents;
   const connectors = connectorsProp ?? loadedConnectors;
@@ -54,8 +55,10 @@ export function TaskView({ item, events: eventsProp, connectors: connectorsProp 
     if (eventsProp) return;
     let cancelled = false;
     api<{ events: TaskEvent[] }>(`/api/work-items/${item.id}/events`).then(body => {
-      if (!cancelled) setEvents(body.events ?? []);
-    }).catch(() => {});
+      if (!cancelled) { setEvents(body.events ?? []); setEventsError(""); }
+    }).catch(cause => {
+      if (!cancelled) setEventsError(cause instanceof Error ? cause.message : t("work.eventsLoadError"));
+    });
     return () => { cancelled = true; };
   }, [item.id, eventsProp]);
 
@@ -117,12 +120,13 @@ export function TaskView({ item, events: eventsProp, connectors: connectorsProp 
               className={`rounded-full border px-2 py-0.5 text-[11px] ${filter === value ? "border-accent/40 bg-accent/10 text-ink" : "border-hairline/40 text-ink-secondary hover:bg-raised"}`}>
               {value === "all" ? t("work.activityAll") : t(`work.event.${value}`)}
             </button>)}
-            <button type="button" aria-pressed={showTools} onClick={() => setShowTools(on => !on)}
+            {filter === "all" && <button type="button" aria-pressed={showTools} onClick={() => setShowTools(on => !on)}
               className={`rounded-full border px-2 py-0.5 text-[11px] ${showTools ? "border-accent/40 bg-accent/10 text-ink" : "border-hairline/40 text-ink-secondary hover:bg-raised"}`}>
               {t("work.showToolCalls")}
-            </button>
+            </button>}
           </div>
-          {feed.length === 0 ? <p className="mt-2 text-xs text-ink-secondary">{t("work.activityEmpty")}</p>
+          {eventsError && <p role="alert" className="mt-2 text-xs text-danger">{eventsError}</p>}
+          {feed.length === 0 ? <p className="mt-2 text-xs text-ink-secondary">{t("work.activityEmpty")}</p>}
             : <ol className="mt-1 divide-y divide-hairline/20">{feed.map(event => <EventRow key={event.id} event={event} links={links} connectors={connectors} />)}</ol>}
         </section>
         <section aria-label={t("work.outputs")} className="min-w-0">

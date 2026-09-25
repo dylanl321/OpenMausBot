@@ -15,8 +15,8 @@ describe("shared task panel", () => {
   it("shows ownership, acceptance, addressed workers and versioned artifacts", () => {
     const html = render(item);
     expect(html).toContain('aria-label="Shared task summary"');
-    for (const text of ["Owner: chief", "Boundary cases pass", "1 pending", "reviewer", "abc123", "Use the existing refund API", "Stop shared task"]) expect(html).toContain(text);
-    expect(html).toContain("Open reviewer&#x27;s task work");
+    for (const text of ["Owner: chief", "Boundary cases pass", "1 working", "reviewer", "abc123", "Use the existing refund API", "Stop shared task"]) expect(html).toContain(text);
+    expect(html).toContain("Open reviewer&#x27;s work");
   });
   it("shows an explicit reopen action for a terminal task and keeps old revisions out of current work", () => {
     const html = render({ ...item, status: "completed", revision: 2, evidence: ["Verified output"] });

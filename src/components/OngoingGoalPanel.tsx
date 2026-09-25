@@ -2,13 +2,25 @@ import { useEffect, useRef, useState } from "react";
 import { api, type Bot } from "@/state/store";
 import { t } from "@/lib/i18n";
 import { subscribeGoalLive } from "@/lib/goal-live";
-import { createSerialRefresh, WORK_FALLBACK_POLL_MS } from "@/lib/serial-refresh";
+import { createSerialRefresh, startWorkFallbackPoll } from "@/lib/serial-refresh";
 import { useGoalCapabilities } from "@/lib/use-goal-capabilities";
 import type { GoalCapabilities } from "@/lib/session";
 import type { OngoingGoal } from "../../shared/ongoing-goal";
 
 export function goalRequestError(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+export function goalStatusLabel(status: string): string {
+  switch (status) {
+    case "working": return t("goal.status.working");
+    case "waiting": return t("goal.status.waiting");
+    case "paused": return t("goal.status.paused");
+    case "needs-input": return t("goal.status.needs-input");
+    case "completed": return t("goal.status.completed");
+    case "stopped": return t("goal.status.stopped");
+    default: return status;
+  }
 }
 
 export async function loadThreadGoals(sourceThreadId: string, request: typeof api = api): Promise<OngoingGoal[]> {
@@ -51,11 +63,11 @@ export function OngoingGoalPanel({ ownerBots, sourceThreadId, open, onClose, onO
     });
     const refresh = () => { void poll.refresh(); };
     refresh();
-    const timer = window.setInterval(refresh, WORK_FALLBACK_POLL_MS);
+    const stopPoll = startWorkFallbackPoll(refresh);
     const stopLive = subscribeGoalLive(frame => {
       if (frame.sourceThreadId === sourceThreadId) refresh();
     });
-    return () => { live = false; poll.invalidate(); window.clearInterval(timer); stopLive(); };
+    return () => { live = false; poll.invalidate(); stopPoll(); stopLive(); };
   }, [sourceThreadId]);
 
   const refresh = async () => {
@@ -92,9 +104,10 @@ export function OngoingGoalPanel({ ownerBots, sourceThreadId, open, onClose, onO
         <strong>{t("goal.panel.title")}</strong>
         {(open || caps.canCreate) && <button type="button" onClick={open ? onClose : onOpen} className="text-accent">{open ? t("goal.panel.close") : t("goal.panel.new")}</button>}
       </div>
+      {goals.length > 5 && <p className="mt-2 text-xs text-ink-secondary">{t("goal.panel.latest", { count: 5 })}</p>}
       {goals.slice(-5).map(goal => (
         <div key={goal.id} className="mt-2 border-t border-hairline/30 pt-2">
-          <div className="font-medium">{goal.objective} · {goal.status}</div>
+          <div className="font-medium">{goal.objective} · {goalStatusLabel(goal.status)}</div>
           <div className="text-ink-secondary">{goal.detail}</div>
           {!goal.criteriaPending && <div className="text-ink-secondary">{t("goal.panel.checks")}: {goal.acceptanceCriteria.join(" · ")}</div>}
           {goal.nextAction && <div>{t("goal.panel.next")}: {goal.nextAction}</div>}

@@ -11,6 +11,24 @@ export function subscribeWorkOverviewLive(refresh: () => void): () => void {
   return () => { stopGoal(); stopWork(); };
 }
 
+/** 30s fallback that stays quiet on a hidden tab and refreshes when it returns. */
+export function startWorkFallbackPoll(refresh: () => void): () => void {
+  const tick = () => {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    refresh();
+  };
+  const timer = window.setInterval(tick, WORK_FALLBACK_POLL_MS);
+  const onVisible = () => {
+    if (typeof document === "undefined" || document.visibilityState !== "visible") return;
+    refresh();
+  };
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisible);
+  return () => {
+    window.clearInterval(timer);
+    if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisible);
+  };
+}
+
 /**
  * One in-flight refresh at a time. A trigger during a fetch queues exactly one
  * follow-up instead of overlapping. `invalidate` drops the in-flight result

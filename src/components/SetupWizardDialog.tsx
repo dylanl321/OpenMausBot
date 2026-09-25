@@ -21,6 +21,12 @@ const visibleName = (section: string) => section || "General";
 
 export interface SetupWizardResult { bots: Bot[]; section: string; chiefBotId: string | null; replayed: boolean }
 
+export function setupGuideError(cause: unknown): string {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  if (/forbidden|lacks the admin scope|\b403\b/i.test(message)) return "Setup Guide needs a workspace admin.";
+  return message;
+}
+
 export function SetupWizardDialog({ initialDestination, initialSeed, onClose, onCreated }: {
   initialDestination: WizardDestination;
   initialSeed?: WizardSeed;
@@ -58,7 +64,7 @@ export function SetupWizardDialog({ initialDestination, initialSeed, onClose, on
     const controller = new AbortController();
     void api<GuideOptions>("/api/setup-wizard/options", { signal: controller.signal })
       .then(result => { setOptions(result); setEngineId(current => current || result.engines[0]?.instanceId || ""); })
-      .catch(cause => { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause)); });
+      .catch(cause => { if (!controller.signal.aborted) setError(setupGuideError(cause)); });
     // An offline community catalog never prevents built-in templates or the
     // person's own request from being used.
     void api<{ teams: CommunityEntry[] }>("/api/team-library/catalog", { signal: controller.signal })
@@ -139,7 +145,7 @@ export function SetupWizardDialog({ initialDestination, initialSeed, onClose, on
         setLastSuggestion(response.draft); setPhase("review"); setRequestId(randomId());
       }
     } catch (cause) {
-      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause));
+      if (!controller.signal.aborted) setError(setupGuideError(cause));
     } finally { if (aborting.current === controller) aborting.current = null; setBusy(null); }
   };
 

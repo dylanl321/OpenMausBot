@@ -34,8 +34,9 @@ describe("LinkChip", () => {
 
   it("shows artifact revisions on claimed fallback links", () => {
     const html = renderToStaticMarkup(createElement(LinkChip, {
-      item: item("link", { title: "Patch", details: { revision: "abc123" }, provenance: "claimed" }),
+      item: item("link", { title: "Patch", details: { revision: "abc123", assignee: "Ada Lovelace" }, provenance: "claimed" }),
     }));
     expect(html).toContain("abc123");
+    expect(html).not.toContain("Ada Lovelace");
   });
 });

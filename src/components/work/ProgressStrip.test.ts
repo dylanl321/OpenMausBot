@@ -20,7 +20,7 @@ describe("ProgressStrip", () => {
   it("labels progress from criteria and assignments", () => {
     const html = renderToStaticMarkup(createElement(ProgressStrip, { item }));
     expect(html).toContain("1/2 criteria");
-    expect(html).toContain("0/1 specialist work");
+    expect(html).toContain("0/1 specialists");
     expect(html).toContain("data-progress-source=\"criterion\"");
     expect(html).toContain("data-progress-source=\"assignment\"");
     expect(html).toContain("data-progress-tone=\"done\"");

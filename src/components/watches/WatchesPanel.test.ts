@@ -7,6 +7,10 @@ import type { Watch } from "@/lib/watches";
 const fixture = vi.hoisted(() => ({
   state: undefined as AppState | undefined,
   dispatch: vi.fn(),
+  admin: true as boolean | null,
+}));
+vi.mock("@/lib/use-owner-or-admin", () => ({
+  useOwnerOrAdmin: () => fixture.admin,
 }));
 vi.mock("@/state/store", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/state/store")>();
@@ -54,6 +58,7 @@ function textOf(node: ReactNode): string {
 
 beforeEach(() => {
   fixture.dispatch.mockClear();
+  fixture.admin = true;
   fixture.state = { ...initialState, watchesLoadState: "ready" };
 });
 
@@ -77,6 +82,18 @@ describe("watches panel", () => {
     const html = markupOf({ watches: [] });
     expect(html).toContain("No watches yet");
     expect(html).toContain("without spending tokens");
+    expect(html).not.toContain("Jira");
+    expect(html).not.toContain("GitLab");
     expect(textOf(createElement("div", null, html))).toBeTruthy();
+  });
+
+  it("hides watch edits when the session is not an admin", () => {
+    fixture.admin = false;
+    const html = markupOf({ watches: [watch] });
+    expect(html).toContain("Ready stories");
+    expect(html).toContain("Workspace admins can create and change watches.");
+    expect(html).not.toContain("New watch");
+    expect(html).not.toContain("Pause watch");
+    expect(html).not.toContain("Delete watch");
   });
 });

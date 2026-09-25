@@ -2,7 +2,7 @@ import type { LinkedItem } from "../../../shared/work-links";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import { KindIcon } from "./KindIcon";
-import { connectorFor, statusCategoryClass, type TaskConnectorManifest } from "./model";
+import { chipDetailEntries, connectorFor, statusCategoryClass, type TaskConnectorManifest } from "./model";
 import { ClaimedMarker, ProviderMark } from "./ProviderMark";
 
 export function LinkChip({ item, connectors = [] }: { item: LinkedItem; connectors?: readonly TaskConnectorManifest[] }) {
@@ -11,7 +11,7 @@ export function LinkChip({ item, connectors = [] }: { item: LinkedItem; connecto
     <KindIcon kind={item.kind} size={12} />
     <span className="min-w-0 truncate">{item.title}</span>
     {item.state && <span className={cn("max-w-[8rem] truncate text-[10px]", statusCategoryClass(item.state.category))}>{item.state.label}</span>}
-    {item.details && Object.entries(item.details).map(([key, value]) => <span key={key} className="max-w-[8rem] truncate text-[10px] text-ink-secondary">{String(value)}</span>)}
+    {chipDetailEntries(item.details).map(detail => <span key={detail.key} className="max-w-[8rem] truncate text-[10px] text-ink-secondary">{detail.value}</span>)}
     <ClaimedMarker provenance={item.provenance} />
     <ProviderMark connector={connector} />
   </>;

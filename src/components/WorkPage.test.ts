@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { canSubmitScopeChoice, sourceRowDetail } from "../../shared/team-backlog";
 import type { BacklogScope } from "../../shared/team-backlog";
 import type { WorkOverviewCard } from "../../shared/work-overview";
-import { WORK_FALLBACK_POLL_MS, WorkCard, WorkScopeForm } from "./WorkPage";
+import { WORK_FALLBACK_POLL_MS, WorkCard, WorkScopeForm, workEntryChip, workGateText, workScanText } from "./WorkPage";
 
 const pending: WorkOverviewCard = { entryId: "work", threadId: "thread", messageId: "message",
   canAct: true, decisionMaker: "Requester", card: { title: "Review command",
@@ -64,7 +64,7 @@ describe("Work inventory scope form", () => {
       choices: [gitlab], selected: ["repo"], connectors: [{ id: "gitlab", name: "GitLab" }],
       onChange() {}, onSubmit() {},
     }));
-    expect(html).toContain("Choose the team’s inventory scopes");
+    expect(html).toContain("Choose what this team should track");
     expect(html).toContain("App repo · GitLab");
     expect(html).not.toContain('disabled=""');
     const idle = renderToStaticMarkup(createElement(WorkScopeForm, {
@@ -75,5 +75,22 @@ describe("Work inventory scope form", () => {
     }));
     expect(idle).toContain('disabled=""');
     expect(idle).toContain("PAY board · Jira");
+  });
+});
+
+describe("Work overview labels", () => {
+  it("uses kind-driven chips instead of raw kind and status tokens", () => {
+    expect(workEntryChip({ kind: "task", status: "needs-input" })).toBe("Task · Needs input");
+    expect(workEntryChip({ kind: "goal", status: "paused" })).toBe("Goal · Paused");
+    expect(workEntryChip({ kind: "source", status: "In review" })).toBe("Source · In review");
+  });
+
+  it("drops raw gate kinds and inventory jargon from scan lines", () => {
+    expect(workGateText({ detail: "PAY-1 awaits PAY-2", decisionMaker: "Requester" }))
+      .toBe("PAY-1 awaits PAY-2 · Requester");
+    expect(workScanText({ status: "complete", itemCount: 4, errors: [], completedAt: 1_700_000_000_000 }))
+      .toContain("Scan: complete · 4 items");
+    expect(workScanText({ status: "not-scanned", itemCount: 1, errors: [] }))
+      .toBe("Scan: not scanned · 1 item · no complete scan yet");
   });
 });

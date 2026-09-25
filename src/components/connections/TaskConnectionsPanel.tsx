@@ -2,6 +2,7 @@ import { Loader2, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { t } from "@/lib/i18n";
 import { cn } from "@/lib/cn";
+import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
 import { api, useStore } from "@/state/store";
 import { Card } from "../SettingsPrimitives";
 import { ProviderMark } from "../work/ProviderMark";
@@ -17,6 +18,7 @@ export function TaskConnectionsPanel({
   connections?: TaskConnectionListing[];
 }) {
   const { state } = useStore();
+  const canManage = useOwnerOrAdmin();
   const [loadedConnectors, setConnectors] = useState<TaskConnectorManifest[]>(connectorsProp ?? []);
   const [loadedConnections, setConnections] = useState<TaskConnectionListing[]>(connectionsProp ?? []);
   const connectors = connectorsProp ?? loadedConnectors;
@@ -33,6 +35,7 @@ export function TaskConnectionsPanel({
 
   useEffect(() => {
     if (connectorsProp && connectionsProp) return;
+    if (canManage !== true) return;
     let cancelled = false;
     if (!connectorsProp) {
       void loadTaskConnectors((path) => api(path)).then((list) => {
@@ -47,7 +50,7 @@ export function TaskConnectionsPanel({
       });
     }
     return () => { cancelled = true; };
-  }, [connectorsProp, connectionsProp]);
+  }, [connectorsProp, connectionsProp, canManage]);
 
   const replace = (connection: TaskConnectionListing) => {
     setConnections((current) => {
@@ -138,17 +141,19 @@ export function TaskConnectionsPanel({
     <Card title={t("taskConnections.title")} subtitle={t("taskConnections.subtitle")}>
       <div data-connection-list="">
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0" />
-          <button
+          <div className="min-w-0">
+            {canManage === false && <p className="text-[12px] leading-relaxed text-ink-secondary">{t("taskConnections.adminOnly")}</p>}
+          </div>
+          {canManage === true && <button
             type="button"
             onClick={() => { setEditor("new"); setError(""); }}
             className="flex shrink-0 items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-[12px] font-semibold text-white hover:brightness-110"
           >
             <Plus size={14} />{t("taskConnections.add")}
-          </button>
+          </button>}
         </div>
         {error && <div role="alert" className="mt-3 rounded-lg bg-danger/10 px-3 py-2 text-[12px] text-danger">{error}</div>}
-        {connections.length === 0 && (
+        {connections.length === 0 && canManage !== false && (
           <div className="mt-4 rounded-xl border border-dashed border-hairline/50 p-6 text-center">
             <div className="text-[14px] font-medium text-ink">{t("taskConnections.empty")}</div>
             <p className="mx-auto mt-1 max-w-sm text-[12px] leading-relaxed text-ink-secondary">{t("taskConnections.emptyHelp")}</p>
@@ -166,19 +171,19 @@ export function TaskConnectionsPanel({
                 data-connection-row={connection.id}
               >
                 <div className="flex items-start gap-3">
-                  <button type="button" onClick={() => { setEditor(connection); setError(""); }} className="min-w-0 flex-1 text-left">
+                  <button type="button" disabled={canManage !== true} onClick={() => { setEditor(connection); setError(""); }} className="min-w-0 flex-1 text-left disabled:cursor-default">
                     <span className="flex items-center gap-2">
                       <ProviderMark connector={connector} />
                       <span className="truncate text-[13px] font-semibold text-ink">{connection.label}</span>
                       <span className={cn("rounded-full bg-panel px-2 py-0.5 text-[10px]", connection.enabled ? "text-accent" : "text-ink-secondary")}>
-                        {connection.enabled ? connector?.name ?? connection.connectorId : t("taskConnections.disabled")}
+                        {connection.enabled ? t("taskConnections.enabled") : t("taskConnections.disabled")}
                       </span>
                     </span>
                     <span className="mt-1 block text-[11.5px] text-ink-secondary">
                       {connection.sections.length ? connection.sections.join(" · ") : t("taskConnections.teamsNone")}
                     </span>
                   </button>
-                  <div className="flex shrink-0 items-center gap-1">
+                  {canManage === true && <div className="flex shrink-0 items-center gap-1">
                     <button
                       type="button"
                       disabled={busy != null}
@@ -206,7 +211,7 @@ export function TaskConnectionsPanel({
                     >
                       <Trash2 size={14} />
                     </button>
-                  </div>
+                  </div>}
                 </div>
                 {result && (
                   <p role={result.ok ? "status" : "alert"} className={cn("mt-2 text-[11.5px]", result.ok ? "text-success" : "text-danger")}>
@@ -218,7 +223,7 @@ export function TaskConnectionsPanel({
           })}
         </div>
       </div>
-      {editor && (
+      {editor && canManage === true && (
         <ConnectionEditor
           connection={editor === "new" ? undefined : editor}
           connectors={connectors}

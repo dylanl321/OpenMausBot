@@ -137,6 +137,7 @@ export function WatchEditor({
       return { type: "git", remote, ...(cwd ? { cwd } : {}) };
     }
     if (source.type === "webhook") {
+      if (!source.webhookId) return undefined;
       const fieldMap = Object.fromEntries(fieldMapText.split("\n").flatMap((line) => {
         const cut = line.indexOf("=");
         if (cut < 1) return [];
@@ -181,7 +182,7 @@ export function WatchEditor({
   const runDry = async (backfill = false) => {
     const input = buildInput();
     if (!input) {
-      setError(t("watches.editor.chooseSource"));
+      setError(source?.type === "webhook" ? t("watches.editor.chooseWebhook") : t("watches.editor.chooseSource"));
       return;
     }
     setTesting(true);
@@ -213,7 +214,7 @@ export function WatchEditor({
   const save = async () => {
     const input = buildInput();
     if (!input) {
-      setError(t("watches.editor.chooseSource"));
+      setError(source?.type === "webhook" ? t("watches.editor.chooseWebhook") : t("watches.editor.chooseSource"));
       return;
     }
     if (startFrom === "backfill" && (dryRun == null || dryRun.error)) {
@@ -311,7 +312,7 @@ export function WatchEditor({
               <button
                 type="button"
                 aria-pressed={sourceKind === "webhook"}
-                onClick={() => selectSource({ type: "webhook", webhookId: webhooks[0]?.id ?? "" }, WEBHOOK_WATCH_MANIFEST)}
+                onClick={() => selectSource({ type: "webhook", webhookId: "" }, WEBHOOK_WATCH_MANIFEST)}
                 className={cn("flex items-center gap-2.5 rounded-xl border px-3 py-2.5 text-left", sourceKind === "webhook" ? "border-accent/70 bg-accent/10" : "border-hairline/50 bg-inset hover:bg-raised/60")}
               >
                 <ProviderMark connector={WEBHOOK_WATCH_MANIFEST} />
