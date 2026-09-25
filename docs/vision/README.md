@@ -19,6 +19,11 @@ Read in this order:
 Humans and agents. A later routine will watch these files and keep
 build-out moving. Until then, status lives in the files themselves.
 
+Operator notes are one input among many. If a clearer frame or a
+simpler mechanism shows up in the tree (or in a pattern we
+actually use), it outranks a sketch. Do not shoehorn proposals
+to match one person's wording.
+
 ## How to add a proposal
 
 1. Read the [north star](north-star.md) and [goals](goals.md). If the

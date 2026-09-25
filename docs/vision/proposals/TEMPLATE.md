@@ -9,7 +9,8 @@ Related: [north star](../north-star.md), [goals](../goals.md)
 
 What is stuck, expensive, or dishonest today? Name the stop-friction
 and the token cost if they apply. Do not frame one vendor pair as
-the whole product.
+the whole product. Do not restate an operator sketch unless it is
+still the strongest mechanism after looking at the tree.
 
 ## Proposal
 

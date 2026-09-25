@@ -144,5 +144,5 @@ conversations are not automatically merged or semantically deduplicated.
 
 See [isolated verification](verification/shared-work.md) for coverage and
 reproducible commands. To add Jira, GitLab, Plane, or another tracker, see
-[task connectors](connectors.md). Product direction for agent teams and
-kits is in [vision](vision/README.md).
+[task connectors](connectors.md). Product direction — reconciliation,
+gates, leases, kits — is in [vision](vision/README.md).
