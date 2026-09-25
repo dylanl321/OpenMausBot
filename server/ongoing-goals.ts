@@ -7,6 +7,7 @@ import {
   type OngoingGoal,
 } from "../shared/ongoing-goal.ts";
 import type { WorkRecord, WorkSource } from "./work-items.ts";
+import type { TeamBacklog } from "../shared/team-backlog.ts";
 
 const DELAYS = [5, 15, 60, 360].map(minutes => minutes * 60_000);
 const MAX_GOALS = 1000;
@@ -26,12 +27,26 @@ export function referencedGoalWork(objective: string, items: readonly WorkRecord
 }
 
 export function requiresExternalInventory(objective: string): boolean {
-  return /\ball\b/i.test(objective) && /\b(?:jira|gitlab|merge requests?|mrs?)\b/i.test(objective);
+  return /\ball\b/i.test(objective) && /\b(?:jira|gitlab|merge requests?|mrs?)\b/i.test(objective) ||
+    isTeamBacklogObjective(objective);
+}
+
+export function isTeamBacklogObjective(objective: string): boolean {
+  // A named issue or MR is a specific deliverable. Never widen that request
+  // into authority over every project item just because it also says "all".
+  if (/\b[A-Z][A-Z0-9_]*-\d+\b/i.test(objective) || /(?:[\w.-]+\/)+[\w.-]+!\d+/.test(objective) ||
+      /(?:^|[^\w])!\d+\b/.test(objective)) return false;
+  return /\b(?:all|current|our|backlog|unfinished)\b/i.test(objective) && /\bjira\b/i.test(objective) &&
+    /\b(?:gitlab|merge requests?|mrs?|merge)\b/i.test(objective);
+}
+
+export function inGoalScope(goal: OngoingGoal, identity: string): boolean {
+  return goal.teamBacklog ? goal.teamBacklog.targets.some(target => target.identity === identity) : identity.startsWith(goal.scope);
 }
 
 export function canRetryGoalWork(goal: OngoingGoal, item: WorkRecord, source: WorkSource, ownerScope: string): boolean {
   return active(goal) && goal.ownerBotId === source.botId && goal.workItemIds.includes(item.id) &&
-    item.identity.startsWith(goal.scope) && item.scope === ownerScope &&
+    inGoalScope(goal, item.identity) && item.scope === ownerScope &&
     item.coordinatorBotId === source.botId && item.threadId === source.threadId &&
     item.status === "blocked" && !interruptedLinkedWork(item) &&
     !item.assignments.some(assignment => assignment.revision === item.revision && ["queued", "running", "waiting"].includes(assignment.status)) &&
@@ -143,7 +158,7 @@ export class OngoingGoals {
     return existing;
   }
 
-  create(raw: unknown, executionThreadId: string) {
+  create(raw: unknown, executionThreadId: string, teamBacklog?: TeamBacklog) {
     const input = goalCreateSchema.parse(raw);
     const previous = this.findRequest(input);
     if (previous) return previous;
@@ -154,13 +169,16 @@ export class OngoingGoals {
     const at = this.now();
     const goal: OngoingGoal = {
       ...input, id: randomUUID(), revision: 1, executionThreadId,
-      kind: input.kind ?? "deliverable",
+      kind: teamBacklog ? "mission" : input.kind ?? "deliverable",
       scope: input.scope ?? `goal:${input.requestId ?? randomUUID()}:`,
-      acceptanceCriteria: input.acceptanceCriteria ?? [input.objective.slice(0, 1000)],
-      criteriaPending: !input.acceptanceCriteria,
+      acceptanceCriteria: input.acceptanceCriteria ?? (teamBacklog
+        ? ["Every current Jira issue in the team scope is evidenced and done", "Every scoped MR is merged at an authorized, reviewed head"]
+        : [input.objective.slice(0, 1000)]),
+      criteriaPending: !input.acceptanceCriteria && !teamBacklog,
       status: "working", detail: "Queued for the coordinator", nextWakeAt: at,
       workItemIds: input.workItemIds ?? [], ownedWorkItemIds: [], evidence: [], actions: 0, activeMs: 0, spentUsd: 0, chargedTurnIds: [],
       createdAt: at, updatedAt: at, waitCount: 0, noProgress: 0,
+      ...(teamBacklog ? { teamBacklog } : {}),
     };
     this.records.set(goal.id, goal);
     try { this.save(); } catch (error) { this.records.delete(goal.id); throw error; }
@@ -182,6 +200,10 @@ export class OngoingGoals {
       if (!active(goal)) throw new Error("Only a working goal can be paused");
       return this.update(goal, { status: "paused", detail: input.detail ?? "Paused by you", nextWakeAt: undefined,
         activeMs: goal.activeMs + (goal.inFlightAt ? Math.max(0, this.now() - goal.inFlightAt) : 0), inFlightAt: undefined });
+    }
+    if (goal.teamBacklog && goal.status === "needs-input" && goal.teamBacklog.gates.length > 0 &&
+        goal.teamBacklog.gates.every(gate => gate.kind === "scope")) {
+      return this.update(goal, { status: "working", nextWakeAt: this.now() });
     }
     if (input.action === "resume") {
       if (!["paused", "needs-input"].includes(goal.status)) throw new Error("This goal is not paused");
@@ -212,7 +234,8 @@ export class OngoingGoals {
     if (!goal.inFlightAt || !active(goal)) return goal;
     const activeMs = goal.activeMs + Math.max(0, this.now() - goal.inFlightAt);
     const spentUsd = goal.spentUsd + (costUsd ?? 0);
-    const noProgress = progress && progress !== goal.lastProgress ? 0 : goal.noProgress + 1;
+    const noProgress = goal.teamBacklog && decision?.status === "waiting" ? 0
+      : progress && progress !== goal.lastProgress ? 0 : goal.noProgress + 1;
     const generatedChecks = goal.criteriaPending && decision?.acceptanceCriteria?.length
       ? { acceptanceCriteria: decision.acceptanceCriteria, criteriaPending: false } : {};
     const base = { inFlightAt: undefined, activeMs, spentUsd, noProgress, lastProgress: progress || goal.lastProgress, ...generatedChecks };
@@ -239,9 +262,34 @@ export class OngoingGoals {
 
   link(goal: OngoingGoal, workItemId: string, owned: boolean) {
     if (!active(goal)) throw new Error("A completed or paused goal cannot acquire new work");
-    if (goal.workItemIds.includes(workItemId)) return goal;
+    if (goal.workItemIds.includes(workItemId)) {
+      return owned && !goal.ownedWorkItemIds.includes(workItemId)
+        ? this.update(goal, { ownedWorkItemIds: [...goal.ownedWorkItemIds, workItemId] }) : goal;
+    }
     return this.update(goal, { workItemIds: [...goal.workItemIds, workItemId],
       ownedWorkItemIds: owned ? [...goal.ownedWorkItemIds, workItemId] : goal.ownedWorkItemIds });
+  }
+
+  recordBacklog(goal: OngoingGoal, teamBacklog: TeamBacklog) {
+    // An in-flight SHA-locked write may finish its readback just after Stop.
+    // Persist the observed result without reviving the stopped goal.
+    if (!goal.teamBacklog) throw new Error("This goal has no team backlog");
+    return this.update(goal, { teamBacklog });
+  }
+
+  chooseBacklogScopes(goal: OngoingGoal, expectedRevision: number, ids: string[]) {
+    if (!(active(goal) || goal.status === "needs-input") || !goal.teamBacklog || !goal.teamBacklog.choices.length) throw new Error("There is no pending scope choice");
+    if (goal.revision !== expectedRevision) throw new Error("Goal revision changed; read the current choices");
+    const choices = goal.teamBacklog.choices;
+    if (!ids.length || new Set(ids).size !== ids.length || ids.some(id => !choices.some(choice => choice.id === id))) {
+      throw new Error("Choose only the listed Jira and GitLab scopes");
+    }
+    const selected = choices.filter(choice => ids.includes(choice.id));
+    if (!selected.some(scope => scope.connectorId === "jira") || !selected.some(scope => scope.connectorId === "gitlab")) {
+      throw new Error("Choose a Jira board/project and a GitLab repository");
+    }
+    return this.update(goal, { status: "working", teamBacklog: { ...goal.teamBacklog, scopes: selected, choices: [], targets: [], gates: [],
+      scan: { status: "not-scanned", itemCount: 0, errors: [] } }, nextWakeAt: this.now() });
   }
 
   wake(goal: OngoingGoal) {

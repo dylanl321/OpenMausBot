@@ -2,7 +2,7 @@
 // Register before publishing: a harness listener may answer synchronously.
 import { newId, type RequestOutcome } from "../contracts.ts";
 
-interface Ask { id: string; tool: string; summary: string; scope?: "local-computer" }
+interface Ask { id: string; tool: string; summary: string; scope?: "local-computer"; detail?: string }
 type Source = "user" | "timeout" | "system";
 export function createChatToolApproval(options: {
   signal: AbortSignal;
@@ -13,9 +13,9 @@ export function createChatToolApproval(options: {
   const pending = new Map<string, (allowed: boolean, source: Source) => void>();
   let closed = false;
   return {
-    ask(tool: string, summary: string, scope?: "local-computer"): Promise<boolean> {
+    ask(tool: string, summary: string, scope?: "local-computer", detail?: string): Promise<boolean> {
       if (closed || options.signal.aborted) return Promise.resolve(false);
-      const ask = { id: newId(), tool, summary, ...(scope ? { scope } : {}) };
+      const ask = { id: newId(), tool, summary, ...(scope ? { scope } : {}), ...(detail ? { detail } : {}) };
       return new Promise((resolve) => {
         const finish = (allowed: boolean, source: Source) => {
           if (!pending.delete(ask.id)) return;

@@ -1071,6 +1071,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           nativeReview: nativeReviewerInactive && isPermission ? "inactive" : undefined,
           tool,
           summary,
+          requestDetail: toolDetailPreview(params, 64_000),
           choices,
           approvalScope: controlsHost ? "local-computer" : undefined,
           requiresExplicitApproval: isAdditionalPermission || undefined,

@@ -979,6 +979,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             requestType: isQuestion ? "question" : "permission",
             tool,
             summary,
+            requestDetail: toolDetailPreview(toolCall.rawInput ?? toolCall, 64_000),
             choices: isQuestion
               ? options.flatMap((option) => typeof option.name === "string" && option.name.trim() ? [option.name.trim()] : [])
               : undefined,

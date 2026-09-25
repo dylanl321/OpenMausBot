@@ -105,6 +105,7 @@ describe("scopes", () => {
       ["GET", "/api/task-connections/jira-acme/query"],
       ["GET", "/api/groups/g/task-board"], ["PATCH", "/api/groups/g/task-board"],
       ["POST", "/api/work-items/w/answer"],
+      ["GET", "/api/work/overview"], ["POST", "/api/goals/g/scope-choice"],
       ["PATCH", "/api/bots/x"], ["PATCH", "/api/bots/x/profile"], ["POST", "/api/attachments"],
       ["GET", "/api/attachments/a.png"], ["POST", "/api/routines"], ["POST", "/api/routines/r/run"],
       ["POST", "/api/routine-runs/seen-all"],

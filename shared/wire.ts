@@ -402,6 +402,8 @@ export interface WireMessage {
 export interface OptionCardData {
   title: string;
   subtitle: string;
+  /** The request as offered to the provider, redacted before persistence. */
+  fullRequest?: string;
   options: string[];
   answered?: string;
   /** What was actually answered, when the answer is words rather than a

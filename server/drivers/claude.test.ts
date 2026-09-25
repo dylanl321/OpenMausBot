@@ -676,6 +676,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
 
     const opened = await recorder.until((e) => e.type === "request.opened");
     expect(opened).toMatchObject({ requestType: "permission", summary: '{"amount":4200,"to":"acct-9"}' });
+    expect((opened as { requestDetail?: string }).requestDetail).toContain('"amount": 4200');
     expect((opened as { choices?: string[] }).choices).toBeUndefined();
 
     conn.end();

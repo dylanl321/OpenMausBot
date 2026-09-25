@@ -1,7 +1,8 @@
 import { track } from "@/lib/analytics";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
-import { teamImportPreview, type PendingTeamImport } from "@/lib/team-import";
+import { communityWizardSeed, teamImportPreview, type PendingTeamImport } from "@/lib/team-import";
+import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
 import type { Routine } from "@/lib/routines";
 import { api, useStore, type Bot, type Group } from "@/state/store";
 import {
@@ -24,6 +25,8 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import type { WizardSeed } from "../../shared/setup-wizard";
+import { SetupWizardDialog } from "./SetupWizardDialog";
 
 import { MAX_TEAM_BACKUP_BYTES, TEAM_BACKUP_EXCLUSIONS } from "../../shared/team-backup";
 import { takeImportName } from "../../shared/import-name";
@@ -120,6 +123,7 @@ export function TeamLibraryPanel({
   initialUrl?: string;
 }) {
   const { state, dispatch } = useStore();
+  const ownerOrAdmin = useOwnerOrAdmin();
   const dialogRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [tab, setTab] = useState<TeamTab>("explore");
@@ -128,6 +132,8 @@ export function TeamLibraryPanel({
   const [catalogError, setCatalogError] = useState("");
   const [busySlug, setBusySlug] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingTeamImport | null>(null);
+  const [wizardSeed, setWizardSeed] = useState<WizardSeed | undefined>();
+  const [wizardOpen, setWizardOpen] = useState(false);
   const [source, setSource] = useState<ImportSource>("file");
   const [githubUrl, setGithubUrl] = useState("");
   const [githubLoading, setGithubLoading] = useState(false);
@@ -177,8 +183,11 @@ export function TeamLibraryPanel({
     return () => returnFocusRef.current?.focus();
   }, [returnFocusRef]);
 
+  useEffect(() => { if (!wizardOpen) dialogRef.current?.focus(); }, [wizardOpen]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (wizardOpen || (event.target instanceof Node && !dialogRef.current?.contains(event.target))) return;
       if (event.key === "Escape" && !importing) {
         event.preventDefault();
         event.stopPropagation();
@@ -206,7 +215,15 @@ export function TeamLibraryPanel({
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [importing, onClose, pending]);
+  }, [importing, onClose, pending, wizardOpen]);
+
+  const draftTemplate = () => {
+    if (!pending || pending.kind === "backup") return;
+    try {
+      setWizardSeed(communityWizardSeed(pending.manifest));
+      setError(""); setWizardOpen(true);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+  };
 
   const previewManifest = (preview: PendingTeamImport, nextSource: ImportSource) => {
     setPending(preview);
@@ -401,6 +418,10 @@ export function TeamLibraryPanel({
       .includes(normalizedSearch);
   });
 
+  if (wizardOpen) return <SetupWizardDialog initialDestination={{ kind: "new", name: wizardSeed?.name ?? "" }}
+    initialSeed={wizardSeed} onClose={() => setWizardOpen(false)}
+    onCreated={result => onImported({ name: result.section, members: result.bots.length })} />;
+
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-[2px] sm:p-6"
@@ -528,6 +549,11 @@ export function TeamLibraryPanel({
                   ? t("teamImport.backupCopies")
                   : t("teamImport.newSection", { name: pending.name })}
               </div>
+              <div className="flex shrink-0 flex-wrap gap-2">
+              {ownerOrAdmin === true && pending.kind !== "backup" && <button type="button" disabled={importing} onClick={draftTemplate}
+                className="rounded-full bg-raised px-4 py-2.5 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-60">
+                Draft with Setup Guide
+              </button>}
               <button
                 onClick={() => void importTeam()}
                 disabled={importing}
@@ -538,6 +564,7 @@ export function TeamLibraryPanel({
                   ? "Importing…"
                   : pending.kind === "backup" ? "Import backup" : "Add team"}
               </button>
+              </div>
             </footer>
           </>
         ) : (
@@ -600,6 +627,13 @@ export function TeamLibraryPanel({
                 </label>
               )}
             </div>
+
+            {ownerOrAdmin === true && <div className="px-6 pb-2 sm:px-8">
+              <button type="button" onClick={() => { setWizardSeed(undefined); setWizardOpen(true); }}
+                className="rounded-xl border border-accent/40 bg-accent/5 px-4 py-2.5 text-[13px] text-accent hover:bg-accent/10">
+                Describe a team with Setup Guide
+              </button>
+            </div>}
 
             <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-7 pt-5 sm:px-8">
               {tab === "explore" && (

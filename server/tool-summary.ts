@@ -6,7 +6,7 @@ import { redactSecrets, redactSecretsInText } from "./redact.ts";
 /** Display-only excerpt, never the raw protocol payload. Bound traversal and
  * omit binary bodies before redacting; truncate only AFTER redaction so a
  * credential cannot be cut in half and escape detection. */
-export function toolDetailPreview(value: unknown): string | undefined {
+export function toolDetailPreview(value: unknown, maxLength = 6_000): string | undefined {
   if (value === undefined) return undefined;
   let budget = 200;
   let textBudget = 256_000;
@@ -42,7 +42,8 @@ export function toolDetailPreview(value: unknown): string | undefined {
   const safe = redactSecrets(bounded(value));
   const text = typeof safe === "string" ? safe : JSON.stringify(safe, null, 2);
   if (!text?.trim() || text === "{}" || text === "[]") return undefined;
-  return text.length > 6_000 ? `${text.slice(0, 6_000)}\n[… preview shortened]` : text;
+  const limit = Math.min(64_000, Math.max(1, maxLength));
+  return text.length > limit ? `${text.slice(0, limit)}\n[… preview shortened]` : text;
 }
 
 const QUESTION_LIMIT = 300;

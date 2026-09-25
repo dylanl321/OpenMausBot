@@ -389,8 +389,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       for (const secret of [...secrets, ...options.transport?.secrets() ?? []]) if (secret) safe = safe.split(secret).join("[redacted]");
       return redactSecretsInText(safe);
     };
-    const preview = (value: unknown) => toolDetailPreview(JSON.parse(JSON.stringify(value, (_key, part) =>
-      typeof part === "string" ? safeText(part) : part)));
+    const preview = (value: unknown, limit?: number) => toolDetailPreview(JSON.parse(JSON.stringify(value, (_key, part) =>
+      typeof part === "string" ? safeText(part) : part)), limit);
     const native = (dir: "out" | "in", msg: unknown) => appendNative(turn.threadId, {
       dir, source: options.nativeLog.source,
       msg: JSON.parse(JSON.stringify(msg, (_key, part) => typeof part === "string" ? safeText(part) : part)),
@@ -399,7 +399,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       signal: abort.signal,
       open: (ask) => emit({
         ...base(turn.threadId, turnId), type: "request.opened", requestType: "permission",
-        requestId: ask.id, tool: ask.tool, summary: ask.summary, allowSession: false,
+        requestId: ask.id, tool: ask.tool, summary: ask.summary, requestDetail: ask.detail, allowSession: false,
         ...(ask.scope ? { approvalScope: ask.scope, requiresExplicitApproval: true } : {}),
       }),
       resolved: (ask, allowed, source) => emit({
@@ -588,7 +588,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
               // Full access never grants authority over the user's host
               // desktop. Preserve the harness's explicit local scope gate.
               const allowed = ((options.approveToolsWithoutPrompt || turn.approvalMode === "full") && scope !== "local-computer")
-                || await approval.ask(call.function.name, inputPreview ?? "This tool has no arguments.", scope);
+                || await approval.ask(call.function.name, inputPreview ?? "This tool has no arguments.", scope, preview(args, 64_000));
               abort.signal.throwIfAborted();
               emit({ ...base(turn.threadId, turnId), type: "item.started", itemType: "tool", itemId: call.id,
                 title: call.function.name, ...(inputPreview ? { input: inputPreview } : {}),

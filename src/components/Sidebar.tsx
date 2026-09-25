@@ -17,6 +17,7 @@ import {
   FolderMinus,
   FolderPlus,
   Library,
+  ListTodo,
   Loader2,
   Network,
   MoreHorizontal,
@@ -2347,6 +2348,13 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
           <SidebarMoreMenu
             items={[
               {
+                key: "work",
+                label: "Work",
+                icon: <ListTodo size={18} />,
+                active: state.activeView === "work",
+                onSelect: () => dispatch({ type: "showWork" }),
+              },
+              {
                 key: "team-map",
                 label: t("sidebar.nav.teamMap"),
                 icon: <Network size={18} />,
@@ -2377,6 +2385,11 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
         )}
         {density === "icons" ? (
           <div className="flex items-center justify-center">
+            <button type="button" onClick={() => dispatch({ type: "showWork" })} aria-label="Work" title="Work"
+              className={cn("flex min-h-10 w-full items-center rounded-xl px-2 py-2 text-left transition-colors",
+                state.activeView === "work" ? "bg-raised text-accent" : "text-ink hover:bg-raised/50")}>
+              <ListTodo size={20} />
+            </button>
             <button
               onClick={() => dispatch({ type: "toggleAppSettings" })}
               className="flex min-w-0 items-center justify-center rounded-xl px-2 py-2 text-left hover:bg-raised/50"

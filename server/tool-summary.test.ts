@@ -24,6 +24,7 @@ describe("toolDetailPreview", () => {
     expect(toolDetailPreview(Array.from({ length: 100 }, () => "item"))).toContain("additional items omitted");
     expect(toolDetailPreview({ first: " ".repeat(255_999), second: `ghp_${"a".repeat(36)}` })).not.toContain("ghp_");
     expect(toolDetailPreview({ url: "data:image/png;base64,private-pixels", blob: "more-pixels" })).not.toContain("pixels");
+    expect(toolDetailPreview({ command: "x".repeat(8_000) }, 64_000)).toContain("x".repeat(8_000));
   });
   it("does not invent output and preserves failure text or primitive results", () => {
     expect(toolDetailPreview(undefined)).toBeUndefined();

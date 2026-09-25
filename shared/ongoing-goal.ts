@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { teamBacklogSchema, type TeamBacklog } from "./team-backlog.ts";
 
 export const goalStatusSchema = z.enum(["working", "waiting", "paused", "needs-input", "completed", "stopped"]);
 export type GoalStatus = z.infer<typeof goalStatusSchema>;
@@ -56,6 +57,8 @@ export interface OngoingGoal {
   noProgress: number;
   lastProgress?: string;
   lastObserved?: string;
+  /** Server-owned inventory for an outcome-only team Jira/GitLab mission. */
+  teamBacklog?: TeamBacklog;
 }
 
 export const ongoingGoalSchema: z.ZodType<OngoingGoal> = goalCreateSchema.omit({ sourceThreadId: true, workItemIds: true }).extend({
@@ -71,8 +74,8 @@ export const ongoingGoalSchema: z.ZodType<OngoingGoal> = goalCreateSchema.omit({
   detail: z.string().max(4000),
   nextAction: z.string().max(2000).optional(),
   nextWakeAt: z.number().optional(),
-  workItemIds: z.array(z.string().min(1).max(240)).max(1000),
-  ownedWorkItemIds: z.array(z.string().min(1).max(240)).max(1000),
+  workItemIds: z.array(z.string().min(1).max(240)).max(10_000),
+  ownedWorkItemIds: z.array(z.string().min(1).max(240)).max(10_000),
   evidence: z.array(z.string().min(1).max(2000)).max(100),
   actions: z.number().int().nonnegative(),
   activeMs: z.number().nonnegative(),
@@ -84,4 +87,5 @@ export const ongoingGoalSchema: z.ZodType<OngoingGoal> = goalCreateSchema.omit({
   noProgress: z.number().int().nonnegative(),
   lastProgress: z.string().max(2000).optional(),
   lastObserved: z.string().max(12000).optional(),
+  teamBacklog: teamBacklogSchema.optional(),
 });

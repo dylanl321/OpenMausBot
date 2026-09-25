@@ -21,7 +21,9 @@ import { SharedComputers, sharedComputerOperation, sharedComputerRegistration } 
 import { SharedComputerControl } from "./shared-computer-control.ts";
 import { RoomHandoffs, type RoomAddress, type RoomHandoff } from "./room-handoffs.ts";
 import { WorkCoordination } from "./work-coordination.ts";
-import { OngoingGoals, canRetryGoalWork, goalTurnInstructions, interruptedLinkedWork, parseGoalDecision, referencedGoalWork, requiresExternalInventory } from "./ongoing-goals.ts";
+import { OngoingGoals, canRetryGoalWork, goalTurnInstructions, inGoalScope, interruptedLinkedWork, isTeamBacklogObjective, parseGoalDecision, referencedGoalWork, requiresExternalInventory } from "./ongoing-goals.ts";
+import { backlogScopeContains, inferTeamBacklog } from "./team-backlog.ts";
+import { advanceTeamBacklog } from "./team-backlog-runner.ts";
 import { goalCreateSchema } from "../shared/ongoing-goal.ts";
 import type { WorkRecord } from "./work-items.ts";
 import { SHARED_WORK_INSTRUCTIONS } from "./work-instructions.ts";
@@ -319,6 +321,7 @@ import {
   type MemoryJournalEntry,
 } from "./memory-journal.ts";
 import {
+  changeEmptySection,
   readSectionContext,
   readSections,
   sectionContextKey,
@@ -407,6 +410,10 @@ import { RoutineRequestService } from "./routine-requests.ts";
 import { buildBotOverview, type BotOverview, connectedAppsFacts } from "./bot-overview.ts";
 import { ProfileRequestService } from "./profile-requests.ts";
 import { TeamSetupError, TeamSetupRequestService } from "./team-setup-requests.ts";
+import { draftFromWizardAi, parseWizardAiOutput, setupWizardPrompt, SetupWizardError, validateWizardDraft, wizardReceiptDigest, type WizardModelChoice } from "./setup-wizard.ts";
+import { generateCodexSetupDraft } from "./setup-wizard-codex.ts";
+import { wizardAssistInputSchema, wizardCommitInputSchema } from "../shared/setup-wizard.ts";
+import { CodexDriver } from "./drivers/codex.ts";
 import type { TeamSetupRequest } from "../shared/team-setup.ts";
 import { profileRevision, profileSnapshot } from "./profile-revision.ts";
 import { flushAllProfileHistory, flushProfileHistory, readHistory, recordProfileChange } from "./profile-versions.ts";
@@ -532,6 +539,7 @@ import { createGroupTaskBoardRoutes } from "./routes/group-task-board.ts";
 import { createWorkItemAnswerRoutes } from "./routes/work-item-answer.ts";
 import { createWorkEventRoutes } from "./routes/work-events.ts";
 import { createWorkItemLinkRoutes } from "./routes/work-item-links.ts";
+import { createWorkOverviewRoutes, workGoalVisible } from "./routes/work-overview.ts";
 import { WorkCapture } from "./connectors/capture.ts";
 import { linkId, observedLink } from "./connectors/types.ts";
 import { connectorById } from "./connectors/registry.ts";
@@ -2428,6 +2436,56 @@ function checkedModelSelection(
   return { ok: true, selection };
 }
 
+/** A guide may use only a connected, explicitly selected one-shot engine.
+ * Model-specific tool restrictions matter for a proposed Chief as well as
+ * for the picker; neither an unavailable snapshot nor a custom ID guessed
+ * by the model is treated as an available choice. */
+async function setupWizardCatalog() {
+  const described = await registry.describe();
+  const modelEngines = described.flatMap(row => {
+    const instance = registry.get(row.instanceId);
+    if (!instance?.enabled || row.snapshot.state !== "available" || row.snapshot.authenticated === false ||
+        providerInstancesChanging.has(row.instanceId) || policyModelRefusal(instance)) return [];
+    const ids = [...new Set([row.models.default, ...row.models.options.map(option => option.id)].filter(Boolean))];
+    const models: WizardModelChoice[] = ids.flatMap(model => {
+      if (hostedModels && !hostedModels.allows({ instanceId: row.instanceId, model })) return [];
+      const selected = registry.get(row.instanceId, model);
+      if (!selected) return [];
+      return [{ instanceId: row.instanceId, model,
+        label: row.models.options.find(option => option.id === model)?.label ?? model,
+        coordination: selected.adapter.capabilities.agentsMcp === true,
+        effortLevels: selected.adapter.capabilities.effortLevels ?? [] }];
+    });
+    return models.length ? [{ instanceId: row.instanceId, label: row.displayName,
+      driverKind: row.driverKind, models }] : [];
+  });
+  const engines = modelEngines.filter(row => {
+    const instance = registry.get(row.instanceId);
+    return Boolean(instance?.generateText || instance?.driverKind === "codex");
+  });
+  return { engines, modelEngines, models: modelEngines.flatMap(engine => engine.models) };
+}
+
+function setupWizardState(models: readonly WizardModelChoice[]) {
+  return { teams: teamSetupTeams(), bots: store.bots, maxBots: MAX_WORKSPACE_BOTS, models };
+}
+
+/** Even a helper that ignores AbortSignal cannot return a late draft to a
+ * closed UI. The provider's own signal handles stopping its underlying call. */
+async function boundedSetupGuide(generate: (signal: AbortSignal) => Promise<string>, signal: AbortSignal): Promise<string> {
+  signal.throwIfAborted();
+  let onAbort: (() => void) | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => generate(signal)),
+      new Promise<string>((_resolve, reject) => {
+        onAbort = () => reject(new SetupWizardError("Setup Guide was cancelled or timed out", 504));
+        signal.addEventListener("abort", onAbort, { once: true });
+      }),
+    ]);
+  } finally { if (onAbort) signal.removeEventListener("abort", onAbort); }
+}
+
 function checkedTaskModelSwitch(current: BotRecord, raw: unknown, updateBotDefault: boolean,
   resetApprovalToAsk: boolean, requireAvailableModel = false, trusted = false) {
   if (current.approvalGrant) return { ok: false as const, status: 409, error: "Wait for the approval change to finish before switching models" };
@@ -2592,7 +2650,7 @@ const wireTask = (task: TaskRecord): WireTask =>
   ({ ...toWireTask(task), waitingForTeammates: activeCoordinationForThread(task.threadId) && !task.busy });
 
 const wireBot = (bot: BotRecord): WireBot => {
-  const { resumeCursors: _resumeCursors, tasks, approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, ...rest } = bot;
+  const { resumeCursors: _resumeCursors, tasks, approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, lastSetupWizardReceipt: _lastSetupWizardReceipt, ...rest } = bot;
   // An elevated selection is inert until the desktop confirms its exact
   // private reply. Every ordinary client sees the effective Ask state during
   // that two-phase window, never a grant that may still roll back.
@@ -2606,7 +2664,7 @@ const wireBot = (bot: BotRecord): WireBot => {
 /** The correlated private response carries the requested value so Electron
  * can validate it before sending the confirmation that makes it effective. */
 const wireTrustedApprovalBot = (bot: NonNullable<ReturnType<typeof store.bot>>) => {
-  const { resumeCursors: _resumeCursors, tasks, approvalGrant: _approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, ...rest } = bot;
+  const { resumeCursors: _resumeCursors, tasks, approvalGrant: _approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, lastSetupWizardReceipt: _lastSetupWizardReceipt, ...rest } = bot;
   return { ...rest, approvalMode: approvalModeFor(rest), avatarUrl: rest.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map(wireTask) } : {}) };
 };
 
@@ -3619,12 +3677,12 @@ const workCoordination: WorkCoordination = new WorkCoordination(join(DATA_DIR, "
   markUnattended,
   goalScope: (source, identity) => {
     const goal = [...(ongoingGoals?.records.values() ?? [])].find(item => item.executionThreadId === source.threadId && ["working", "waiting"].includes(item.status));
-    return goal && !identity.startsWith(goal.scope) ? `Task identity must begin with the goal's authorized scope: ${goal.scope}` : undefined;
+    return goal && !inGoalScope(goal, identity) ? "Task identity is outside this goal's authorized team inventory" : undefined;
   },
-  onEnsure: (item, source, created) => {
+  onEnsure: (item, source, created, started) => {
     const goal = [...(ongoingGoals?.records.values() ?? [])].find(candidate => candidate.executionThreadId === source.threadId && ["working", "waiting"].includes(candidate.status));
-    if (goal && !goal.workItemIds.includes(item.id)) {
-      ongoingGoals?.link(goal, item.id, created);
+    if (goal && (!goal.workItemIds.includes(item.id) || started && !goal.ownedWorkItemIds.includes(item.id))) {
+      ongoingGoals?.link(goal, item.id, created || started);
       store.appendMessage(item.threadId, { role: "bot", kind: "activity", tool: {
         name: `Ongoing goal ${goal.id} links this task. Only its current coordinator may request a scoped, recorded retry of blocked work.`, ok: true,
       } });
@@ -6031,6 +6089,7 @@ bus.subscribe((event: RuntimeEvent) => {
                 ? "Approval needed"
                 : "Your bot has a question",
           subtitle: event.summary,
+          fullRequest: event.requestDetail,
           options: event.choices?.length ? event.choices : permission ? ["Allow", "Deny"] : [],
           requestId: event.requestId,
           tool: permission ? event.tool : undefined,
@@ -9521,7 +9580,9 @@ watches = new WatchManager({
     for (const goal of ongoingGoals?.records.values() ?? []) {
       if (!["working", "waiting"].includes(goal.status)) continue;
       const linked = goal.workItemIds.map(id => workCoordination.items.records.get(id)).filter((item): item is WorkRecord => Boolean(item));
-      if (changes.some(change => sourceIdentity(change.item)?.startsWith(goal.scope) || linked.some(item => item.links?.some(link => watchLinkMatches(link, change))))) {
+      if (changes.some(change => sourceIdentity(change.item)?.startsWith(goal.scope) ||
+        goal.teamBacklog?.scopes.some(scope => backlogScopeContains(scope, change.item)) ||
+        linked.some(item => item.links?.some(link => watchLinkMatches(link, change))))) {
         ongoingGoals?.wake(goal);
       }
     }
@@ -9631,6 +9692,13 @@ async function advanceOngoingGoals() {
       continue;
     }
     if ([...ongoingGoals.records.values()].some(other => other.id !== goal.id && other.ownerBotId === botId && other.inFlightAt)) continue;
+    if (goal.teamBacklog) {
+      void advanceTeamBacklog(goal, { goals: ongoingGoals, coordination: workCoordination,
+        connections: taskConnectionList, groups: () => store.groups, watches: () => watches?.list() ?? [],
+        ownerSection: id => store.bot(id)?.section ?? (store.bot(id) ? "" : undefined),
+      }).catch(error => console.error("team backlog goal:", error));
+      continue;
+    }
     if (bot.busy || threadBusy(botId, goal.executionThreadId) || activeGroupTurnForBot(botId) || botAtThreadCapacity(botId)) continue;
     const work = goal.workItemIds.map(id => workCoordination.items.records.get(id)).filter((item): item is WorkRecord => Boolean(item));
     if (work.length !== goal.workItemIds.length || work.some(item => !workCoordination.accessible(item, { botId, threadId: goal.executionThreadId }) ||
@@ -12822,6 +12890,58 @@ ROUTES.push(createWorkItemLinkRoutes({
   item: id => workCoordination.items.records.get(id),
   canSee: (auth, item) => workItemVisible(item, visibleTo(viewerFor(auth))),
   link: (id, raw) => workCoordination.linkItem(id, raw),
+}));
+ROUTES.push(createWorkOverviewRoutes({
+  visible: auth => visibleTo(viewerFor(auth)),
+  tasks: () => [...workCoordination.items.records.values()],
+  conversations: () => [
+    ...store.bots.filter(bot => !bot.hidden).flatMap(bot => {
+      const messages = store.messagesFor(bot.threadId);
+      const mainBusy = threadBusy(bot.id, bot.threadId);
+      const pending = messages.some(message => message.kind === "options" && message.card?.requestId &&
+        !message.card.answered && !message.card.dismissed);
+      return [
+        ...(mainBusy || pending ? [{ threadId: bot.threadId, title: `${bot.name} · Main conversation`,
+          team: sectionKey(bot.section), ownerBotId: bot.id, busy: mainBusy, waiting: false,
+          lifecycle: "open" as const, updatedAt: messages.at(-1)?.at ?? Date.now() }] : []),
+        ...(bot.tasks ?? []).map(task => ({
+          threadId: task.threadId, title: task.title, team: sectionKey(bot.section), ownerBotId: bot.id,
+          busy: Boolean(task.busy), waiting: Boolean(activeCoordinationForThread(task.threadId) && !task.busy),
+          lifecycle: task.archivedAt ? "archived" as const : task.closedBy ? "closed" as const : "open" as const,
+          updatedAt: task.updatedAt ?? task.createdAt,
+        })),
+      ];
+    }),
+    ...store.groups.filter(group => !group.dm).flatMap(group => (group.tasks ?? []).flatMap(task => {
+      const preferred = (group.busyThreadId ?? group.threadId) === task.threadId && group.busyBotId
+        ? group.busyBotId : group.defaultResponder.kind === "member" ? group.defaultResponder.botId : group.memberIds[0];
+      const ownerBotId = preferred && group.memberIds.includes(preferred) ? preferred : group.memberIds[0];
+      if (!ownerBotId) return [];
+      const busy = Boolean(group.busyBotId && (group.busyThreadId ?? group.threadId) === task.threadId);
+      return [{ threadId: task.threadId, title: task.title, team: sectionKey(group.section), ownerBotId,
+        groupId: group.id, busy, waiting: Boolean(activeCoordinationForThread(task.threadId) && !busy),
+        lifecycle: "open" as const, updatedAt: task.updatedAt ?? task.createdAt }];
+    })),
+  ],
+  goals: () => [...(ongoingGoals?.records.values() ?? [])],
+  teamForGroup: id => store.group(id)?.section,
+  teamForBot: id => store.bot(id)?.section,
+  botName: id => store.bot(id)?.name,
+  messages: id => store.messagesFor(id),
+  cardRefusal: (auth, threadId, requestId, behavior, card) => card.teamSetupRequest &&
+    auth.kind === "session" && !auth.scopes.includes("admin") ? "Only a workspace admin may apply a team setup" :
+    cardAnswerRefusal(auth, threadId, requestId, behavior),
+  cardDecisionMaker: (threadId, requestId, optionCard) => {
+    if (optionCard.teamSetupRequest) return "Workspace admin";
+    const messages = store.messagesFor(threadId);
+    const card = messages.find(message => message.card?.requestId === requestId);
+    const before = messages.slice(0, card ? messages.indexOf(card) : undefined);
+    const requester = card?.requestMessageId ? messages.find(message => message.id === card.requestMessageId) :
+      before.findLast(message => message.role === "user");
+    return requester?.sender?.name ?? "Conversation requester or workspace admin";
+  },
+  canChooseScope: (auth, goal) => !cardAnswerRefusal(auth, goal.sourceThreadId, "", "answer"),
+  chooseScope: (goal, revision, ids) => ongoingGoals!.chooseBacklogScopes(goal, revision, ids),
 }));
 ROUTES.push(createBedrockRoutes({
   entry: (id) => providerConfigs()[id],
@@ -16030,7 +16150,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     // ── channels (persisted internally as groups) ───────────────────────
     if (path === "/api/goals" && method === "GET") {
       return json(res, 200, { goals: [...(ongoingGoals?.records.values() ?? [])].filter(goal =>
-        visible.bot(goal.ownerBotId) && visible.thread(goal.sourceThreadId)) });
+        workGoalVisible(goal, visible, workCoordination.items.records)) });
     }
     if (path === "/api/goals" && method === "POST") {
       const input = goalCreateSchema.parse(await readBody(req));
@@ -16043,6 +16163,21 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       const previous = ongoingGoals?.findRequest(input);
       if (previous) return json(res, 200, { goal: previous });
+      const backlogObjective = isTeamBacklogObjective(input.objective);
+      const originSection = sectionKey(group?.section ?? owner.section);
+      if (backlogObjective) {
+        const sameTeam = [...(ongoingGoals?.records.values() ?? [])].find(candidate =>
+          candidate.teamBacklog?.section === originSection && !["stopped", "completed"].includes(candidate.status));
+        if (sameTeam) {
+          if (!workGoalVisible(sameTeam, visible, workCoordination.items.records)) {
+            return json(res, 409, { error: "The team already has a mission that this viewer cannot access" });
+          }
+          if (sameTeam.status === "needs-input" && sameTeam.teamBacklog?.gates.every(gate => gate.kind === "scope")) {
+            ongoingGoals?.control(sameTeam.id, { expectedRevision: sameTeam.revision, action: "wake" });
+          } else ongoingGoals?.wake(sameTeam);
+          return json(res, 200, { goal: sameTeam });
+        }
+      }
       if ([...(ongoingGoals?.records.values() ?? [])].some(goal => goal.sourceThreadId === input.sourceThreadId && !["completed", "stopped"].includes(goal.status))) {
         return json(res, 409, { error: "This conversation already owns an ongoing goal" });
       }
@@ -16064,7 +16199,10 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       if (!executionThreadId) return json(res, 409, { error: "Could not create a coordinator conversation" });
       let goal;
       try {
-        goal = ongoingGoals!.create({ ...input, ...(inferredItem ? { scope: inferredItem.identity } : {}) }, executionThreadId);
+        const backlog = backlogObjective ? inferTeamBacklog({ section: originSection, ownerBotId: owner.id,
+          groups: store.groups, watches: watches.list(), connections: taskConnectionList(),
+          work: [...workCoordination.items.records.values()] }) : undefined;
+        goal = ongoingGoals!.create({ ...input, ...(inferredItem && !backlog ? { scope: inferredItem.identity } : {}) }, executionThreadId, backlog);
         if (inferredItem) ongoingGoals!.link(goal, inferredItem.id, false);
       }
       catch (error) {
@@ -16077,7 +16215,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     const ongoingGoalMatch = path.match(/^\/api\/goals\/([\w-]+)$/);
     if (ongoingGoalMatch && (method === "GET" || method === "PATCH")) {
       const goal = ongoingGoals?.records.get(ongoingGoalMatch[1]);
-      if (!goal || !visible.bot(goal.ownerBotId) || !visible.thread(goal.sourceThreadId)) return json(res, 404, { error: "No such goal" });
+      if (!goal || !workGoalVisible(goal, visible, workCoordination.items.records)) return json(res, 404, { error: "No such goal" });
       if (method === "GET") return json(res, 200, { goal });
       const runningGoalTurn = Boolean(goal.inFlightAt && ongoingGoalItems.has(goal.executionThreadId));
       const updated = ongoingGoals!.control(goal.id, await readBody(req));
@@ -16098,7 +16236,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const input = z.object({ workItemId: z.string().min(1) }).strict().parse(await readBody(req));
       const item = workCoordination.items.records.get(input.workItemId);
       if (!goal || !item || !visible.bot(goal.ownerBotId) || !visible.thread(goal.sourceThreadId) ||
-          !visible.group(item.groupId) || !item.identity.startsWith(goal.scope) ||
+          !visible.group(item.groupId) || !inGoalScope(goal, item.identity) ||
           item.scope !== sectionKey(store.bot(goal.ownerBotId)?.section) ||
           !workCoordination.accessible(item, { botId: goal.ownerBotId, threadId: goal.executionThreadId }) ||
           (store.groupByThread(goal.sourceThreadId) && !store.groupByThread(goal.sourceThreadId)?.memberIds.every(id => store.group(item.groupId)?.memberIds.includes(id)))) {
@@ -17066,6 +17204,111 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         return json(res, 404, { error: "one or more bots are unavailable" });
       }
       return json(res, 200, { section: name, sections: store.sections, bots: result.bots.map(wireBot) });
+    }
+    // The temporary guide is owner/admin-only. No route here creates a bot,
+    // thread or provider conversation until the exact reviewed batch is POSTed
+    // to /commit. Companion creation retains its existing manual endpoint.
+    if (path.startsWith("/api/setup-wizard/")) {
+      res.setHeader("cache-control", "no-store");
+      if (!auth.scopes.includes("admin")) return json(res, 403, { error: "Setup Guide needs workspace admin access" });
+    }
+    if (method === "GET" && path === "/api/setup-wizard/options") {
+      const { engines, modelEngines } = await setupWizardCatalog();
+      return json(res, 200, { engines, modelEngines, maxBots: Math.max(0, Math.min(8, MAX_WORKSPACE_BOTS - store.bots.length)) });
+    }
+    if (method === "POST" && path === "/api/setup-wizard/assist") {
+      const parsed = wizardAssistInputSchema.safeParse(await readBody(req, 600_000));
+      if (!parsed.success) return json(res, 400, { error: parsed.error.issues[0]?.message ?? "Invalid guide request" });
+      const input = parsed.data;
+      if (input.currentDraft && JSON.stringify(input.currentDraft.destination) !== JSON.stringify(input.destination)) {
+        return json(res, 400, { error: "The revision destination does not match the current draft" });
+      }
+      const catalog = await setupWizardCatalog();
+      const engine = catalog.engines.find(row => row.instanceId === input.instanceId);
+      const instance = engine && registry.get(engine.instanceId);
+      if (!engine || !instance) return json(res, 409, { error: "Select a supported, connected Setup Guide engine in Engines" });
+      const prompt = setupWizardPrompt(input, catalog.models, MAX_WORKSPACE_BOTS - store.bots.length);
+      const cancellation = new AbortController();
+      const timer = setTimeout(() => cancellation.abort(), 65_000);
+      timer.unref?.();
+      const onClosed = () => cancellation.abort();
+      res.once("close", onClosed);
+      let raw: string;
+      try {
+        raw = await boundedSetupGuide(signal => {
+          if (instance.driverKind !== "codex") return instance.generateText!(prompt, { signal });
+          const entry = providerConfigs()[instance.instanceId];
+          if (!entry || entry.driver !== "codex") throw new SetupWizardError("This Codex account cannot run an isolated guide", 409);
+          const config = CodexDriver.decodeConfig(entry.config);
+          return generateCodexSetupDraft({ cli: config.cli, config, environment: entry.environment,
+            model: engine.models[0]!.model, prompt, signal });
+        }, cancellation.signal);
+      } catch (error) {
+        if (res.destroyed) return;
+        const status = error instanceof SetupWizardError ? error.status : cancellation.signal.aborted ? 504 : 502;
+        return json(res, status, { error: redactSecretsInText(error instanceof Error ? error.message : "Setup Guide could not draft a team") });
+      } finally {
+        clearTimeout(timer);
+        res.removeListener("close", onClosed);
+      }
+      const output = parseWizardAiOutput(raw);
+      if (output.kind === "questions") {
+        if (input.followUp || output.questions.length > 3 - input.answers.length) {
+          throw new SetupWizardError("The Setup Guide exceeded the three-question limit; retry for a draft", 502);
+        }
+        return json(res, 200, output);
+      }
+      const draft = draftFromWizardAi(output, input, setupWizardState(catalog.models), input.currentDraft?.visibility);
+      return json(res, 200, { kind: "draft", draft });
+    }
+    if (method === "POST" && path === "/api/setup-wizard/commit") {
+      const parsed = wizardCommitInputSchema.safeParse(await readBody(req, 600_000));
+      if (!parsed.success) return json(res, 400, { error: parsed.error.issues[0]?.message ?? "Invalid reviewed draft" });
+      const { requestId, draft } = parsed.data;
+      const digest = wizardReceiptDigest(draft);
+      const respond = (receipt: NonNullable<ReturnType<typeof store.setupWizardReceipt>>, replayed: boolean) =>
+        json(res, replayed ? 200 : 201, { requestId, replayed, section: receipt.section,
+          chiefBotId: receipt.chiefBotId, sections: store.sections,
+          bots: receipt.botIds.flatMap(id => { const bot = store.bot(id); return bot ? [publicBot(bot)] : []; }) });
+      const previous = store.setupWizardReceipt(requestId);
+      if (previous) return previous.digest === digest ? respond(previous, true)
+        : json(res, 409, { error: "This request ID already committed a different draft" });
+      const visibility = parseVisibility(draft.visibility);
+      if (!visibility.ok) return json(res, 400, { error: visibility.error });
+      if (typeof draft.visibility === "object" && visibility.visibility === "admins") {
+        return json(res, 400, { error: "List at least one valid person or @domain for specific-people visibility" });
+      }
+      const catalog = await setupWizardCatalog();
+      // Discovery awaits providers. Recheck the receipt, roster, team labels,
+      // cap and exact models immediately beside the synchronous registry save.
+      const afterDiscovery = store.setupWizardReceipt(requestId);
+      if (afterDiscovery) return afterDiscovery.digest === digest ? respond(afterDiscovery, true)
+        : json(res, 409, { error: "This request ID already committed a different draft" });
+      validateWizardDraft(draft, setupWizardState(catalog.models));
+      for (const bot of draft.bots) {
+        const checked = checkedModelSelection(bot.modelSelection, undefined, true);
+        if (!checked.ok) return json(res, checked.status, { error: checked.error });
+      }
+      const approved = { ...draft, visibility: visibility.visibility };
+      let preparedSection = false;
+      let receipt;
+      try {
+        if (approved.destination.kind === "new") {
+          writeSectionContext(approved.destination.name, approved.teamBrief);
+          preparedSection = true;
+        }
+        receipt = store.createSetupWizardBatch(requestId, digest, approved);
+      } catch (error) {
+        // A failed bots.json replacement has not exposed any new bot. Undo
+        // the freshly allocated section/brief; never touch an existing team.
+        if (preparedSection && !store.setupWizardReceipt(requestId) && approved.destination.kind === "new") {
+          try { changeEmptySection(approved.destination.name, null); }
+          catch (rollbackError) { console.error("setup wizard: could not retire an empty failed team", rollbackError); }
+        }
+        throw error;
+      }
+      if (approved.destination.kind === "new") broadcast({ kind: "sections", sections: store.sections });
+      return respond(receipt, false);
     }
     if (method === "GET" && path === "/api/bot-defaults") {
       return json(res, 200, {

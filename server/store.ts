@@ -24,6 +24,7 @@ import { botAvatarProfile } from "../shared/bot-avatar.ts";
 import { approvalModeFor, isApprovalMode } from "../shared/approval-mode.ts";
 import type { ProfileRequestChanges } from "../shared/profile-request.ts";
 import type { TeamSetupRequest, TeamSetupResult } from "../shared/team-setup.ts";
+import type { WizardDraft } from "../shared/setup-wizard.ts";
 import type { GroupGoalRunCardData } from "../shared/group-goal-run.ts";
 import { isMentionBoundary, isMentionNameContinuation } from "../shared/mention-boundary.ts";
 import type { HandedState } from "./delta-context.ts";
@@ -155,6 +156,7 @@ function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number 
     const card = { ...out.card } as OptionCardData & { summary?: string };
     card.title = redactSecretsInText(card.title);
     if (typeof card.subtitle === "string") card.subtitle = redactSecretsInText(card.subtitle);
+    if (typeof card.fullRequest === "string") card.fullRequest = redactSecretsInText(card.fullRequest);
     if (typeof card.summary === "string") card.summary = redactSecretsInText(card.summary);
     if (typeof card.held === "string") card.held = redactSecretsInText(card.held);
     if (typeof card.answeredText === "string") card.answeredText = redactSecretsInText(card.answeredText);
@@ -369,6 +371,16 @@ export interface BotRecord extends Omit<WireBot, "avatarUrl" | "tasks"> {
   lastProfileRequestId?: string;
   /** Receipt committed with a reviewed team batch; prevents replay after a lost response. */
   lastTeamSetupReceipt?: { requestId: string; result: TeamSetupResult };
+  /** Same atomic registry write as every bot in a reviewed Setup Guide batch. */
+  lastSetupWizardReceipt?: SetupWizardReceipt;
+}
+
+export interface SetupWizardReceipt {
+  requestId: string;
+  digest: string;
+  section: string;
+  botIds: string[];
+  chiefBotId: string | null;
 }
 
 /** BotRecord fields no client may see, plus the two the projection
@@ -376,7 +388,7 @@ export interface BotRecord extends Omit<WireBot, "avatarUrl" | "tasks"> {
  * WireTask[], avatarUrl is coerced to always-present). The exactness
  * assertion fails to compile when either side drifts, so a new server
  * field forces a decision — wire-visible or private here. */
-export type BotWirePrivateKeys = "resumeCursors" | "tasks" | "avatarUrl" | "approvalGrant" | "lastProfileRequestId" | "lastTeamSetupReceipt";
+export type BotWirePrivateKeys = "resumeCursors" | "tasks" | "avatarUrl" | "approvalGrant" | "lastProfileRequestId" | "lastTeamSetupReceipt" | "lastSetupWizardReceipt";
 export type BotWireProjection = Pick<BotRecord, Exclude<keyof BotRecord, BotWirePrivateKeys>>;
 export type BotWireProjectionIsExact = AssertExact<Omit<WireBot, "avatarUrl" | "tasks">, BotWireProjection> & AssertSameKeys<Omit<WireBot, "avatarUrl" | "tasks">, BotWireProjection>;
 export const botWireProjectionIsExact: BotWireProjectionIsExact = true;
@@ -1650,6 +1662,56 @@ export class Store {
       });
     }
     return bot;
+  }
+
+  setupWizardReceipt(requestId: string): SetupWizardReceipt | null {
+    return this.bots.find(bot => bot.lastSetupWizardReceipt?.requestId === requestId)?.lastSetupWizardReceipt ?? null;
+  }
+
+  /** Create the entire reviewed batch and its retry receipt in one bots.json
+   * replacement. No per-bot saves, greetings, rooms or provider turns can
+   * observe a partial set. Validation and the new-team brief are prepared by
+   * the owner-only route immediately before this synchronous write. */
+  createSetupWizardBatch(requestId: string, digest: string, draft: WizardDraft): SetupWizardReceipt {
+    const previous = this.setupWizardReceipt(requestId);
+    if (previous) {
+      if (previous.digest !== digest) throw new Error("This setup request ID was already used for a different draft");
+      return previous;
+    }
+    const section = draft.destination.kind === "new" ? draft.destination.name : draft.destination.section;
+    const now = Date.now();
+    const receipt: SetupWizardReceipt = { requestId, digest, section,
+      botIds: draft.bots.map(() => newId()), chiefBotId: null };
+    const selected = draft.bots.findIndex(bot => bot.key === draft.chiefKey);
+    if (selected >= 0) receipt.chiefBotId = receipt.botIds[selected]!;
+    const added: BotRecord[] = draft.bots.map((profile, index) => {
+      const id = receipt.botIds[index]!;
+      const threadId = newId();
+      const modelSelection = structuredClone(profile.modelSelection);
+      return {
+        id, threadId, name: profile.name.trim(), title: profile.title.trim(),
+        description: profile.description, soul: profile.soul, soulHash: soulHash(profile.soul),
+        notifications: true, color: COLORS[(this.bots.length + index) % COLORS.length],
+        ...(section ? { section } : {}),
+        ...(draft.visibility !== "everyone" ? { visibility: structuredClone(draft.visibility) } : {}),
+        unread: false, modelSelection, resumeCursors: {}, createdAt: now,
+        chiefOfStaff: receipt.chiefBotId === id,
+        approvalMode: "ask", autoApprove: false, composio: false, computer: "off", browser: false, mcpServers: [],
+        lastSetupWizardReceipt: receipt,
+        tasks: [{ threadId, title: UNTITLED_THREAD, createdAt: now, updatedAt: now,
+          resumeCursors: {}, modelSelection: structuredClone(modelSelection),
+          approvalMode: "ask", autoApprove: false, unread: false, activity: "idle", busy: false }],
+      };
+    });
+    const nextBots = [...added, ...this.bots];
+    this.saveBots(nextBots, false);
+    this.bots = nextBots;
+    for (const bot of added) {
+      try { writeSoulMirror(bot.id, bot.soul ?? ""); }
+      catch (error) { console.warn(`[bot-folder] could not write reviewed setup mirror for ${bot.id}: ${(error as Error).message}`); }
+      this.emit({ type: "bot", botId: bot.id });
+    }
+    return receipt;
   }
 
   /** All setup fields and the Chief's receipt commit before publishing any

@@ -23,6 +23,7 @@ import { inputCls } from "./bot-settings/field";
 import { RoutineEditor } from "./RoutinesPage";
 import { FullAccessWarning } from "./FullAccessWarning";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
+import { SetupWizardDialog } from "./SetupWizardDialog";
 
 const SECTIONS = ["Identity", "Soul", "Skills", "Memory", "Routines", "Access", "Model", "Permissions", "Voice & alerts"] as const;
 type Section = typeof SECTIONS[number];
@@ -79,6 +80,7 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
   const alive = useRef(true);
   const [error, setError] = useState("");
   const [warning, setWarning] = useState<"full" | "local" | null>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
   const [audience, setAudience] = useState<VisibilityMode>("everyone");
   const [people, setPeople] = useState("");
   const ownerOrAdmin = useOwnerOrAdmin();
@@ -169,7 +171,8 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
     },
   };
   const title = defaultsMode ? t("newBot.defaults") : t("sidebar.newBot");
-  return <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-3 sm:p-5">
+  return <div aria-hidden={wizardOpen || undefined} inert={wizardOpen}
+    className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-3 sm:p-5">
     <div ref={dialog} role="dialog" aria-modal="true" aria-label={title} aria-busy={saving} tabIndex={-1}
       className="flex h-[min(760px,94dvh)] w-full max-w-[900px] flex-col overflow-hidden rounded-2xl border border-hairline/50 bg-panel shadow-2xl outline-none">
       <div className="flex shrink-0 items-center justify-between border-b border-hairline/40 px-5 py-4">
@@ -220,6 +223,10 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
       </div>
       {error && <p role="alert" className="max-h-24 overflow-y-auto border-t border-hairline/40 px-5 py-3 text-[13px] text-danger">{error}</p>}
       <div className="flex shrink-0 justify-end gap-2 border-t border-hairline/40 px-5 py-3">
+        {!defaultsMode && ownerOrAdmin === true && <button type="button" disabled={saving} onClick={() => setWizardOpen(true)}
+          className="mr-auto flex items-center gap-1.5 rounded-lg px-4 py-2 text-[13px] text-accent hover:bg-control disabled:opacity-40">
+          Set up with AI
+        </button>}
         <button type="button" onClick={() => closeRef.current()} className="rounded-lg px-4 py-2 text-[13px] text-ink-secondary hover:bg-control">{t("common.cancel")}</button>
         <button type="button" disabled={!ready || saving || (!defaultsMode && !bot.name.trim())} onClick={() => void save()}
           className="flex items-center gap-2 rounded-lg bg-accent px-5 py-2 text-[13px] font-medium text-white hover:brightness-110 disabled:opacity-40">
@@ -229,6 +236,14 @@ export function LocalNewBotDialog({ defaultsMode = false, onClose, section, onCr
       <FullAccessWarning open={warning === "full"} onCancel={() => setWarning(null)} onConfirm={() => { draft.consent.confirmFullAccess = true; setWarning(null); void save(); }} />
       <LocalComputerAutoWarning open={warning === "local"} onCancel={() => setWarning(null)} onConfirm={() => { draft.consent.acknowledgeLocalAuto = true; setWarning(null); void save(); }} />
     </div>
+    {wizardOpen && <SetupWizardDialog initialDestination={{ kind: "existing", section: section ?? "" }}
+      onClose={() => setWizardOpen(false)} onCreated={(result) => {
+        for (const bot of result.bots) {
+          try { void Promise.resolve(onCreated?.(bot)).catch(cause => parent.dispatch({ type: "error", message: String(cause) })); }
+          catch (cause) { parent.dispatch({ type: "error", message: String(cause) }); }
+        }
+        closeRef.current();
+      }} />}
   </div>;
 }
 

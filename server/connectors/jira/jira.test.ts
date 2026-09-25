@@ -154,6 +154,19 @@ describe("jira connector", () => {
     expect(schemes.every(scheme => scheme === "Bearer")).toBe(true);
   });
 
+  it("refuses an explicitly unfinished short cloud page and inconsistent Data Center offsets", async () => {
+    await expect(jiraConnector.query!(ctx({ fetch: async () => jsonResponse({
+      issues: [bulk.issues[0]], isLast: false,
+    }) }), "project = PAY")).rejects.toThrow(/pagination/);
+    const dc = { site: "https://jira.example.test", edition: "datacenter" };
+    await expect(jiraConnector.query!(ctx({ settings: dc, fetch: async () => jsonResponse({
+      issues: [], total: null, startAt: 0,
+    }) }), "project = PAY")).rejects.toThrow(/incomplete page/);
+    await expect(jiraConnector.query!(ctx({ settings: dc, fetch: async () => jsonResponse({
+      issues: [], total: 50, startAt: 0,
+    }) }), "project = PAY", "50")).rejects.toThrow(/inconsistent pagination/);
+  });
+
   it("extracts issue and comment refs from signed webhooks and Atlassian's HMAC vector", async () => {
     expect(verifyJiraWebhook(
       "It's a Secret to Everybody",

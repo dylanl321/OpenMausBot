@@ -43,12 +43,42 @@
 //                         MCP server and replies with its text
 //   FAKE_CODEX_COMPLETE_BEFORE_ACK  with FAKE_CODEX_ROOM_PLAN: stream the whole
 //                         turn, completion included, before acknowledging turn/start
+//   FAKE_CODEX_WIZARD_REPLY_FILE  one-shot `codex exec` JSON reply for the
+//                         restricted Setup Guide fixture (read fresh each run)
+//   FAKE_CODEX_WIZARD_DUMP  one-shot argv/env/cwd/prompt evidence path
+//   FAKE_CODEX_WIZARD_HANG  hold the one-shot call until killed, for Stop tests
+//   FAKE_CODEX_WIZARD_HELP_MISSING  omit a required isolation flag from help
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 
 
 const mode = process.env.FAKE_CODEX_MODE ?? "happy";
+
+if (process.argv.includes("--help")) {
+  process.stdout.write(process.argv.includes("exec")
+    ? `exec ${process.env.FAKE_CODEX_WIZARD_HELP_MISSING === "1" ? "" : "--ephemeral"} --sandbox --ask-for-approval --cd --skip-git-repo-check --output-last-message --config --ignore-user-config\n`
+    : "codex --ignore-user-config --ask-for-approval --config\n");
+  process.exit(0);
+}
+if (process.argv.includes("exec")) {
+  const args = process.argv.slice(2);
+  const prompt = await new Promise<string>(resolve => {
+    let content = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", chunk => { content += chunk; });
+    process.stdin.on("end", () => resolve(content));
+  });
+  if (process.env.FAKE_CODEX_WIZARD_DUMP) {
+    writeFileSync(process.env.FAKE_CODEX_WIZARD_DUMP, JSON.stringify({ pid: process.pid, argv: args, env: process.env, cwd: process.cwd(), prompt }));
+  }
+  if (process.env.FAKE_CODEX_WIZARD_HANG === "1") await new Promise(() => setInterval(() => {}, 1 << 30));
+  const target = args[args.indexOf("--output-last-message") + 1];
+  const reply = process.env.FAKE_CODEX_WIZARD_REPLY_FILE;
+  if (!target || !reply || !existsSync(reply)) process.exit(1);
+  writeFileSync(target, readFileSync(reply, "utf8"));
+  process.exit(0);
+}
 
 // stdout and stderr are separate pipes: the writer cannot order them for
 // the reader, and a fixed sleep only pretends to. These knobs synchronize

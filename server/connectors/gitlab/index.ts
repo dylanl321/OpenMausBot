@@ -74,6 +74,7 @@ interface GitlabMergeRequest {
   source_branch?: string;
   target_branch?: string;
   sha?: string;
+  merge_commit_sha?: string | null;
   updated_at?: string;
   head_pipeline?: GitlabPipelineRef | null;
 }
@@ -398,6 +399,10 @@ function mrDetails(mr: GitlabMergeRequest, approvals?: GitlabApprovals | null): 
   if (mr.target_branch) details.target = mr.target_branch;
   if (mr.head_pipeline?.status) details.pipeline = mr.head_pipeline.status;
   if (mr.head_pipeline?.id != null) details.pipelineId = mr.head_pipeline.id;
+  if (mr.sha && /^[0-9a-f]{40}$/i.test(mr.sha)) details.sha = mr.sha.toLowerCase();
+  if (mr.merge_commit_sha && /^[0-9a-f]{40}$/i.test(mr.merge_commit_sha)) {
+    details.mergeCommitSha = mr.merge_commit_sha.toLowerCase();
+  }
   if (approvals && approvals.approvals_required != null) {
     const required = approvals.approvals_required;
     const left = approvals.approvals_left ?? 0;
@@ -422,6 +427,21 @@ function syncedMr(mr: GitlabMergeRequest, ctx: ConnectionContext, project: strin
     updatedAt: when(mr.updated_at),
     syncedAt: Date.now(),
   };
+}
+
+/** The issue and MR lists have independent page counts. A single numeric
+ * cursor used to let the shorter list end a scan of the longer one. */
+function queryPages(cursor?: string): { issues: string | null; mergeRequests: string | null } {
+  if (!cursor) return { issues: "1", mergeRequests: "1" };
+  if (/^[1-9]\d*$/.test(cursor)) return { issues: cursor, mergeRequests: cursor }; // older clients
+  try {
+    const value = JSON.parse(cursor) as { v?: unknown; issues?: unknown; mergeRequests?: unknown };
+    const page = (value: unknown) => value === null || typeof value === "string" && /^[1-9]\d*$/.test(value);
+    if (value.v === 1 && page(value.issues) && page(value.mergeRequests)) {
+      return { issues: value.issues as string | null, mergeRequests: value.mergeRequests as string | null };
+    }
+  } catch { /* Reject a malformed cursor; never silently start over. */ }
+  throw new Error("Invalid GitLab query cursor");
 }
 
 function syncedCommit(commit: GitlabCommit, ctx: ConnectionContext, project: string, sha: string): SyncedItem {
@@ -1343,22 +1363,37 @@ export const gitlabConnector: Connector = {
     const search = text && !PROJECT_PATH.test(text) ? text : undefined;
     if (!project) return { items: [] };
     ctx.log("Queried GitLab issues and merge requests.");
-    const page = cursor && /^\d+$/.test(cursor) ? cursor : "1";
-    const params = new URLSearchParams({ state: "opened", per_page: "50", page });
-    if (search) params.set("search", search);
+    const pages = queryPages(cursor);
+    const params = (page: string) => {
+      const value = new URLSearchParams({ state: "opened", per_page: "50", page });
+      if (search) value.set("search", search);
+      return value;
+    };
     const [issueResult, mrResult] = await Promise.all([
-      gitlabRequest(ctx, `/projects/${projectPath(project)}/issues?${params}`),
-      gitlabRequest(ctx, `/projects/${projectPath(project)}/merge_requests?${params}`),
+      pages.issues ? gitlabRequest(ctx, `/projects/${projectPath(project)}/issues?${params(pages.issues)}`) : null,
+      pages.mergeRequests ? gitlabRequest(ctx, `/projects/${projectPath(project)}/merge_requests?${params(pages.mergeRequests)}`) : null,
     ]);
-    if (!issueResult.ok) throw new Error(issueResult.error);
-    if (!mrResult.ok) throw new Error(mrResult.error);
-    const issueRows = Array.isArray(issueResult.body) ? issueResult.body as GitlabIssue[] : [];
-    const mrRows = Array.isArray(mrResult.body) ? mrResult.body as GitlabMergeRequest[] : [];
+    if (issueResult && !issueResult.ok) throw new Error(issueResult.error);
+    if (mrResult && !mrResult.ok) throw new Error(mrResult.error);
+    if (issueResult && !Array.isArray(issueResult.body) || mrResult && !Array.isArray(mrResult.body)) {
+      throw new Error("GitLab query returned a malformed list");
+    }
+    const issueRows = issueResult?.body as GitlabIssue[] | undefined ?? [];
+    const mrRows = mrResult?.body as GitlabMergeRequest[] | undefined ?? [];
+    if ([...issueRows, ...mrRows].some(row => !row || !Number.isSafeInteger(row.iid) || row.iid! < 1)) {
+      throw new Error("GitLab query returned a row without an issue or MR identity");
+    }
+    if (issueResult && issueRows.length === 50 && issueResult.headers.get("x-next-page") === null ||
+        mrResult && mrRows.length === 50 && mrResult.headers.get("x-next-page") === null) {
+      throw new Error("GitLab omitted pagination for a full page");
+    }
     const items = [
       ...issueRows.flatMap(issue => syncedIssue(issue, ctx, project) ?? []),
       ...mrRows.flatMap(mr => syncedMr(mr, ctx, project) ?? []),
     ];
-    const next = issueResult.headers.get("x-next-page") || mrResult.headers.get("x-next-page");
+    const nextIssues = issueResult?.headers.get("x-next-page") || null;
+    const nextMrs = mrResult?.headers.get("x-next-page") || null;
+    const next = nextIssues || nextMrs ? JSON.stringify({ v: 1, issues: nextIssues, mergeRequests: nextMrs }) : undefined;
     return { items, ...(next ? { cursor: next } : {}) };
   },
   async webhook(ctx, headers, body) {

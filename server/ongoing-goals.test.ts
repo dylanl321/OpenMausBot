@@ -2,8 +2,9 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { OngoingGoals, canRetryGoalWork, interruptedLinkedWork, parseGoalDecision, referencedGoalWork, requiresExternalInventory } from "./ongoing-goals.ts";
+import { OngoingGoals, canRetryGoalWork, interruptedLinkedWork, isTeamBacklogObjective, parseGoalDecision, referencedGoalWork, requiresExternalInventory } from "./ongoing-goals.ts";
 import { WorkItems } from "./work-items.ts";
+import { emptyTeamBacklog } from "../shared/team-backlog.ts";
 
 const tempDirs: string[] = [];
 function fixture() {
@@ -72,6 +73,11 @@ describe("ongoing goal accounting", () => {
     expect(requiresExternalInventory("get all current work in progreess  losed in jira and all MRs merged and closed")).toBe(true);
     expect(requiresExternalInventory("Merge the reviewed MR for PAY-123")).toBe(false);
     expect(requiresExternalInventory("Close all Jira work for PAY-123 and merge repo/app!15")).toBe(true);
+    expect(requiresExternalInventory("Close all Jira issues")).toBe(true);
+    expect(requiresExternalInventory("Merge all GitLab MRs")).toBe(true);
+    expect(isTeamBacklogObjective("Close all Jira issues")).toBe(false);
+    expect(isTeamBacklogObjective("Close all Jira work for PAY-123 and merge repo/app!15")).toBe(false);
+    expect(isTeamBacklogObjective("finish our current Jira work and merge the MRs")).toBe(true);
     expect(requiresExternalInventory("Verify an artifact")).toBe(false);
   });
 
@@ -164,6 +170,30 @@ describe("ongoing goal accounting", () => {
     expect(() => goals.control(goal.id, { expectedRevision: goal.revision, action: "wake" })).toThrow("resume");
     goals.control(goal.id, { expectedRevision: goal.revision, action: "resume" });
     expect(goal.actions).toBe(0);
+  });
+
+  it("wakes a scope-gated backlog mission without silently renewing its limits", () => {
+    const { goals } = fixture();
+    const backlog = { ...emptyTeamBacklog("Delivery"), gates: [{ kind: "scope" as const,
+      decisionMaker: "Conversation requester", detail: "Choose the source projects" }] };
+    const mission = goals.create({ ownerBotId: "lead", sourceThreadId: "backlog",
+      objective: "finish our current Jira work and merge the MRs" }, "backlog-execution", backlog);
+    goals.begin(mission);
+    goals.finish(mission, { status: "needs-input", detail: "Choose the source projects" }, "scope", 0.25);
+    expect(mission).toMatchObject({ status: "needs-input", actions: 1, spentUsd: 0.25 });
+    goals.control(mission.id, { expectedRevision: mission.revision, action: "resume" });
+    expect(mission).toMatchObject({ status: "working", actions: 1, spentUsd: 0.25 });
+  });
+
+  it("charges a reused task after this goal starts a new revision without duplicating its link", () => {
+    const { goals, goal } = fixture();
+    goals.link(goal, "existing-task", false);
+    goals.link(goal, "existing-task", true);
+    expect(goal.workItemIds).toEqual(["existing-task"]);
+    expect(goal.ownedWorkItemIds).toEqual(["existing-task"]);
+    goal.maxSpendUsd = 0.2;
+    goals.charge(goal, "new-revision-worker", 0.15);
+    expect(goal.spentUsd).toBe(0.15);
   });
 
   it("deduplicates charged worker turns and fails closed when a spend cap cannot be priced", () => {

@@ -725,6 +725,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
                 requestType: isQuestion ? "question" : "permission",
                 tool: String(evt.title ?? "pi"),
                 summary: String(evt.title ?? "pi wants confirmation"),
+                requestDetail: toolDetailPreview(evt, 64_000),
               });
             }
             return;

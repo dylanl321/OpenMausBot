@@ -1,5 +1,6 @@
 import { parse as parseYaml } from "yaml";
 import { parseTeamBackup, TEAM_BACKUP_CONTENTS } from "../../shared/team-backup";
+import type { WizardSeed } from "../../shared/setup-wizard";
 
 export interface PendingTeamImport {
   manifest: unknown;
@@ -88,6 +89,31 @@ function markdownPackage(markdown: string): unknown {
   const { botmrr, ...pkg } = metadata as Record<string, unknown>;
   if (botmrr !== 1) throw new Error("This BotMRR Markdown version is not supported.");
   return { format: "openmaus.package", version: 1, package: pkg };
+}
+
+/** Project an untrusted community template onto names and persona prompts
+ * only. The direct-import flow above deliberately remains unchanged; no
+ * room, skill, routine, connection, model, grant or executable setting can
+ * cross this wizard seed boundary. */
+export function communityWizardSeed(source: unknown): WizardSeed {
+  const value = typeof source === "string" ? markdownPackage(source) : source;
+  const preview = teamImportPreview(value);
+  if (preview.kind === "backup") throw new Error("Backups use the direct import flow");
+  const root = value as Record<string, unknown>;
+  const definition = preview.kind === "package" ? root.package : root.team;
+  if (!definition || typeof definition !== "object" || Array.isArray(definition)) throw new Error("This template has no roles");
+  const team = definition as Record<string, unknown>;
+  const roles = preview.kind === "package" ? team.agents : team.members;
+  if (!Array.isArray(roles)) throw new Error("This template has no roles");
+  const bots = roles.slice(0, 8).map((candidate, index) => {
+    const role = candidate as Record<string, unknown>;
+    const name = String(role.name ?? "").trim();
+    const title = typeof role.title === "string" ? role.title : "";
+    const description = typeof role.description === "string" ? role.description : "";
+    const soul = typeof role.soul === "string" && role.soul.trim() ? role.soul : description || `You are ${name}. Help with your assigned role and ask before taking action.`;
+    return { key: `community-${index + 1}`, name, title: title || "Specialist", description, soul };
+  });
+  return { name: preview.name.slice(0, 60), description: preview.description.slice(0, 2_000), bots };
 }
 
 function packagePreview(root: Record<string, unknown>, manifest: unknown): PendingTeamImport {

@@ -17,6 +17,7 @@
 import { newId } from "./contracts.ts";
 import { buildNotification, type Notification } from "./notify.ts";
 import { peerAllowKey, type PeerAction } from "./peer-approval-key.ts";
+import { redactSecretsInText } from "./redact.ts";
 import type { BotRecord, Message, Store } from "./store.ts";
 
 export { peerAllowKey } from "./peer-approval-key.ts";
@@ -128,6 +129,7 @@ function pushApprovalCard(
   sourceThreadId: string,
 ): Message {
   const subtitle = message.length > 200 ? `${message.slice(0, 200)}…` : message;
+  const request = redactSecretsInText(message);
   const note = bus.store.appendMessage(sourceThreadId, {
     role: "bot",
     kind: "options",
@@ -135,6 +137,7 @@ function pushApprovalCard(
       // a room is named as a room; only a bot gets an @
       title: `@${from.name} wants to ${ACTION_VERB[action]} ${action === "post_to_room" ? `“${target.name}”` : `@${target.name}`}`,
       subtitle,
+      fullRequest: request.length > 64_000 ? `${request.slice(0, 64_000)}\n[… preview shortened]` : request,
       options: ["Allow", "Deny", "Always allow"],
       requestId,
       tool: action,

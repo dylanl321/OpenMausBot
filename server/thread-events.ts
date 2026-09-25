@@ -227,6 +227,7 @@ function isRuntimeEvent(value: unknown): value is RuntimeEvent {
         (value.requestType === "permission" || value.requestType === "question") &&
         typeof value.tool === "string" &&
         typeof value.summary === "string" &&
+        stringOrMissing(value.requestDetail) &&
         stringsOrMissing(value.choices) &&
         askQuestionsOrMissing(value.questions)
       );

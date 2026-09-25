@@ -186,7 +186,7 @@ describe("gitlab connector", () => {
   it("queries opened merge requests and accepts a project token on self-managed GitLab", async () => {
     const page = await gitlabConnector.query!(ctx(), "acme/payments");
     expect(page.items.map(item => item.externalId)).toEqual(["acme/payments#140", "acme/payments!482", "acme/payments!484"]);
-    expect(page.cursor).toBe("2");
+    expect(JSON.parse(page.cursor!)).toEqual({ v: 1, issues: null, mergeRequests: "2" });
     const urls: string[] = [];
     const headers: string[] = [];
     const selfManaged = ctx({
@@ -200,6 +200,46 @@ describe("gitlab connector", () => {
     expect(await gitlabConnector.test(selfManaged)).toEqual({ ok: true, account: "acme/payments" });
     expect(urls.some(url => url === "https://gitlab.example.test/api/v4/projects/acme%2Fpayments")).toBe(true);
     expect(headers.every(value => value === TOKEN)).toBe(true);
+  });
+
+  it("finishes issue and MR pages independently, without refetching the exhausted stream", async () => {
+    const requested: string[] = [];
+    const pageFetch: typeof fetch = async (input) => {
+      const url = String(input);
+      requested.push(url);
+      const page = new URL(url).searchParams.get("page");
+      if (url.includes("/issues?")) return jsonResponse(page === "1" ? [issues["140"]] : [issues["141"]], 200,
+        { "x-next-page": page === "1" ? "2" : "" });
+      if (url.includes("/merge_requests?")) return jsonResponse([mergeRequests["482"]], 200, { "x-next-page": "" });
+      throw new Error(`Unexpected ${url}`);
+    };
+    const first = await gitlabConnector.query!(ctx({ fetch: pageFetch }), "acme/payments");
+    expect(JSON.parse(first.cursor!)).toEqual({ v: 1, issues: "2", mergeRequests: null });
+    const second = await gitlabConnector.query!(ctx({ fetch: pageFetch }), "acme/payments", first.cursor);
+    expect(second.cursor).toBeUndefined();
+    expect(second.items.map(item => item.externalId)).toEqual(["acme/payments#141"]);
+    expect(requested.filter(url => url.includes("/merge_requests?"))).toHaveLength(1);
+    expect(requested.filter(url => url.includes("/issues?"))).toHaveLength(2);
+    await expect(gitlabConnector.query!(ctx({ fetch: pageFetch }), "acme/payments", "bad-cursor")).rejects.toThrow("cursor");
+  });
+
+  it("continues MR pages after the issue list has ended", async () => {
+    const requested: string[] = [];
+    const pageFetch: typeof fetch = async (input) => {
+      const url = String(input);
+      requested.push(url);
+      const page = new URL(url).searchParams.get("page");
+      if (url.includes("/issues?")) return jsonResponse([], 200, { "x-next-page": "" });
+      if (url.includes("/merge_requests?")) return jsonResponse([mergeRequests[page === "1" ? "482" : "484"]], 200,
+        { "x-next-page": page === "1" ? "2" : "" });
+      throw new Error(`Unexpected ${url}`);
+    };
+    const first = await gitlabConnector.query!(ctx({ fetch: pageFetch }), "acme/payments");
+    expect(JSON.parse(first.cursor!)).toEqual({ v: 1, issues: null, mergeRequests: "2" });
+    const second = await gitlabConnector.query!(ctx({ fetch: pageFetch }), "acme/payments", first.cursor);
+    expect(second.items.map(item => item.externalId)).toEqual(["acme/payments!484"]);
+    expect(second.cursor).toBeUndefined();
+    expect(requested.filter(url => url.includes("/issues?"))).toHaveLength(1);
   });
 
   it("extracts MR, pipeline and review-note refs from GitLab webhooks", async () => {

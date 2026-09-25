@@ -15,7 +15,7 @@ const ISSUE_KEY = /\b([A-Z][A-Z0-9_]+-\d+)\b/i;
 const COMMENT_REF = /^([A-Z][A-Z0-9_]+-\d+):(\d+)$/i;
 const COMMENT_ID = /comment(?:\s*id)?[:\s#]+(\d+)|\bid[:\s#]+(\d+)/i;
 const PREVIEW_CUT = "[… preview shortened]";
-const ISSUE_FIELDS = ["summary", "status", "assignee", "issuetype", "priority", "updated", "project", "labels", "created"] as const;
+const ISSUE_FIELDS = ["summary", "status", "assignee", "issuetype", "priority", "updated", "project", "labels", "created", "description", "issuelinks"] as const;
 const CHANGE_FIELDS = [...ISSUE_FIELDS, "description", "comment"] as const;
 const COMMENT_FIELDS = [...ISSUE_FIELDS, "comment"] as const;
 const FETCH_BATCH = 100;
@@ -90,6 +90,7 @@ interface JiraIssue {
     created?: string;
     updated?: string;
     description?: unknown;
+    issuelinks?: { type?: { inward?: string; outward?: string }; inwardIssue?: { key?: string }; outwardIssue?: { key?: string } }[];
     comment?: { comments?: JiraComment[] };
   };
   changelog?: { histories?: JiraHistory[] };
@@ -209,8 +210,14 @@ function detailsOf(issue: JiraIssue): SyncedItem["details"] {
   if (fields.assignee?.displayName) details.assignee = fields.assignee.displayName;
   if (fields.project?.key) details.project = fields.project.key;
   if (fields.labels?.length) details.labels = fields.labels.join(",");
-  const description = adfText(fields.description).slice(0, 2_000);
+  const description = adfText(fields.description).slice(0, 500);
   if (description) details.description = description;
+  const blockers = (fields.issuelinks ?? []).flatMap(link => {
+    if (link.inwardIssue?.key && /blocked by/i.test(link.type?.inward ?? "")) return [link.inwardIssue.key];
+    if (link.outwardIssue?.key && /blocked by/i.test(link.type?.outward ?? "")) return [link.outwardIssue.key];
+    return [];
+  }).slice(0, 20).join(",").slice(0, 500);
+  if (blockers) details.blockers = blockers;
   return Object.keys(details).length ? details : undefined;
 }
 
@@ -314,10 +321,16 @@ async function searchDataCenter(ctx: ConnectionContext, jql: string, startAt: st
   const result = await jiraRequest(ctx, `/rest/api/2/search?${params}`);
   if (!result.ok) throw new Error(result.error);
   const payload = result.body as { issues?: JiraIssue[]; startAt?: number; maxResults?: number; total?: number } | null;
-  const issues = Array.isArray(payload?.issues) ? payload.issues : [];
-  const offset = Number(payload?.startAt ?? startAt ?? 0) || 0;
+  if (!Array.isArray(payload?.issues) || !Number.isSafeInteger(payload.total) || payload.total! < 0) {
+    throw new Error("Jira search returned an incomplete page");
+  }
+  const issues = payload.issues;
+  const expectedOffset = startAt ? Number(startAt) : 0;
+  const offset = payload.startAt ?? expectedOffset;
   const next = offset + issues.length;
-  const total = Number(payload?.total);
+  const total = payload.total!;
+  if (!Number.isSafeInteger(offset) || offset !== expectedOffset || !Number.isSafeInteger(total) || total < next ||
+      next < total && !issues.length) throw new Error("Jira search returned inconsistent pagination");
   return { issues, ...(Number.isFinite(total) && next < total ? { cursor: String(next) } : {}) };
 }
 
@@ -749,6 +762,7 @@ export const jiraConnector: Connector = {
     ctx.log("Queried Jira with JQL.");
     if (editionOf(ctx) === "datacenter") {
       const page = await searchDataCenter(ctx, jql, cursor, [...ISSUE_FIELDS]);
+      if (page.issues.some(issue => !issue?.key || !ISSUE_KEY.test(issue.key))) throw new Error("Jira search returned an issue without a valid key");
       return { items: page.issues.flatMap(issue => syncedIssue(issue, ctx) ?? []), ...(page.cursor ? { cursor: page.cursor } : {}) };
     }
     const result = await jiraRequest(ctx, "/rest/api/3/search/jql", {
@@ -761,8 +775,15 @@ export const jiraConnector: Connector = {
       }),
     });
     if (!result.ok) throw new Error(result.error);
-    const payload = result.body as { issues?: JiraIssue[]; nextPageToken?: string } | null;
-    const items = (payload?.issues ?? []).flatMap(issue => syncedIssue(issue, ctx) ?? []);
+    const payload = result.body as { issues?: JiraIssue[]; nextPageToken?: string; isLast?: boolean } | null;
+    if (!Array.isArray(payload?.issues)) throw new Error("Jira search returned an incomplete page");
+    if (payload.issues.some(issue => !issue?.key || !ISSUE_KEY.test(issue.key))) throw new Error("Jira search returned an issue without a valid key");
+    if (payload.isLast === false && !payload.nextPageToken ||
+        payload.isLast === true && payload.nextPageToken ||
+        payload.issues.length === 50 && !payload.nextPageToken && payload.isLast !== true) {
+      throw new Error("Jira omitted pagination for a full page");
+    }
+    const items = payload.issues.flatMap(issue => syncedIssue(issue, ctx) ?? []);
     return { items, ...(payload?.nextPageToken ? { cursor: payload.nextPageToken } : {}) };
   },
   async webhook(ctx, headers, body) {

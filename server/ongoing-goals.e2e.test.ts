@@ -104,9 +104,14 @@ describe("ongoing goals in an isolated OpenMausBot", () => {
       await expect.poll(async () => (await api("GET", `/api/goals/${created.body.goal.id}`)).body.goal.status,
         { timeout: 15_000 }).toBe("needs-input");
       const goal = (await api("GET", `/api/goals/${created.body.goal.id}`)).body.goal;
-      expect(goal.detail).toMatch(/Jira.*GitLab.*scope/i);
-      expect(goal.actions).toBe(2);
-      expect(goal.acceptanceCriteria).toEqual(["Jira work is closed", "MRs are merged and closed"]);
+      expect(goal.detail).toMatch(/Jira.*GitLab.*inventory/i);
+      expect(goal.actions).toBe(1);
+      expect(goal.teamBacklog.scan).toMatchObject({ status: "not-scanned", itemCount: 0 });
+      expect(goal.teamBacklog.gates[0].kind).toBe("scope");
+      expect(goal.acceptanceCriteria).toEqual([
+        "Every current Jira issue in the team scope is evidenced and done",
+        "Every scoped MR is merged at an authorized, reviewed head",
+      ]);
       expect(goal.evidence).not.toContain("claimed:mr-merged");
       const messages = (await api("GET", `/api/threads/${bot.threadId}/messages`)).body.messages;
       expect(JSON.stringify(messages)).not.toContain(claim);

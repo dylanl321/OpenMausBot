@@ -114,6 +114,8 @@ export type RuntimeEvent = RuntimeEventBase &
         requestType: "permission" | "question";
         tool: string;
         summary: string;
+        /** Redacted, bounded request arguments for a pending in-app decision. */
+        requestDetail?: string;
         choices?: string[];
         /** A provider's structured ask (Claude's AskUserQuestion): the whole
          * set of questions, each with its own options, so the card can offer
@@ -160,4 +162,3 @@ export type RuntimeEvent = RuntimeEventBase &
   );
 
 export type RuntimeEventListener = (event: RuntimeEvent) => void;
-

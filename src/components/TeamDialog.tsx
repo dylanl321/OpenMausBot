@@ -4,7 +4,9 @@ import { Plus, X } from "lucide-react";
 import { api, useStore, type Bot } from "@/state/store";
 import { BotPickerList } from "./BotPickerList";
 import { NewBotDialog } from "./NewBotDialog";
+import { SetupWizardDialog } from "./SetupWizardDialog";
 import { t } from "@/lib/i18n";
+import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
 
 /** A team may start empty; choosing bots moves their membership, never copies them. */
 export function TeamDialog({ section, rename = false, onClose, onRenamed }: {
@@ -19,6 +21,9 @@ export function TeamDialog({ section, rename = false, onClose, onRenamed }: {
   const initialMembers = useRef(new Set(managing ? state.bots.filter(bot => !bot.hidden && (bot.section?.trim() ?? "") === section).map(bot => bot.id) : []));
   const [picked, setPicked] = useState<Set<string>>(() => new Set(initialMembers.current));
   const [creating, setCreating] = useState(false);
+  const [wizard, setWizard] = useState(false);
+  const wizardWasOpen = useRef(false);
+  const ownerOrAdmin = useOwnerOrAdmin();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const dialog = useRef<HTMLDivElement>(null);
@@ -32,6 +37,10 @@ export function TeamDialog({ section, rename = false, onClose, onRenamed }: {
   useEffect(() => {
     if (!creating) (dialog.current?.querySelector<HTMLElement>("input") ?? dialog.current?.querySelector<HTMLElement>("button"))?.focus();
   }, [creating]);
+  useEffect(() => {
+    if (wizard) { wizardWasOpen.current = true; return; }
+    if (wizardWasOpen.current) dialog.current?.querySelector<HTMLElement>("[data-guide-entry]")?.focus();
+  }, [wizard]);
   const moving = section !== undefined && !rename;
   const title = rename ? t("team.rename") : managing ? t(initialMembers.current.size ? "team.manageBots" : "team.addBots") : moving ? t("team.moveTo", { name: section || "General" }) : t("team.create");
   const candidates = state.bots.filter((bot) => !bot.hidden && (managing || !moving || (bot.section?.trim() ?? "") !== section));
@@ -64,6 +73,9 @@ export function TeamDialog({ section, rename = false, onClose, onRenamed }: {
     initialMembers.current.add(bot.id);
     setPicked(previous => new Set([...previous, bot.id]));
   }} />, document.body);
+  if (wizard) return <SetupWizardDialog initialDestination={section === undefined
+    ? { kind: "new", name: name.trim() } : { kind: "existing", section }}
+    onClose={() => setWizard(false)} onCreated={() => onCloseRef.current()} />;
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={(event) => {
       if (event.target === event.currentTarget && !saving) onClose();
@@ -96,6 +108,10 @@ export function TeamDialog({ section, rename = false, onClose, onRenamed }: {
           {managing && <button disabled={saving || state.botCreationPending} onClick={() => setCreating(true)}
             className="mb-3 flex items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] text-accent hover:bg-raised disabled:opacity-40">
             <Plus size={14} />{t("sidebar.newBot")}
+          </button>}
+          {ownerOrAdmin === true && (managing || !moving) && <button type="button" disabled={saving || state.botCreationPending}
+            data-guide-entry onClick={() => setWizard(true)} className="mb-3 flex items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] text-accent hover:bg-raised disabled:opacity-40">
+            Set up with AI
           </button>}
           <fieldset disabled={saving}>
             <legend className="mb-1 text-[12px] font-medium text-ink-secondary">{t("team.existingBots")}</legend>

@@ -421,6 +421,8 @@ export async function launchVerificationServer(
       ...(boxFixtureApi ? { computer: { driver: "boxAgent" } } : {}),
       ...(extraProviders.includes("codex") ? { codex: {
         driver: "codex", displayName: "Verification Codex", config: { cli: fileURLToPath(new URL("../server/testing/fake-codex-app-server.ts", import.meta.url)) },
+        environment: { FAKE_CODEX_WIZARD_REPLY_FILE: join(dataDir, "fake-codex-wizard-reply.json"),
+          FAKE_CODEX_WIZARD_DUMP: join(dataDir, "fake-codex-wizard-dump.json") },
       } } : {}),
       claude: {
         driver: "claudeAgent",

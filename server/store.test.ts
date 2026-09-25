@@ -1804,10 +1804,12 @@ describe("Store redacts bot-authored secrets on write", () => {
     const card = store.appendMessage(bot.threadId, {
       role: "bot",
       kind: "options",
-      card: { title: "Run this?", summary: `curl -H "Authorization: Bearer ${key}"`, held: `Blocked ${key}`, options: [], requestId: "r1", tool: "Bash" } as never,
+      card: { title: "Run this?", summary: `curl -H "Authorization: Bearer ${key}"`, fullRequest: `curl -H "Authorization: Bearer ${key}"`,
+        held: `Blocked ${key}`, options: [], requestId: "r1", tool: "Bash" } as never,
     });
     expect((card.card as { summary?: string }).summary).not.toContain(key);
     expect(card.card?.held).not.toContain(key);
+    expect(card.card?.fullRequest).not.toContain(key);
     const routineCard = store.appendMessage(bot.threadId, {
       role: "bot",
       kind: "options",

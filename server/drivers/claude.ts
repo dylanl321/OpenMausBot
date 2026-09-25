@@ -1456,6 +1456,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                 requestType: ask.kind,
                 tool: ask.tool,
                 summary: askSummary(ask),
+                requestDetail: toolDetailPreview(ask.input, 64_000),
                 nativeReview,
                 // the proxy hands Claude its own suggested rules on `always`;
                 // host control stays one action at a time
@@ -1985,41 +1986,50 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
      * servers are mounted in this isolated process. */
     const generateReview = (prompt: string, signal?: AbortSignal): Promise<string> =>
       new Promise((resolve, reject) => {
-        const child = spawnCli(
-          config.cli,
-          ["-p", "--model", config.managedModels?.[0] ?? "claude-haiku-4-5", "--output-format", "text"],
-          {
-            stdio: ["pipe", "pipe", "pipe"],
-            env: environment(config.managedModels?.[0] ?? "claude-haiku-4-5"),
-          },
-        );
+        if (signal?.aborted) { reject(new Error("Claude review aborted")); return; }
+        const cwd = mkdtempSync(join(tmpdir(), "omb-claude-text-"));
+        let child: ReturnType<typeof spawnCli>;
+        try {
+          child = spawnCli(
+            config.cli,
+            ["-p", "--model", config.managedModels?.[0] ?? "claude-haiku-4-5", "--output-format", "text",
+              "--tools", "",
+              ...(claudeCliSupports(cliVersion, "--strict-mcp-config") ? ["--strict-mcp-config"] : []),
+              ...(claudeCliSupports(cliVersion, "--setting-sources") ? ["--setting-sources", "project"] : [])],
+            {
+              cwd, stdio: ["pipe", "pipe", "pipe"],
+              env: environment(config.managedModels?.[0] ?? "claude-haiku-4-5"),
+            },
+          );
+        } catch (error) { rmSync(cwd, { recursive: true, force: true }); reject(error); return; }
         let stdout = "";
         let stderr = "";
-        let settled = false;
+        let settled = false, stopping = false;
         const finish = (error?: Error) => {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
           signal?.removeEventListener("abort", onAbort);
+          try { rmSync(cwd, { recursive: true, force: true }); }
+          catch (cleanupError) { error ??= cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError)); }
           if (error) reject(error);
           else resolve(stdout.trim());
         };
-        const onAbort = () => {
-          killCliTree(child);
-          finish(new Error("Claude review aborted"));
+        const stop = (reason: string) => {
+          if (stopping || settled) return;
+          stopping = true;
+          void killCliTree(child, 500).then(stopped => finish(new Error(stopped ? reason : `${reason}; CLI child did not stop`)),
+            () => finish(new Error(`${reason}; CLI child did not stop`)));
         };
-        const timer = setTimeout(() => {
-          killCliTree(child);
-          finish(new Error("Claude review timed out"));
-        }, 60_000);
+        const onAbort = () => stop("Claude review aborted");
+        const timer = setTimeout(() => stop("Claude review timed out"), 60_000);
         timer.unref?.();
         child.stdout.setEncoding("utf8");
         child.stderr.setEncoding("utf8");
         child.stdout.on("data", (chunk: string) => {
           stdout += chunk;
           if (stdout.length > 1_000_000) {
-            killCliTree(child);
-            finish(new Error("Claude review output exceeded 1 MB"));
+            stop("Claude review output exceeded 1 MB");
           }
         });
         child.stderr.on("data", (chunk: string) => {
@@ -2027,6 +2037,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         });
         child.on("error", (error) => finish(error));
         child.on("close", (code) => {
+          if (stopping) return;
           if (code === 0) finish();
           else finish(new Error(stderr.trim() || `Claude review exited ${code}`));
         });

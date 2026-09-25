@@ -455,6 +455,7 @@ describe("drainDelegations", () => {
     expect(card.card?.title).toContain("delegate to @Helper");
     expect(card.card?.tool).toBe("delegate_bot");
     expect(card.card?.allowKey).toBe(peerAllowKey("delegate_bot", target.id));
+    expect(card.card?.fullRequest).toBe("do this");
     expect(card.card?.options).toEqual(["Allow", "Deny", "Always allow"]);
     expect(runTargetCalls).toEqual([]);
 

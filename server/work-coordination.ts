@@ -19,7 +19,7 @@ interface WorkCoordinationHooks {
   creationProblem(source: WorkSource): string | undefined;
   publish(item: WorkRecord): void;
   goalScope?(source: WorkSource, identity: string): string | undefined;
-  onEnsure?(item: WorkRecord, source: WorkSource, created: boolean): void;
+  onEnsure?(item: WorkRecord, source: WorkSource, created: boolean, started: boolean): void;
   isUnattended(source: WorkSource): boolean;
   markUnattended(botId: string, threadId: string): void;
   sourceLink?(scope: string, identity: string): LinkedItem | null | Promise<LinkedItem | null>;
@@ -133,7 +133,7 @@ export class WorkCoordination {
       if (this.hooks.isUnattended(source)) this.hooks.markUnattended(bot.id, item.threadId);
       this.start(item);
     }
-    this.hooks.onEnsure?.(item, source, result.created);
+    this.hooks.onEnsure?.(item, source, result.created, result.started);
     this.publish(item);
     console.info(JSON.stringify({ event: "work.resolved", workItemId: item.id, revision: item.revision,
       sourceThreadId: source.threadId, disposition: result.started ? "started" : "reused", status: item.status }));

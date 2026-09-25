@@ -6744,7 +6744,7 @@ describe("harness HTTP API", () => {
         conn.write(JSON.stringify({ t: "ask", id, tool: "Bash", input: { command } }) + "\n");
         return answered;
       };
-      type Msg = { kind: string; tool?: { name: string }; card?: { title: string; subtitle: string; requestId?: string; held?: string; heldCode?: string; allowKey?: string; allowSession?: boolean; answered?: string } };
+      type Msg = { kind: string; tool?: { name: string }; card?: { title: string; subtitle: string; fullRequest?: string; requestId?: string; held?: string; heldCode?: string; allowKey?: string; allowSession?: boolean; answered?: string } };
       const messages = async (): Promise<Msg[]> =>
         (await api("GET", "/api/bots?messages=40")).body.bots.find((candidate: { id: string }) => candidate.id === bot.id).messages;
 
@@ -6752,6 +6752,7 @@ describe("harness HTTP API", () => {
       const card = await expect.poll(async () => (await messages()).find((m) => m.card?.subtitle === "wc -l notes.md")?.card).toBeTruthy()
         .then(async () => (await messages()).find((m) => m.card?.subtitle === "wc -l notes.md")!.card!);
       expect(card.title).toBe("Approval needed");
+      expect(card.fullRequest).toContain('"command": "wc -l notes.md"');
       expect(card.heldCode).toBe("approval.held.native");
       // no app-side grant is offered for a provider's tool; the provider's
       // own session-wide allow is
