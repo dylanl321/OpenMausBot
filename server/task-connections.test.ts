@@ -43,6 +43,8 @@ describe("task connections", () => {
       settings: { site: "https://fake.example" }, secrets: { token: "token" }, sections: [], enabled: true,
       writes: { enabled: true, allow: ["explode"] },
     }]);
-    expect(stripped).toMatchObject([{ id: "fake-acme", writes: undefined }]);
+    expect(stripped).toHaveLength(1);
+    expect(stripped[0]?.id).toBe("fake-acme");
+    expect(stripped[0]?.writes).toBeUndefined();
   });
 });
