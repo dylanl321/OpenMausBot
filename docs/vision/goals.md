@@ -16,7 +16,7 @@ Already in tree, still shaping the next cuts:
 |---|---|---|
 | Shared work | One durable task; rooms + specialists; claimed evidence cannot complete | Keep; do not add a second board. [shared-work.md](../shared-work.md) |
 | Connectors + watches | Kind-driven registry; Jira / GitLab / Plane; token-free change feeds | [task-connectors](../plans/2026-09-23-task-connectors.md), [connectors.md](../connectors.md) |
-| Missions / Work / `/pursue` | Useful, but one vendor pair is baked into enums, runner, write HTTP, detector | Generalize — plan on [PR #18](https://github.com/dylanl321/OpenMausBot/pull/18), not this branch |
+| Missions / Work / `/pursue` | Kind-driven scopes; kits as data; writes fail-closed (off unless both locks are set) | Keep general. [team-backlog](../verification/team-backlog.md), [connectors](../connectors.md), [plan](../plans/2026-09-25-flexible-team-work.md) |
 | Goals / routines | Durable `/pursue`; fail-closed inventory; routines can wait on shared work; watches can wake a goal | [ongoing-goals](../verification/ongoing-goals.md), [goal-mode v2](../plans/2026-09-02-goal-mode-v2.md), [routines](../verification/routines.md) |
 | Computers | Exclusive turn ownership; siblings wait, then start; no interleaving | [computer-wait](../verification/computer-wait.md) — generalize in [005](proposals/005-exclusive-resource-leases.md) |
 | Setup Guide | Drafts only; privilege fields rejected; Templates apply a team shape | [setup-wizard](../verification/setup-wizard.md) |

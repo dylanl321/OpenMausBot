@@ -37,7 +37,7 @@ Keep this table in the same PR as any status or filename change.
 | [001](001-reconcile-to-observed.md) | Reconcile to observed outcomes | draft | — |
 | [002](002-gates-not-votes.md) | Gates and required checks, not team votes | draft | — |
 | [003](003-irreversible-risk.md) | Humans for irreversible risk; claims that heartbeat | draft | — |
-| [004](004-kits-and-setup-shapes.md) | Kits and Setup Guide shapes | draft | [PR #18](https://github.com/dylanl321/OpenMausBot/pull/18) (plan not on this branch) |
+| [004](004-kits-and-setup-shapes.md) | Kits and Setup Guide shapes | draft | [flexible-team-work](../../plans/2026-09-25-flexible-team-work.md) (kit JSON shipped; Setup Guide apply path still draft) |
 | [005](005-exclusive-resource-leases.md) | Exclusive resource leases | draft | — |
 
 005 is a finding from computer-wait / shared computers / bot

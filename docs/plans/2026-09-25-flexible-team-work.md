@@ -1,6 +1,6 @@
 # Flexible team work: missions, Work, goals, Setup Guide
 
-Status: proposed · Base: `codex/bedrock-provider` @ `15cb131b` · Docs only
+Status: in progress · Base: `codex/bedrock-provider` @ `b36c61e0` (P0–P5 landed) · P6: kits as data + desk-test docs
 
 This plan is for implementers. It tells you what to change, in which order,
 and how you will know it is safe. It does not implement the code.

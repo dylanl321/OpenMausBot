@@ -60,7 +60,7 @@ The server calls these methods; it never imports a provider by name.
 | `changes` | Optional. Cheap, idempotent change feed after `cursor`. Same cursor → same `SourceChange[]`. Cursor only moves forward. |
 | `webhookChanges` | Optional. Map a verified webhook onto the same `SourceChange.id`s the poll feed emits. |
 | `capture` | Declarative rules over redacted `item.completed` previews. |
-| `actions` / `act` | Optional attested writes (`complete_work_item`, `merge_change_request`). `dry-run` evaluates live policy and must not send PUT/POST/PATCH/DELETE. `commit` re-reads, writes through `ctx.fetch`, and reads back. The server wrapper refuses `commit` unless workspace `features.teamMissionWrites`, the connection `writes` allowlist, and live `mayWrite()` are all open. Absent `actions` / `act` is an access gate and no HTTP. GitLab merge policy is live required `approval_state` rules plus optional connection `requiredApprovalRules` (comma-separated names). Jira completion uses a unique Done transition, or optional `doneTransitionId` / `doneTransitionName`. Unknown policy fields fail closed. A jira-gitlab team that still wants named extras (for example Security and Manager) sets those names on the GitLab connection; they are not compiled into the kit. |
+| `actions` / `act` | Optional attested writes. See [Optional writes](#optional-writes-actions--act). Absent `actions` / `act` is an access gate and no HTTP. |
 
 `SyncedItem` is a `LinkedItem` without the fields the server owns (`id`,
 `role`, `provenance`, `createdBy`). Status labels stay in the provider’s
@@ -71,6 +71,70 @@ words; `statusCategory` is one of `todo`, `in_progress`, `in_review`,
 not on the manifest), a rate-limited `fetch`, and `log`. Never log secrets,
 `Authorization`, or `X-API-Key`. Never take the store, bots, or other
 connections.
+
+## Optional writes (`actions` / `act`)
+
+Connectors read by default. A connector may declare attested completion
+actions on the manifest and implement `act`. The mission runner calls
+`act` by `action` + `kind`. It never branches on a provider name.
+
+Declared ids today: `complete_work_item` (tracker Done) and
+`merge_change_request` (reviewed merge). GitLab merge policy is the live
+required `approval_state` rules plus optional connection
+`requiredApprovalRules` (comma-separated names). Jira completion uses a
+unique Done transition, or optional `doneTransitionId` /
+`doneTransitionName`. Unknown or missing policy fields fail closed. A
+jira-gitlab team that still wants named extras (for example Security and
+Manager) sets those names on the GitLab connection; they are not compiled
+into the kit.
+
+### dry-run vs commit
+
+| Mode | What it does | Mutating HTTP |
+|---|---|---|
+| `dry-run` | Evaluates live provider policy and returns gates. Default path. | None. Must not send PUT, POST, PATCH, or DELETE. |
+| `commit` | Re-reads the target, writes through `ctx.fetch`, reads back. | Only after the server wrapper opens all three locks. |
+
+The **server** chooses the mode. A buggy `act` that ignores `mode` is
+still not invoked with `commit` unless the locks below are open. The
+contract suite calls `dry-run` only; connector-specific harnesses may
+call `commit` against recorded fixtures.
+
+### Three write locks
+
+All three must be open for `mode: "commit"`. Any one closed means
+dry-run only, an `access` or `policy` gate, and **zero** mutating HTTP.
+
+| Lock | Default | Where |
+|---|---|---|
+| Workspace `features.teamMissionWrites` | **off** (absent = off), same posture as `sharedComputers` | `config.json` / `featureConfigSchema`. No Settings toggle. Setup Guide cannot set it. |
+| Connection `writes.enabled` + `writes.allow` | **off**, empty allow | Stored with the connection. Unknown action ids are rejected at parse. An empty allow list writes nothing. |
+| Live `mayWrite()` | **false** unless the goal is still in-flight **and** the two locks above are open | Runner, checked again immediately before `act(..., commit)`. Stop flips this to false. |
+
+Fail-closed: missing `actions` / `act`, a closed lock, a stopped goal, or
+an undeclared action all refuse `commit`. Default fixtures and default
+config never send a merge or tracker Done. Do not enable these locks in
+repository config or CI. The desk-test and operator checklist live in
+[verification/team-backlog.md](verification/team-backlog.md).
+
+## Team-work kits
+
+A **kit** is data, not a second connector system. It says how a common
+team shape inventories connectors (`tracker` / `code` / `other` roles and
+`kinds`). The four shipped kits are
+[`server/team-work-kits.json`](../server/team-work-kits.json), loaded by
+[`server/team-work-kits.ts`](../server/team-work-kits.ts):
+
+| Kit | Inventory |
+|---|---|
+| `jira-gitlab` | Jira `work_item` + GitLab `change_request` only (GitLab issues dropped) |
+| `gitlab` | GitLab `work_item` + `change_request` |
+| `jira` | Jira `work_item` |
+| `plane` | Plane `work_item` |
+
+Infer and scan use `scope.kinds` from the matched kit (or
+`manifest.kinds ∩ { work_item, change_request }` when no kit matches).
+Adding a kit is a JSON row. Adding a system is still a connector PR.
 
 ### Manifest settings
 
