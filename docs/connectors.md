@@ -61,6 +61,7 @@ The server calls these methods; it never imports a provider by name.
 | `webhookChanges` | Optional. Map a verified webhook onto the same `SourceChange.id`s the poll feed emits. |
 | `capture` | Declarative rules over redacted `item.completed` previews. |
 | `actions` / `act` | Optional attested writes. See [Optional writes](#optional-writes-actions--act). Absent `actions` / `act` is an access gate and no HTTP. |
+| `missionScope` | Optional inventory helpers. Infer/scan call these through `connectorById` so core never branches on a provider id. Use them for query shape, board widening, watch-to-query mapping, and `contains`. Absent hooks use identifier-shape defaults (project key, nested path). |
 
 `SyncedItem` is a `LinkedItem` without the fields the server owns (`id`,
 `role`, `provenance`, `createdBy`). Status labels stay in the provider’s

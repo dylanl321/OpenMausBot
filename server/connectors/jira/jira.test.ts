@@ -383,3 +383,20 @@ describe("jira connector", () => {
     expect(text).not.toContain("webhook-secret");
   });
 });
+
+describe("jira mission scope", () => {
+  it("widens board JQL and skips watches when a board already owns the tracker", () => {
+    const scope = jiraConnector.missionScope!;
+    expect(scope.fromBoard?.("project = PAY AND sprint in openSprints()")).toEqual({
+      query: "project = PAY AND statusCategory != Done",
+    });
+    expect(scope.fromBoard?.("assignee = currentUser()")).toEqual({ uncertain: true });
+    expect(scope.fromWatch?.({ scope: { project: "PAY" }, settings: {}, hasBoard: true })).toEqual({ skip: true });
+    expect(scope.fromWatch?.({ scope: { project: "SHIP" }, settings: {}, hasBoard: false }))
+      .toEqual({ query: "project = SHIP AND statusCategory != Done" });
+    expect(scope.contains?.("project = PAY AND statusCategory != Done", { externalId: "PAY-77" })).toBe(true);
+    expect(scope.contains?.("project = PAY AND statusCategory != Done", { externalId: "OPS-77" })).toBe(false);
+    expect(scope.fromLinkedId?.("PAY-123")).toBe("project = PAY AND statusCategory != Done");
+    expect(scope.skipLinkedWhenConfigured).toBe(true);
+  });
+});

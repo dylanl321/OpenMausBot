@@ -9,6 +9,7 @@ import {
 } from "../change-cursor.ts";
 import type { CaptureCall, CaptureRule, ConnectionContext, Connector, WatchScope } from "../types.ts";
 import { actGitlabMerge } from "./actions.ts";
+import { gitlabMissionScope } from "./scope.ts";
 
 const PREVIEW_CUT = "[… preview shortened]";
 const PROJECT = "((?:[\\w.-]+/)+[\\w.-]+)";
@@ -1460,5 +1461,6 @@ export const gitlabConnector: Connector = {
     return changes;
   },
   act: actGitlabMerge,
+  missionScope: gitlabMissionScope,
   capture: captureRules,
 };

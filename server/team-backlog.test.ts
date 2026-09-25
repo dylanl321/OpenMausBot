@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { emptyTeamBacklog, type BacklogScope } from "../shared/team-backlog.ts";
 import type { StoredConnection } from "./connectors/types.ts";
 import { OngoingGoals } from "./ongoing-goals.ts";
-import { backlogScopeContains, inferTeamBacklog, jiraProjectsFromBoard, scanTeamBacklog } from "./team-backlog.ts";
+import { jiraProjectsFromBoard } from "./connectors/jira/scope.ts";
+import { backlogScopeContains, inferTeamBacklog, scanTeamBacklog } from "./team-backlog.ts";
 import { advanceTeamBacklog } from "./team-backlog-runner.ts";
 import type { GroupRecord } from "./store.ts";
 import type { WorkCoordination } from "./work-coordination.ts";
@@ -504,6 +505,13 @@ describe("team backlog scope and inventory", () => {
   it("does not pin backlog connector ids to a jira/gitlab enum", () => {
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../shared/team-backlog.ts"), "utf8");
     expect(source).not.toMatch(/z\.enum\(\s*\[\s*["']jira["']\s*,\s*["']gitlab["']/);
+  });
+
+  it("does not branch infer or scan on a provider id", () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "team-backlog.ts"), "utf8");
+    expect(source).not.toMatch(/=== ["']jira["']/);
+    expect(source).not.toMatch(/=== ["']gitlab["']/);
+    expect(source).not.toMatch(/=== ["']plane["']/);
   });
 
   it("treats a GitLab-only team with a project setting as ready and inventories issues plus MRs", async () => {

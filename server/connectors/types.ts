@@ -97,7 +97,34 @@ export interface Connector {
    * still-active locks are all open.
    */
   act?(ctx: ConnectionContext, input: ConnectorActInput): Promise<ConnectorActResult>;
+  /**
+   * Optional inventory helpers. Infer/scan call these through `connectorById`
+   * so core never branches on a provider id. Absent hooks use identifier-shape
+   * defaults (project key, nested path).
+   */
+  missionScope?: ConnectorMissionScope;
   capture: CaptureRule[];
+}
+
+export type MissionBoardScope = { query: string } | { uncertain: true };
+export type MissionWatchScope = { query: string } | { skip: true };
+
+/** Connector-owned query shaping for team-mission infer/scan. */
+export interface ConnectorMissionScope {
+  queryUsable?(query: string): boolean;
+  queryError?: string;
+  queryFromSettings?(settings: Record<string, string | number | boolean>): string;
+  fromBoard?(query: string): MissionBoardScope;
+  fromWatch?(input: {
+    scope?: WatchScope;
+    settings: Record<string, string | number | boolean>;
+    hasBoard: boolean;
+  }): MissionWatchScope;
+  fromLinkedId?(externalId: string): string;
+  skipLinkedWhenConfigured?: boolean;
+  contains?(query: string, item: Pick<SyncedItem, "externalId">): boolean;
+  boardNoun?: string;
+  watchNoun?: string;
 }
 
 export type ConnectionWrites = {

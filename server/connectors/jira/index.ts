@@ -11,6 +11,7 @@ import {
 } from "../change-cursor.ts";
 import type { CaptureCall, CaptureRule, ConnectionContext, Connector, WatchScope } from "../types.ts";
 import { actJiraComplete } from "./actions.ts";
+import { jiraMissionScope } from "./scope.ts";
 
 const ISSUE_KEY = /\b([A-Z][A-Z0-9_]+-\d+)\b/i;
 const COMMENT_REF = /^([A-Z][A-Z0-9_]+-\d+):(\d+)$/i;
@@ -847,5 +848,6 @@ export const jiraConnector: Connector = {
     return changes;
   },
   act: actJiraComplete,
+  missionScope: jiraMissionScope,
   capture: captureRules,
 };
