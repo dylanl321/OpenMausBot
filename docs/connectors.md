@@ -185,4 +185,6 @@ Connector tests use fixtures only. Do not call live Jira, GitLab, or Plane,
 and do not write to the user’s app data. Server behaviour that creates tasks
 from a connector identity is checked with the isolated fake-engine fixture
 in [verification/README.md](verification/README.md) and
-[verification/shared-work.md](verification/shared-work.md).
+[verification/shared-work.md](verification/shared-work.md). Why connectors
+stay kind-driven, and how reconciliation and kits sit on top of them,
+is in [vision](vision/README.md).
