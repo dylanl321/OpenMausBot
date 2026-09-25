@@ -110,6 +110,9 @@ export const fakeConnector: Connector = {
       ],
       events: ["item.created", "item.updated", "item.state_changed", "item.labeled", "build.failed"],
     },
+    actions: [
+      { id: "complete_work_item", kind: "work_item", label: "Complete work item" },
+    ],
   },
   async test(ctx) {
     const token = ctx.secret("token");
@@ -155,6 +158,36 @@ export const fakeConnector: Connector = {
     const record = typeof body === "string" ? JSON.parse(body) as Record<string, unknown> : body && typeof body === "object" ? body as Record<string, unknown> : {};
     const wanted = typeof record.id === "string" ? record.id : typeof record.externalId === "string" ? `${record.externalId}@created` : "PAY-8@created";
     return feedFor(ctx, {}, "1970-01-01T00:00:00.000Z").changes.filter(change => change.id === wanted);
+  },
+  /** Dry-run-only: never sends PUT/POST/PATCH/DELETE. Commit reports done
+   * from the local catalog so runner tests can exercise the server wrapper. */
+  async act(ctx, input) {
+    if (input.action !== "complete_work_item" || input.target.kind !== "work_item") {
+      throw new Error("Fake connector does not implement that action.");
+    }
+    const token = ctx.secret("token");
+    if (!token) throw new Error("Token is required.");
+    const site = String(ctx.settings.site ?? "https://fake.example");
+    const response = await ctx.fetch(`${site}/work_item/${input.target.externalId}`, {
+      headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+    });
+    if (!response.ok) throw new Error(`Fake work item returned ${response.status}`);
+    const body = await response.json().catch(() => null) as { state?: { category?: string; label?: string } } | null;
+    const category = body?.state?.category;
+    const label = body?.state?.label ?? (category === "done" ? "Done" : "Unknown");
+    if (category === "done") {
+      return {
+        changed: true,
+        target: { state: "done", label, observedAt: Date.now(), result: "Observed done status" },
+        gates: [],
+      };
+    }
+    if (input.mode !== "commit") return { changed: false, target: {}, gates: [] };
+    return {
+      changed: true,
+      target: { state: "done", label: "Done", observedAt: Date.now(), result: "Observed done status" },
+      gates: [],
+    };
   },
   capture: [{
     match: { tool: /fake\.issue/i },

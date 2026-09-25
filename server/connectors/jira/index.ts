@@ -10,6 +10,7 @@ import {
   type SeenSnapshot,
 } from "../change-cursor.ts";
 import type { CaptureCall, CaptureRule, ConnectionContext, Connector, WatchScope } from "../types.ts";
+import { actJiraComplete } from "./actions.ts";
 
 const ISSUE_KEY = /\b([A-Z][A-Z0-9_]+-\d+)\b/i;
 const COMMENT_REF = /^([A-Z][A-Z0-9_]+-\d+):(\d+)$/i;
@@ -703,6 +704,9 @@ export const jiraConnector: Connector = {
       ],
       events: ["item.created", "item.updated", "item.state_changed", "item.assigned", "item.labeled", "comment.added"],
     },
+    actions: [
+      { id: "complete_work_item", kind: "work_item", label: "Complete work item" },
+    ],
   },
   async test(ctx) {
     const path = editionOf(ctx) === "datacenter" ? "/rest/api/2/myself" : "/rest/api/3/myself";
@@ -838,5 +842,6 @@ export const jiraConnector: Connector = {
     if (changes.length) ctx.log(`Jira webhook changes named ${changes.length} item(s).`);
     return changes;
   },
+  act: actJiraComplete,
   capture: captureRules,
 };

@@ -11,6 +11,16 @@ describe("connector-only path allowlist", () => {
     ])).toEqual([]);
   });
 
+  it("allows a Plane-only actions addition inside the connector folder", () => {
+    expect(connectorOnlyProblems([
+      "server/connectors/plane/index.ts",
+      "server/connectors/plane/actions.ts",
+      "server/connectors/plane/plane.test.ts",
+      "server/connectors/registry.ts",
+      "docs/connectors.md",
+    ])).toEqual([]);
+  });
+
   it("rejects a connector PR that also edits UI or shared server files", () => {
     const problems = connectorOnlyProblems([
       "server/connectors/plane/index.ts",

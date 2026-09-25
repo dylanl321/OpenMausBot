@@ -8,6 +8,7 @@ import {
   rememberSnapshot,
 } from "../change-cursor.ts";
 import type { CaptureCall, CaptureRule, ConnectionContext, Connector, WatchScope } from "../types.ts";
+import { actGitlabMerge } from "./actions.ts";
 
 const PREVIEW_CUT = "[… preview shortened]";
 const PROJECT = "((?:[\\w.-]+/)+[\\w.-]+)";
@@ -1240,6 +1241,9 @@ export const gitlabConnector: Connector = {
         "review.submitted", "commit.pushed", "build.failed", "build.succeeded",
       ],
     },
+    actions: [
+      { id: "merge_change_request", kind: "change_request", label: "Merge change request" },
+    ],
   },
   async test(ctx) {
     const project = defaultProject(ctx);
@@ -1453,5 +1457,6 @@ export const gitlabConnector: Connector = {
     if (changes.length) ctx.log(`GitLab webhook changes named ${changes.length} item(s).`);
     return changes;
   },
+  act: actGitlabMerge,
   capture: captureRules,
 };

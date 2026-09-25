@@ -5,7 +5,7 @@ loopback-only synthetic Jira/GitLab service; it never connects to an account or
 the user's running app.
 
 ```sh
-pnpm exec vitest run server/work-coordination.test.ts server/work-items.test.ts server/connectors/jira/jira.test.ts server/connectors/gitlab/gitlab.test.ts server/ongoing-goals.test.ts server/ongoing-goals.e2e.test.ts server/team-backlog.e2e.test.ts server/team-backlog.test.ts server/team-work-kits.test.ts server/team-backlog-actions.test.ts server/routes/work-overview.test.ts src/components/WorkPage.test.ts --maxWorkers=2
+pnpm exec vitest run server/work-coordination.test.ts server/work-items.test.ts server/connectors/jira/jira.test.ts server/connectors/jira/actions.test.ts server/connectors/gitlab/gitlab.test.ts server/connectors/gitlab/actions.test.ts server/connectors/contract-suite.test.ts server/ongoing-goals.test.ts server/ongoing-goals.e2e.test.ts server/team-backlog.e2e.test.ts server/team-backlog.test.ts server/team-work-kits.test.ts server/team-backlog-actions.test.ts server/routes/work-overview.test.ts src/components/WorkPage.test.ts scripts/check-connector-pr.test.ts --maxWorkers=2
 ```
 
 With the pinned UI browser installed, run the real Work renderer against its
@@ -43,8 +43,10 @@ pnpm exec vitest run server/team-backlog.test.ts server/team-work-kits.test.ts s
 
 **Writes stay off unless both locks are set.** Default config and default
 connections never send PUT/POST/PATCH/DELETE for a merge or Jira Done
-transition. Policy probes still run so Work can show missing reviews. To
-unlock a synthetic write in an isolated fixture only:
+transition. The runner calls `connector.act` by action and kind; the server
+wrapper refuses `mode: "commit"` unless both locks and `stillActive` are
+open. Policy probes still run (`dry-run`) so Work can show missing reviews.
+To unlock a synthetic write in an isolated fixture only:
 
 1. `features.teamMissionWrites: true` in that fixture's `config.json` (no
    Settings toggle; absent = off).

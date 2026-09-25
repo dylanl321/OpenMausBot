@@ -1,6 +1,12 @@
 import { expect, it } from "vitest";
 import { cursorMovesForward } from "./change-cursor.ts";
-import type { CaptureCall, ConnectionContext, Connector, WatchScope } from "./types.ts";
+import { MISSION_ACTION_IDS, type CaptureCall, type ConnectionContext, type Connector, type WatchScope } from "./types.ts";
+
+const MUTATING = new Set(["PUT", "POST", "PATCH", "DELETE"]);
+
+function requestMethod(init?: RequestInit): string {
+  return (init?.method ?? "GET").toUpperCase();
+}
 
 export function connectorContract(
   connector: Connector,
@@ -24,6 +30,12 @@ export function connectorContract(
       expect(connector.manifest.watch?.scopes.length).toBeGreaterThan(0);
       expect(connector.manifest.watch?.events.length).toBeGreaterThan(0);
     }
+    for (const action of connector.manifest.actions ?? []) {
+      expect(MISSION_ACTION_IDS).toContain(action.id);
+      expect(connector.manifest.kinds).toContain(action.kind);
+      expect(action.label.length).toBeGreaterThan(0);
+    }
+    if (connector.manifest.actions?.length) expect(connector.act).toEqual(expect.any(Function));
   });
 
   it(`${connector.manifest.id} round-trips parseRef and urlPatterns`, () => {
@@ -73,6 +85,50 @@ export function connectorContract(
       const firstIds = new Set(first.changes.map(change => change.id));
       expect(later.changes.every(change => !firstIds.has(change.id))).toBe(true);
       expect(cursorMovesForward(first.cursor, later.cursor)).toBe(true);
+    });
+  }
+
+  if (connector.manifest.actions?.length && connector.act) {
+    // The shared suite never calls mode: "commit". Connector-specific tests
+    // may; the server wrapper is the only production caller and refuses
+    // commit unless workspace, connection, and still-active locks are open.
+    it(`${connector.manifest.id} action dry-run uses ctx.fetch only and emits no mutating methods`, async () => {
+      const requests: string[] = [];
+      const leaked: string[] = [];
+      const original = globalThis.fetch;
+      globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        leaked.push(`${requestMethod(init)} ${String(input)}`);
+        return original(input, init);
+      }) as typeof fetch;
+      try {
+        const recording: ConnectionContext = {
+          ...ctx,
+          fetch: (async (input, init) => {
+            requests.push(`${requestMethod(init)} ${String(input)}`);
+            return ctx.fetch(input, init);
+          }) as typeof fetch,
+        };
+        for (const action of connector.manifest.actions ?? []) {
+          const sample = samples
+            .map(entry => connector.parseRef(entry.ref, ctx))
+            .find(parsed => parsed?.kind === action.kind);
+          const externalId = sample?.externalId ?? (action.kind === "work_item" ? "PAY-1" : "SAMPLE-1");
+          try {
+            await connector.act!(recording, {
+              action: action.id,
+              target: { kind: action.kind, externalId },
+              mode: "dry-run",
+            });
+          } catch {
+            // Incomplete recorded fixtures may throw; mutating HTTP is still forbidden.
+          }
+        }
+      } finally {
+        globalThis.fetch = original;
+      }
+      expect(leaked).toEqual([]);
+      expect(requests.filter(request => MUTATING.has(request.split(" ")[0] ?? ""))).toEqual([]);
+      expect(() => ctx.secret("not-declared")).toThrow(/not declared/);
     });
   }
 
