@@ -185,8 +185,9 @@ export function WorkPage() {
   }, [team, status, pages]);
   const fetchOverviewRef = useRef(fetchOverview);
   fetchOverviewRef.current = fetchOverview;
-  const poll = useRef(createSerialRefresh(request => fetchOverviewRef.current(poll.current.isCurrent, request)));
-  const refresh = useCallback(() => poll.current.refresh(), []);
+  const poll = useRef<ReturnType<typeof createSerialRefresh> | null>(null);
+  poll.current ??= createSerialRefresh(request => fetchOverviewRef.current(generation => poll.current!.isCurrent(generation), request));
+  const refresh = useCallback(() => poll.current!.refresh(), []);
   useEffect(() => {
     let live = true;
     void loadTaskConnectors(path => api(path)).then(list => { if (live) setConnectors(list); });
@@ -196,7 +197,7 @@ export function WorkPage() {
     update();
     const timer = window.setInterval(update, WORK_FALLBACK_POLL_MS);
     const stopLive = subscribeWorkOverviewLive(update);
-    return () => { live = false; poll.current.invalidate(); window.clearInterval(timer); stopLive(); };
+    return () => { live = false; poll.current?.invalidate(); window.clearInterval(timer); stopLive(); };
   }, [refresh, team, status, pages]);
   const loadMore = () => {
     if (!overview?.nextCursor || loading) return;
