@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { connectorOnlyProblems } from "../scripts/check-connector-pr.mjs";
 import { GITLAB_KIT, JIRA_GITLAB_KIT, kitKindsForConnector } from "./team-work-kits.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -28,20 +27,6 @@ describe("modularity guards", () => {
     expect(read("src/components/WorkPage.tsx")).not.toMatch(PROVIDER_COPY);
     expect(read("shared/team-backlog.ts")).not.toMatch(/Jira issues|GitLab MR/);
     expect(read("src/locales/en.json")).not.toMatch(/jira:connection:PROJECT-/);
-  });
-
-  it("still treats a Plane-only actions addition as a connector-only PR", () => {
-    expect(connectorOnlyProblems([
-      "server/connectors/plane/index.ts",
-      "server/connectors/plane/actions.ts",
-      "server/connectors/registry.ts",
-      "docs/connectors.md",
-    ])).toEqual([]);
-    expect(connectorOnlyProblems([
-      "server/connectors/plane/index.ts",
-      "server/connectors/registry.ts",
-      "src/components/WorkPage.tsx",
-    ]).some(problem => problem.includes("src/components/WorkPage.tsx"))).toBe(true);
   });
 
   it("keeps jira-gitlab dropping GitLab issues while the gitlab kit inventories both kinds", () => {

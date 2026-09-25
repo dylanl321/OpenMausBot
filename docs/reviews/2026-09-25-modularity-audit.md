@@ -69,7 +69,7 @@ WorkPage tests still *construct* jira/gitlab fixtures and expect manifest **name
 
 **Was fail.** `server/team-backlog.ts` on `88bfd97b` branched on `connectorId === "jira"` / `"gitlab"` for query usability, board JQL widening, watch skip-if-board, linked-work skip, GitLab project-path scan errors, and scope membership. That is the opposite of “new connector = folder + registry line”: a fourth tracker would have edited infer.
 
-**Fix in this PR.** Optional `Connector.missionScope` (`server/connectors/types.ts:105-128`). Infer/scan call `connectorById(id)?.missionScope` only:
+**Fix in this PR.** Optional `Connector.missionScope` (`server/connectors/types.ts:105-128`). Infer/scan call `connectorById(id)?.missionScope` only. `hasBoard` is computed once after the team-board pass so two tracker watches still both become scopes:
 
 - Jira JQL widening / watch skip / linked-id → JQL: `server/connectors/jira/scope.ts`
 - GitLab project-path usable / watch project / `group/project!n` membership: `server/connectors/gitlab/scope.ts`

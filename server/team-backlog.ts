@@ -123,13 +123,14 @@ export function inferTeamBacklog(input: {
       add(owned, connection.connectorId, board.connectionId, board.query, `${group.name} ${name} board`, group.id);
     } else uncertainBoard = true;
   }
+  const boardConnectors = new Set(owned.map(scope => scope.connectorId));
   for (const watch of input.watches) {
     if (!watch.enabled || sectionKey(watch.section) !== section || watch.source.type !== "connection") continue;
     const connection = connectionForSection([...input.connections], section, watch.source.connectionId);
     if (!connection || !queryCapable(connection)) continue;
     const name = connectorDisplayName(connection.connectorId);
     const scoped = missionScopeOf(connection.connectorId);
-    const hasBoard = owned.some(scope => scope.connectorId === connection.connectorId);
+    const hasBoard = boardConnectors.has(connection.connectorId);
     if (scoped?.fromWatch) {
       const next = scoped.fromWatch({ scope: watch.source.scope, settings: connection.settings, hasBoard });
       if ("skip" in next) continue;

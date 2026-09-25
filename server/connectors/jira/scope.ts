@@ -36,7 +36,7 @@ function fromWatch(input: {
   settings: Record<string, string | number | boolean>;
   hasBoard: boolean;
 }): MissionWatchScope {
-  if (input.hasBoard) return { skip: true };
+  if (input.hasBoard) return { skip: true }; // team board already owns this tracker
   const project = typeof input.scope?.project === "string" ? input.scope.project.trim() : "";
   const query = typeof input.scope?.query === "string" ? input.scope.query.trim() : "";
   const projects = query ? jiraProjectsFromBoard(query) : PROJECT_KEY.test(project) ? [project.toUpperCase()] : null;
