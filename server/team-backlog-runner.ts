@@ -3,9 +3,7 @@ import type { OngoingGoal } from "../shared/ongoing-goal.ts";
 import type { BacklogGate, BacklogTarget, TeamBacklog } from "../shared/team-backlog.ts";
 import type { Watch } from "../shared/watches.ts";
 import type { StoredConnection } from "./connectors/types.ts";
-import {
-  mergeReviewedRequest, missionActionFor, teamMissionWriteAllowed, transitionEvidencedJiraIssue,
-} from "./team-backlog-actions.ts";
+import { missionActionFor, runMissionAction, teamMissionWriteAllowed } from "./team-backlog-actions.ts";
 import { MISSION_KINDS } from "../shared/team-backlog.ts";
 import { backlogGate, backlogReadyToRun, inferTeamBacklog, scanTeamBacklog } from "./team-backlog.ts";
 import { scopeKinds } from "./team-work-kits.ts";
@@ -218,9 +216,9 @@ export async function advanceTeamBacklog(goal: OngoingGoal, deps: BacklogRunnerD
         const action = missionActionFor(target.kind);
         const workspaceWrites = workspaceWritesEnabled(deps);
         const mayWrite = () => teamMissionWriteAllowed(stillActive(), workspaceWrites, connection, action);
-        const result = target.kind === "change_request"
-          ? await mergeReviewedRequest(connection, target, deps.fetchImpl, mayWrite, workspaceWrites)
-          : await transitionEvidencedJiraIssue(connection, target, deps.fetchImpl, mayWrite, workspaceWrites);
+        const result = await runMissionAction({
+          connection, target, action, fetchImpl: deps.fetchImpl, mayWrite, workspaceWrites,
+        });
         Object.assign(target, result.target);
         gates.push(...result.gates);
         if (result.changed) { changedExternally = true; steps += 1; }

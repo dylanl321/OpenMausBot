@@ -83,60 +83,24 @@ function mutatingWrite(request: string) {
   return /^(PUT|PATCH|DELETE) /.test(request) || /^(POST) .*(?:\/merge$|\/transitions$)/.test(request);
 }
 
-function writeReadyApi() {
-  let merged = false;
-  let jiraDone = false;
+const fakeConnection: StoredConnection = {
+  id: "fake-main", connectorId: "fake", label: "Fake",
+  settings: { site: "https://fake.example" }, secrets: { token: "fixture" },
+  sections: ["Delivery"], enabled: true,
+};
+
+function fakeActApi() {
   const requested: string[] = [];
-  const body = (value: unknown, headers?: Record<string, string>) => new Response(JSON.stringify(value), {
-    status: 200, headers: { "content-type": "application/json", ...headers },
-  });
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = String(input);
-    const method = init?.method ?? "GET";
+    const method = (init?.method ?? "GET").toUpperCase();
     requested.push(`${method} ${url}`);
-    if (url.endsWith("/rest/api/3/search/jql")) return body({ issues: [{ key: "PAY-1", fields: {
-      summary: "Deliver PAY-1", description: "Accept PAY-1",
-      status: { name: jiraDone ? "Done" : "In Progress", statusCategory: { key: jiraDone ? "done" : "indeterminate" } },
-      project: { key: "PAY" }, updated: "2026-09-24T10:00:00Z",
-    } }] });
-    if (url.includes("/issues?")) return body([], { "x-next-page": "" });
-    if (url.includes("/merge_requests?")) return body([{ iid: 10, title: "Ready", state: merged ? "merged" : "opened",
-      sha, updated_at: "2026-09-24T10:00:00Z" }], { "x-next-page": "" });
-    if (url.endsWith("/merge_requests/10/merge")) {
-      merged = true;
-      return body({ state: "merged" });
-    }
-    if (url.endsWith("/merge_requests/10")) return body({
-      state: merged ? "merged" : "opened", sha, detailed_merge_status: "mergeable",
-      draft: false, has_conflicts: false, blocking_discussions_resolved: true,
-      head_pipeline: { status: "success", sha }, merge_commit_sha: merged ? "c".repeat(40) : null,
-    });
-    if (url.endsWith("/merge_requests/10/approvals")) return body({
-      approvals_left: 0,
-      approved_by: [
-        { user: { id: 101 }, approved_at: "2026-09-24T11:00:00Z" },
-        { user: { id: 102 }, approved_at: "2026-09-24T11:00:00Z" },
-      ],
-    });
-    if (url.endsWith("/merge_requests/10/approval_state")) return body({ rules: [
-      { name: "Security", approved: true, approved_by: [{ id: 101 }] },
-      { name: "Manager", approved: true, approved_by: [{ id: 102 }] },
-    ] });
-    if (url.includes("/merge_requests/10/versions")) return body([{ head_commit_sha: sha, created_at: "2026-09-24T10:00:00Z" }]);
-    if (url.endsWith("/projects/acme%2Fapp")) return body({
-      only_allow_merge_if_pipeline_succeeds: true, only_allow_merge_if_all_discussions_are_resolved: true,
-    });
-    if (url.includes("/issue/PAY-1/transitions")) {
-      if (method === "POST") {
-        jiraDone = true;
-        return new Response(null, { status: 204 });
-      }
-      return body({ transitions: [{ id: "11", to: { name: "Done", statusCategory: { key: "done" } } }] });
-    }
-    if (url.includes("/issue/PAY-1")) return body({ key: "PAY-1", fields: { status: {
-      name: jiraDone ? "Done" : "In Progress", statusCategory: { key: jiraDone ? "done" : "indeterminate" },
-    } } });
-    throw new Error(`Unexpected fixture request ${method} ${url}`);
+    if (method !== "GET") throw new Error(`Unexpected mutating fixture request ${method} ${url}`);
+    const id = url.split("/").pop() ?? "";
+    const spec = id === "PAY-2"
+      ? { title: "Untracked refunds", state: { label: "To Do", category: "todo" } }
+      : { title: "Refund failures", state: { label: "In Progress", category: "in_progress" } };
+    return new Response(JSON.stringify(spec), { status: 200 });
   };
   return { fetchImpl, requested };
 }
@@ -156,22 +120,24 @@ function evidencedWriteGoal(dir: string, fetchImpl: typeof fetch, options: {
   teamMissionWrites?: boolean;
 } = {}) {
   const goals = new OngoingGoals(join(dir, "goals.json"));
-  const jiraIdentity = "jira:jira-main:PAY-1";
-  const gitlabIdentity = "gitlab:gitlab-main:acme/app!10";
+  const identities = ["fake:fake-main:PAY-1", "fake:fake-main:PAY-2"] as const;
   const goal = goals.create({ ownerBotId: "lead", sourceThreadId: "room-thread",
-    objective: "finish our current Jira work and merge the MRs" }, "execution", {
-    ...emptyTeamBacklog("Delivery"), scopes, targets: [
-      { identity: jiraIdentity, connectorId: "jira", connectionId: "jira-main", externalId: "PAY-1",
-        kind: "work_item", title: "Deliver PAY-1", state: "in_progress", label: "In Progress",
-        updatedAt: 1, observedAt: 1, taskId: "jira-task" },
-      { identity: gitlabIdentity, connectorId: "gitlab", connectionId: "gitlab-main", externalId: "acme/app!10",
-        kind: "change_request", title: "Ready", state: "in_review", label: "opened",
-        updatedAt: 1, observedAt: 1, headSha: sha, dispatchedHeadSha: sha, taskId: "mr-task" },
+    objective: "finish the current tracked work items" }, "execution", {
+    ...emptyTeamBacklog("Delivery"),
+    scopes: [{ id: "fake", connectorId: "fake", connectionId: "fake-main", query: "no-such-item",
+      label: "Fake", kinds: ["work_item"] }],
+    targets: [
+      { identity: identities[0], connectorId: "fake", connectionId: "fake-main", externalId: "PAY-1",
+        kind: "work_item", title: "Refund failures", state: "in_progress", label: "In Progress",
+        updatedAt: 1, observedAt: 1, taskId: "item-task" },
+      { identity: identities[1], connectorId: "fake", connectionId: "fake-main", externalId: "PAY-2",
+        kind: "work_item", title: "Untracked refunds", state: "todo", label: "To Do",
+        updatedAt: 1, observedAt: 1, taskId: "extra-task" },
     ],
   });
   const records = new Map<string, WorkRecord>([
-    ["jira-task", evidencedItem("jira-task", jiraIdentity)],
-    ["mr-task", evidencedItem("mr-task", gitlabIdentity)],
+    ["item-task", evidencedItem("item-task", identities[0])],
+    ["extra-task", evidencedItem("extra-task", identities[1])],
   ]);
   const coordination = {
     items: { records, find: (_section: string, identity: string) => [...records.values()].find(item => item.identity === identity) },
@@ -181,7 +147,7 @@ function evidencedWriteGoal(dir: string, fetchImpl: typeof fetch, options: {
   return {
     goal,
     deps: {
-      goals, coordination, connections: () => options.connections ?? connections, groups: () => [group],
+      goals, coordination, connections: () => options.connections ?? [fakeConnection], groups: () => [group],
       watches: () => [], ownerSection: () => "Delivery", fetchImpl,
       ...(options.teamMissionWrites !== undefined ? { teamMissionWrites: options.teamMissionWrites } : {}),
     },
@@ -511,31 +477,26 @@ describe("team backlog scope and inventory", () => {
     expect(goal.status).toBe("waiting");
   });
 
-  it("records an access gate and never merges or transitions when write locks are off", async () => {
-    const api = writeReadyApi();
+  it("records an access gate and never commits when write locks are off", async () => {
+    const api = fakeActApi();
     const dir = mkdtempSync(join(tmpdir(), "omb-backlog-lock-")); dirs.push(dir);
     const { goal, deps } = evidencedWriteGoal(dir, api.fetchImpl);
     await advanceTeamBacklog(goal, deps);
     expect(api.requested.filter(request => mutatingWrite(request))).toEqual([]);
     expect(goal.teamBacklog?.gates.filter(gate => gate.kind === "access")).toHaveLength(2);
-    expect(goal.teamBacklog?.targets.map(target => target.state)).toEqual(["in_progress", "in_review"]);
+    expect(goal.teamBacklog?.targets.map(target => target.state)).toEqual(["in_progress", "todo"]);
     expect(goal.status).not.toBe("completed");
   });
 
-  it("merges and transitions when both locks are on and the goal is still active", async () => {
-    const api = writeReadyApi();
+  it("commits through the connector action when both locks are on and the goal is still active", async () => {
+    const api = fakeActApi();
     const dir = mkdtempSync(join(tmpdir(), "omb-backlog-unlock-")); dirs.push(dir);
-    const unlocked = connections.map(connection => ({
-      ...connection,
-      writes: { enabled: true as const, allow: [connection.connectorId === "gitlab"
-        ? "merge_change_request" as const : "complete_work_item" as const] },
-    }));
+    const unlocked = [{ ...fakeConnection, writes: { enabled: true as const, allow: ["complete_work_item" as const] } }];
     const { goal, deps } = evidencedWriteGoal(dir, api.fetchImpl, {
       connections: unlocked, teamMissionWrites: true,
     });
     await advanceTeamBacklog(goal, deps);
-    expect(api.requested.some(request => request.startsWith("PUT ") && request.includes("/merge"))).toBe(true);
-    expect(api.requested.some(request => request.startsWith("POST ") && request.includes("/transitions"))).toBe(true);
+    expect(api.requested.filter(request => mutatingWrite(request))).toEqual([]);
     expect(goal.teamBacklog?.targets.every(target => target.state === "done")).toBe(true);
     expect(goal.teamBacklog?.gates.filter(gate => gate.kind === "access")).toEqual([]);
   });

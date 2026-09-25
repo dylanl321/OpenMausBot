@@ -36,3 +36,27 @@ describe("fake connector query", () => {
     expect(result.items.map(item => item.externalId)).toContain("PAY-2");
   });
 });
+
+describe("fake connector actions", () => {
+  it("completes a work item without mutating HTTP, including on commit", async () => {
+    const methods: string[] = [];
+    const recording = {
+      ...ctx,
+      fetch: (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        methods.push((init?.method ?? "GET").toUpperCase());
+        return ctx.fetch(input, init);
+      }) as typeof fetch,
+    };
+    expect(await fakeConnector.act!(recording, {
+      action: "complete_work_item",
+      target: { kind: "work_item", externalId: "PAY-1" },
+      mode: "dry-run",
+    })).toMatchObject({ changed: false, gates: [] });
+    expect(await fakeConnector.act!(recording, {
+      action: "complete_work_item",
+      target: { kind: "work_item", externalId: "PAY-1" },
+      mode: "commit",
+    })).toMatchObject({ changed: true, target: { state: "done" }, gates: [] });
+    expect(methods.every(method => method === "GET")).toBe(true);
+  });
+});

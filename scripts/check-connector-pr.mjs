@@ -1,6 +1,7 @@
 // Connector-only PRs (Phase 8 drop-in proof) may touch one connector folder,
-// the single registry import, and docs. Everything else is a mixed PR and
-// this check stays out of the way.
+// the single registry import, and docs. Optional `actions` / `act` files
+// inside that folder (e.g. server/connectors/plane/actions.ts) are allowed.
+// Everything else is a mixed PR and this check stays out of the way.
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";

@@ -21,6 +21,7 @@ server/connectors/
   contract-suite.ts   shared tests every connector must pass
   <id>/
     index.ts          export const <id>Connector: Connector
+    actions.ts        optional attested writes (`act`)
     <id>.test.ts
     fixtures/         recorded HTTP + redacted tool previews
 ```
@@ -37,6 +38,10 @@ server/connectors/
 A drop-in PR should touch only `server/connectors/<id>/**`, that one registry
 line, docs, and tests or fixtures under the same folder. `changes` belongs in
 the connector so watches can use it later without another connector edit.
+Optional `actions` / `act` belong in that same folder (`actions.ts` is
+allowed). A Plane-only `complete_work_item` is still a connector-only PR;
+the mission runner is not edited. `scripts/check-connector-pr.mjs` already
+allows anything under `server/connectors/<id>/`.
 
 ## The contract
 
@@ -45,7 +50,7 @@ The server calls these methods; it never imports a provider by name.
 
 | Piece | What it must do |
 |---|---|
-| `manifest` | Stable `id`, display `name`, `kinds`, settings (non-secret), `secrets`, `capabilities`. Optional `icon` (inline SVG, `stroke="currentColor"`), `statusDefaults`, `watch`. |
+| `manifest` | Stable `id`, display `name`, `kinds`, settings (non-secret), `secrets`, `capabilities`. Optional `icon` (inline SVG, `stroke="currentColor"`), `statusDefaults`, `watch`, `actions`. |
 | `test` | Validate settings + secrets. Return `{ ok: true, account }` (a host or workspace slug) or `{ ok: false, error }`. |
 | `parseRef` | Turn `PAY-123`, `#140`, `group/project!482`, or a pasted URL into `{ kind, externalId }`. |
 | `urlPatterns` | Regexes the link dialog uses to recognise a URL. `parseRef(url)` must equal `parseRef(ref)` for every sample. |
@@ -55,6 +60,7 @@ The server calls these methods; it never imports a provider by name.
 | `changes` | Optional. Cheap, idempotent change feed after `cursor`. Same cursor → same `SourceChange[]`. Cursor only moves forward. |
 | `webhookChanges` | Optional. Map a verified webhook onto the same `SourceChange.id`s the poll feed emits. |
 | `capture` | Declarative rules over redacted `item.completed` previews. |
+| `actions` / `act` | Optional attested writes (`complete_work_item`, `merge_change_request`). `dry-run` evaluates live policy and must not send PUT/POST/PATCH/DELETE. `commit` re-reads, writes through `ctx.fetch`, and reads back. The server wrapper refuses `commit` unless workspace `features.teamMissionWrites`, the connection `writes` allowlist, and live `mayWrite()` are all open. Absent `actions` / `act` is an access gate and no HTTP. |
 
 `SyncedItem` is a `LinkedItem` without the fields the server owns (`id`,
 `role`, `provenance`, `createdBy`). Status labels stay in the provider’s
@@ -100,6 +106,7 @@ It checks:
 - `test` uses `ctx.fetch` (no raw `globalThis.fetch`)
 - when `changes` exists: `watch` is declared, the same cursor returns the same ids, and the next cursor is not earlier
 - when `webhookChanges` is given a recorded body: at least one id matches the poll feed
+- when `actions` is declared: `act` exists, `dry-run` emits no mutating methods, uses `ctx.fetch` only (never `globalThis.fetch`), and undeclared secrets still throw. The suite does not call `commit` unless a connector-specific harness does.
 
 Add your own tests for mapping, query pagination, webhook verification,
 truncated previews, and secret hygiene.

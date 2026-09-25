@@ -1,7 +1,32 @@
+import type { BacklogGate, BacklogTarget } from "../../shared/team-backlog.ts";
 import type { LinkKind, LinkedItem, Provenance, StatusCategory, SyncedItem } from "../../shared/work-links.ts";
 import type { SourceChange, SourceChangeType, WatchScope } from "../../shared/watches.ts";
 
 export type { SourceChange, SourceChangeType, SyncedItem, WatchScope };
+
+/** Server-owned mission completions. Absent from a connection means no writes. */
+export const MISSION_ACTION_IDS = ["complete_work_item", "merge_change_request"] as const;
+export type MissionActionId = (typeof MISSION_ACTION_IDS)[number];
+
+export type ConnectorActionMode = "dry-run" | "commit";
+
+export interface ConnectorAction {
+  id: MissionActionId;
+  kind: LinkKind;
+  label: string;
+}
+
+export interface ConnectorActInput {
+  action: MissionActionId;
+  target: { kind: LinkKind; externalId: string; headSha?: string };
+  mode: ConnectorActionMode;
+}
+
+export interface ConnectorActResult {
+  changed: boolean;
+  target: Partial<BacklogTarget>;
+  gates: BacklogGate[];
+}
 
 export interface SettingField {
   key: string;
@@ -21,6 +46,8 @@ export interface ConnectorManifest {
   capabilities: { webhooks?: boolean; query?: boolean; poll?: boolean };
   statusDefaults?: Record<string, StatusCategory>;
   watch?: { scopes: SettingField[]; events: SourceChangeType[] };
+  /** Optional attested writes. Absent means the runner records an access gate. */
+  actions?: ConnectorAction[];
 }
 
 export interface ConnectionContext {
@@ -63,12 +90,15 @@ export interface Connector {
   changes?(ctx: ConnectionContext, scope: WatchScope, cursor: string | null): Promise<{ changes: SourceChange[]; cursor: string }>;
   /** Map a verified webhook onto the same `SourceChange.id`s the poll feed emits. */
   webhookChanges?(ctx: ConnectionContext, headers: Headers, body: unknown): Promise<SourceChange[]>;
+  /**
+   * Optional attested write. `dry-run` evaluates live policy and must not
+   * send PUT/POST/PATCH/DELETE. `commit` re-reads, writes, and reads back.
+   * The server wrapper refuses `commit` unless workspace, connection, and
+   * still-active locks are all open.
+   */
+  act?(ctx: ConnectionContext, input: ConnectorActInput): Promise<ConnectorActResult>;
   capture: CaptureRule[];
 }
-
-/** Server-owned mission completions. Absent from a connection means no writes. */
-export const MISSION_ACTION_IDS = ["complete_work_item", "merge_change_request"] as const;
-export type MissionActionId = (typeof MISSION_ACTION_IDS)[number];
 
 export type ConnectionWrites = {
   enabled?: boolean;
