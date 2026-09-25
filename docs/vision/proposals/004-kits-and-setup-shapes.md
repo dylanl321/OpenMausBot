@@ -2,9 +2,8 @@
 
 Status: draft
 Owner: unassigned
-Plan: [PR #18](https://github.com/dylanl321/OpenMausBot/pull/18)
-(`docs/plans/2026-09-25-flexible-team-work.md` is on that branch,
-not on `codex/bedrock-provider`)
+Plan: [`docs/plans/2026-09-25-flexible-team-work.md`](../../plans/2026-09-25-flexible-team-work.md)
+(P0–P5 on `codex/bedrock-provider`; kit JSON in `server/team-work-kits.json`)
 Related: [connectors.md](../../connectors.md),
 [setup-wizard](../../verification/setup-wizard.md),
 [001](001-reconcile-to-observed.md)

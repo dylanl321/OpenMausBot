@@ -45,3 +45,6 @@ registered connector or “merge requests” is enough to start a mission; the
 detector does not require both “jira” and “gitlab”. A named issue or MR
 (`PAY-123`, `group/project!10`) stays a deliverable and is not widened. This
 test never reads or mutates live tracker issues or merge requests.
+Desk-test, the flag-off default, and the synthetic writes-enabled recipe
+live in [team-backlog.md](team-backlog.md). Never point either recipe at
+live Jira/GitLab.

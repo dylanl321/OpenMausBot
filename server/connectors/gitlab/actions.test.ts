@@ -245,7 +245,7 @@ describe("gitlab merge_change_request", () => {
   });
 
   it("does not compile extra approval-rule names into production code", () => {
-    for (const file of ["actions.ts", "../jira/actions.ts", "../../team-backlog-runner.ts", "../../team-work-kits.ts"]) {
+    for (const file of ["actions.ts", "../jira/actions.ts", "../../team-backlog-runner.ts", "../../team-work-kits.ts", "../../team-work-kits.json"]) {
       const source = readFileSync(join(here, file), "utf8");
       expect(source, file).not.toMatch(/["']Security["']/);
       expect(source, file).not.toMatch(/["']Manager["']/);

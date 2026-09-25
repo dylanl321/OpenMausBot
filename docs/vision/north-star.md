@@ -89,10 +89,8 @@ Mission inventory should work the same way. See
   for one team. Other teams run tracker-only, code-host-only, a
   different issue system, two git hosts, or chat-started work.
 - Not a second product for "everyone else." One model, many kits.
-  The flexible-team-work plan lives on
-  [PR #18](https://github.com/dylanl321/OpenMausBot/pull/18)
-  (`docs/plans/2026-09-25-flexible-team-work.md` is not on this
-  branch).
+  The flexible-team-work plan lives on this branch
+  ([`docs/plans/2026-09-25-flexible-team-work.md`](../plans/2026-09-25-flexible-team-work.md)).
 - Not an unsupervised write surface. Completing external work is an
   optional, fail-closed action. Off until an operator opens the
   locks.

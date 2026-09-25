@@ -1,0 +1,72 @@
+{
+  "kits": [
+    {
+      "id": "jira-gitlab",
+      "name": "Jira + GitLab",
+      "connectors": [
+        { "role": "tracker", "connectorId": "jira", "kinds": ["work_item"] },
+        { "role": "code", "connectorId": "gitlab", "kinds": ["change_request"] }
+      ],
+      "watches": [
+        {
+          "name": "Tracker work items",
+          "events": ["item.created", "item.updated", "item.state_changed"],
+          "scopeFrom": "connection"
+        },
+        {
+          "name": "Change requests",
+          "events": ["change_request.opened", "change_request.updated", "change_request.merged", "change_request.closed"],
+          "scopeFrom": "connection"
+        }
+      ]
+    },
+    {
+      "id": "gitlab",
+      "name": "GitLab",
+      "connectors": [
+        { "role": "tracker", "connectorId": "gitlab", "kinds": ["work_item"] },
+        { "role": "code", "connectorId": "gitlab", "kinds": ["change_request"] }
+      ],
+      "watches": [
+        {
+          "name": "Work items",
+          "events": ["item.created", "item.updated", "item.state_changed"],
+          "scopeFrom": "connection"
+        },
+        {
+          "name": "Change requests",
+          "events": ["change_request.opened", "change_request.updated", "change_request.merged", "change_request.closed"],
+          "scopeFrom": "connection"
+        }
+      ]
+    },
+    {
+      "id": "jira",
+      "name": "Jira",
+      "connectors": [
+        { "role": "tracker", "connectorId": "jira", "kinds": ["work_item"] }
+      ],
+      "watches": [
+        {
+          "name": "Work items",
+          "events": ["item.created", "item.updated", "item.state_changed"],
+          "scopeFrom": "connection"
+        }
+      ]
+    },
+    {
+      "id": "plane",
+      "name": "Plane",
+      "connectors": [
+        { "role": "tracker", "connectorId": "plane", "kinds": ["work_item"] }
+      ],
+      "watches": [
+        {
+          "name": "Work items",
+          "events": ["item.created", "item.updated", "item.state_changed"],
+          "scopeFrom": "connection"
+        }
+      ]
+    }
+  ]
+}
