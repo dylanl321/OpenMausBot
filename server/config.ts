@@ -290,6 +290,10 @@ const featureConfigSchema = z.object({
    * enabled; a one-shot that fails or answers junk leaves the first-message
    * snippet in place — see llmThreadTitlesEnabled. */
   llmThreadTitles: z.boolean().optional(),
+  /** Opt-in server-owned mission writes (GitLab merge, Jira Done). Off
+   * until explicitly enabled; there is no Settings toggle — see
+   * teamMissionWritesEnabled. Absent = off. */
+  teamMissionWrites: z.boolean().optional(),
 });
 /** First-run progress. Kept in the workspace config rather than a browser so
  * it survives cleared site data and is shared by every paired client. Hint
@@ -522,7 +526,7 @@ export interface AppConfig {
    * separate container, durable workspace, viewer and lease. */
   localVm?: { mode?: "shared" | "per-bot"; maxInstances?: number };
   /** Opt-in product experiments. Every flag defaults to disabled. */
-  features?: { skillAuthoring?: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean };
+  features?: { skillAuthoring?: boolean; showToolCalls?: boolean; browser?: boolean; sharedComputers?: boolean; claudeUserMcp?: boolean; llmThreadTitles?: boolean; teamMissionWrites?: boolean };
   /** First-run progress; see onboardingConfigSchema. */
   onboarding?: { completedAt?: string; version?: number; reelSeen?: boolean; hintsSeen?: string[] };
   /** Named browser sessions any bot can be pointed at. */
@@ -744,6 +748,17 @@ export function claudeUserMcpEnabled(cfg: AppConfig): boolean {
  * answers anything unusable leaves the snippet untouched. */
 export function llmThreadTitlesEnabled(cfg: AppConfig): boolean {
   return cfg.features?.llmThreadTitles === true;
+}
+
+/** Opt-in server-owned mission writes (merge / tracker Done). Off unless an
+ * explicit `true` turns it on. The connection still needs `writes.enabled`
+ * and an action on `writes.allow`; either lock closed means dry-run only.
+ *
+ * Deliberately NOT a Settings toggle: same posture as sharedComputers. Enable
+ * by hand in `~/.openmausbot/config.json`
+ * (`{"features": {"teamMissionWrites": true}}`). */
+export function teamMissionWritesEnabled(cfg: AppConfig): boolean {
+  return cfg.features?.teamMissionWrites === true;
 }
 
 /** Config sections no provider driver reads. A write that touches only

@@ -66,6 +66,16 @@ export interface Connector {
   capture: CaptureRule[];
 }
 
+/** Server-owned mission completions. Absent from a connection means no writes. */
+export const MISSION_ACTION_IDS = ["complete_work_item", "merge_change_request"] as const;
+export type MissionActionId = (typeof MISSION_ACTION_IDS)[number];
+
+export type ConnectionWrites = {
+  enabled?: boolean;
+  /** Empty or absent allowlist means no action may write. Unknown ids are rejected at parse. */
+  allow?: MissionActionId[];
+};
+
 export type StoredConnection = {
   id: string;
   connectorId: string;
@@ -75,6 +85,8 @@ export type StoredConnection = {
   /** Empty means every section. Otherwise sectionKey values. */
   sections: string[];
   enabled: boolean;
+  /** Fail-closed external writes. Absent / disabled / empty allow = no mutating HTTP. */
+  writes?: ConnectionWrites;
 };
 
 export type ConnectionListing = Omit<StoredConnection, "secrets"> & { secretKeys: string[] };

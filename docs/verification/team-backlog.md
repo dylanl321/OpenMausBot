@@ -28,6 +28,19 @@ assigned Jira board. It proves that an empty backlog is complete only after
 both external lists finish, and that open work instead appears in the Work
 overview without any synthetic Jira transition or GitLab merge.
 
+**Writes stay off unless both locks are set.** Default config and default
+connections never send PUT/POST/PATCH/DELETE for a merge or Jira Done
+transition. Policy probes still run so Work can show missing reviews. To
+unlock a synthetic write in an isolated fixture only:
+
+1. `features.teamMissionWrites: true` in that fixture's `config.json` (no
+   Settings toggle; absent = off).
+2. On that connection, `writes.enabled: true` and the action on
+   `writes.allow` (`complete_work_item` or `merge_change_request`).
+
+Either lock closed records an `access` gate and leaves the tracker/MR
+unchanged. Do not enable these locks against live tokens from a recipe.
+
 Before rollout, run `pnpm lint`, `pnpm typecheck`, `pnpm build`, and
 `pnpm build:server`. Identify the connected workspace explicitly and check
 that its running turns are quiescent before replacing its server/UI. Do not

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { BacklogTarget } from "../shared/team-backlog.ts";
 import type { StoredConnection } from "./connectors/types.ts";
-import { mergeReviewedRequest, transitionEvidencedJiraIssue } from "./team-backlog-actions.ts";
+import { mergeReviewedRequest, MISSION_WRITES_DISABLED, transitionEvidencedJiraIssue } from "./team-backlog-actions.ts";
 
 const sha = "a".repeat(40);
 const newer = "b".repeat(40);
@@ -10,6 +10,20 @@ const target: BacklogTarget = { identity: "gitlab:gitlab-main:acme/app!10", conn
   updatedAt: 1, observedAt: 2, headSha: sha };
 const connection: StoredConnection = { id: "gitlab-main", connectorId: "gitlab", label: "GitLab",
   settings: { site: "http://127.0.0.1:8325", project: "acme/app" }, secrets: { token: "fixture" }, sections: ["Delivery"], enabled: true };
+const gitlabUnlocked: StoredConnection = { ...connection, writes: { enabled: true, allow: ["merge_change_request"] } };
+const jiraConnection: StoredConnection = { ...connection, connectorId: "jira", id: "jira-main",
+  secrets: { email: "fixture@example.invalid", apiToken: "fixture" } };
+const jiraUnlocked: StoredConnection = { ...jiraConnection, writes: { enabled: true, allow: ["complete_work_item"] } };
+const jiraIssue: BacklogTarget = { ...target, identity: "jira:jira-main:PAY-1", connectorId: "jira", connectionId: "jira-main",
+  externalId: "PAY-1", kind: "work_item", state: "in_progress", label: "In Progress", headSha: undefined };
+
+function mutating(requests: Array<{ method: string }>) {
+  return requests.filter(request => ["PUT", "POST", "PATCH", "DELETE"].includes(request.method));
+}
+
+function commitMerge(fetchImpl: typeof fetch, mayWrite: () => boolean = () => true) {
+  return mergeReviewedRequest(gitlabUnlocked, target, fetchImpl, mayWrite, true);
+}
 
 function gitlabFixture(options: { head?: string; manager?: boolean; error?: boolean; pipeline?: string;
   pipelineSha?: string | null; staleApproval?: boolean; policyUnknown?: boolean;
@@ -57,9 +71,40 @@ function gitlabFixture(options: { head?: string; manager?: boolean; error?: bool
 }
 
 describe("current-head external actions", () => {
+  it("does not write a ready MR or unique Jira Done transition unless both locks are open", async () => {
+    const gitlab = gitlabFixture();
+    const locked = await mergeReviewedRequest(connection, target, gitlab.fetchImpl);
+    expect(locked).toMatchObject({ changed: false, target, gates: [expect.objectContaining({
+      kind: "access", detail: MISSION_WRITES_DISABLED,
+    })] });
+    expect(mutating(gitlab.requests)).toEqual([]);
+    expect(gitlab.requests.some(request => request.url.endsWith("/approvals"))).toBe(true);
+    const flagOnly = await mergeReviewedRequest(connection, target, gitlabFixture().fetchImpl, () => true, true);
+    expect(flagOnly).toMatchObject({ changed: false, gates: [expect.objectContaining({ kind: "access" })] });
+    const allowOnly = await mergeReviewedRequest(gitlabUnlocked, target, gitlabFixture().fetchImpl, () => true, false);
+    expect(allowOnly).toMatchObject({ changed: false, gates: [expect.objectContaining({ kind: "access" })] });
+    const emptyAllow = await mergeReviewedRequest({ ...connection, writes: { enabled: true, allow: [] } },
+      target, gitlabFixture().fetchImpl, () => true, true);
+    expect(emptyAllow).toMatchObject({ changed: false, gates: [expect.objectContaining({ kind: "access" })] });
+
+    const requests: string[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      requests.push(`${init?.method ?? "GET"} ${url}`);
+      return new Response(JSON.stringify(url.endsWith("?fields=status")
+        ? { key: "PAY-1", fields: { status: { name: "In Progress", statusCategory: { key: "indeterminate" } } } }
+        : { transitions: [{ id: "11", to: { name: "Done", statusCategory: { key: "done" } } }] }), { status: 200 });
+    };
+    expect(await transitionEvidencedJiraIssue(jiraConnection, jiraIssue, fetchImpl)).toMatchObject({
+      changed: false, target: jiraIssue, gates: [expect.objectContaining({ kind: "access", detail: MISSION_WRITES_DISABLED })],
+    });
+    expect(requests.every(request => request.startsWith("GET"))).toBe(true);
+    expect(requests.some(request => request.includes("/transitions"))).toBe(true);
+  });
+
   it("merges only after current-head Security, Manager and project policy checks, with an exact SHA precondition", async () => {
     const api = gitlabFixture();
-    const result = await mergeReviewedRequest(connection, target, api.fetchImpl);
+    const result = await commitMerge(api.fetchImpl);
     expect(result).toMatchObject({ changed: true, target: { state: "done", label: "merged", headSha: sha }, gates: [] });
     expect(result.target.result).toContain(newer);
     expect(api.requests.filter(request => request.method === "PUT")).toHaveLength(1);
@@ -92,7 +137,7 @@ describe("current-head external actions", () => {
 
   it("proves undated current approvers using paginated post-head system notes, not forged or stale comments", async () => {
     const proved = gitlabFixture({ undated: true });
-    expect((await mergeReviewedRequest(connection, target, proved.fetchImpl)).target.state).toBe("done");
+    expect((await commitMerge(proved.fetchImpl)).target.state).toBe("done");
     expect(proved.requests.filter(request => request.url.includes("/notes?"))).toHaveLength(2);
     for (const unsafe of [gitlabFixture({ undated: true, forgedNote: true }),
       gitlabFixture({ undated: true, staleApproval: true })]) {
@@ -106,12 +151,8 @@ describe("current-head external actions", () => {
 
   it("rechecks a stopped mission immediately before either external write", async () => {
     const gitlab = gitlabFixture();
-    await expect(mergeReviewedRequest(connection, target, gitlab.fetchImpl, () => false)).rejects.toThrow(/stopped before/);
-    expect(gitlab.requests.some(request => request.method === "PUT")).toBe(false);
-    const jira = { ...connection, connectorId: "jira", id: "jira-main",
-      secrets: { email: "fixture@example.invalid", apiToken: "fixture" } };
-    const issue: BacklogTarget = { ...target, identity: "jira:jira-main:PAY-1", connectorId: "jira", connectionId: "jira-main",
-      externalId: "PAY-1", kind: "work_item", state: "in_progress", label: "In Progress" };
+    await expect(commitMerge(gitlab.fetchImpl, () => false)).rejects.toThrow(/stopped before/);
+    expect(mutating(gitlab.requests)).toEqual([]);
     const requests: string[] = [];
     const fetchImpl: typeof fetch = async (input, init) => {
       const url = String(input);
@@ -120,14 +161,11 @@ describe("current-head external actions", () => {
         ? { key: "PAY-1", fields: { status: { name: "In Progress", statusCategory: { key: "indeterminate" } } } }
         : { transitions: [{ id: "11", to: { name: "Done", statusCategory: { key: "done" } } }] }), { status: 200 });
     };
-    await expect(transitionEvidencedJiraIssue(jira, issue, fetchImpl, () => false)).rejects.toThrow(/stopped before/);
+    await expect(transitionEvidencedJiraIssue(jiraUnlocked, jiraIssue, fetchImpl, () => false, true)).rejects.toThrow(/stopped before/);
     expect(requests.every(request => request.startsWith("GET"))).toBe(true);
   });
 
   it("transitions a Jira issue through a unique done transition and reads back the status", async () => {
-    const jira = { ...connection, connectorId: "jira", id: "jira-main", secrets: { email: "fixture@example.invalid", apiToken: "fixture" } };
-    const issue: BacklogTarget = { ...target, identity: "jira:jira-main:PAY-1", connectorId: "jira", connectionId: "jira-main",
-      externalId: "PAY-1", kind: "work_item", state: "in_progress", label: "In Progress", headSha: undefined };
     let done = false;
     const requests: string[] = [];
     const fetchImpl: typeof fetch = async (input, init) => {
@@ -146,7 +184,9 @@ describe("current-head external actions", () => {
       ] }), { status: 200 });
       throw new Error(`Unexpected ${url}`);
     };
-    expect(await transitionEvidencedJiraIssue(jira, issue, fetchImpl)).toMatchObject({ changed: true, target: { state: "done" }, gates: [] });
+    expect(await transitionEvidencedJiraIssue(jiraUnlocked, jiraIssue, fetchImpl, () => true, true)).toMatchObject({
+      changed: true, target: { state: "done" }, gates: [],
+    });
     expect(requests.filter(request => request.startsWith("POST"))).toHaveLength(1);
   });
 

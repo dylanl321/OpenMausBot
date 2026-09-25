@@ -1,6 +1,38 @@
-import type { StoredConnection } from "./connectors/types.ts";
+import type { MissionActionId, StoredConnection } from "./connectors/types.ts";
 import { backlogGate } from "./team-backlog.ts";
 import type { BacklogGate, BacklogTarget } from "../shared/team-backlog.ts";
+
+export const MISSION_WRITES_DISABLED =
+  "External mission writes are disabled until features.teamMissionWrites is on and this connection allowlists the action.";
+
+export function missionActionFor(kind: BacklogTarget["kind"]): MissionActionId {
+  return kind === "change_request" ? "merge_change_request" : "complete_work_item";
+}
+
+export function connectionAllowsMissionWrite(connection: StoredConnection, action: MissionActionId): boolean {
+  return connection.writes?.enabled === true && (connection.writes.allow ?? []).includes(action);
+}
+
+export function teamMissionWriteAllowed(
+  stillActive: boolean,
+  workspaceWrites: boolean,
+  connection: StoredConnection,
+  action: MissionActionId,
+): boolean {
+  return stillActive && workspaceWrites && connectionAllowsMissionWrite(connection, action);
+}
+
+function writesUnlocked(connection: StoredConnection, action: MissionActionId, workspaceWrites: boolean): boolean {
+  return workspaceWrites && connectionAllowsMissionWrite(connection, action);
+}
+
+function writesLockedOutcome(target: BacklogTarget): Outcome {
+  return {
+    target,
+    gates: [backlogGate("access", MISSION_WRITES_DISABLED, "Workspace owner", target.identity)],
+    changed: false,
+  };
+}
 
 type Outcome = { target: BacklogTarget; gates: BacklogGate[]; changed: boolean };
 
@@ -73,7 +105,7 @@ async function approvalNoteTimes(connection: StoredConnection, base: string, fet
  * immediately before the SHA-preconditioned PUT and again after it. Unknown
  * policy/approval state is a gate, never a reason to skip a check. */
 export async function mergeReviewedRequest(connection: StoredConnection, target: BacklogTarget,
-  fetchImpl: typeof fetch = fetch, mayWrite: () => boolean = () => true): Promise<Outcome> {
+  fetchImpl: typeof fetch = fetch, mayWrite: () => boolean = () => false, workspaceWrites = false): Promise<Outcome> {
   const match = /^(.+)!([1-9]\d*)$/.exec(target.externalId);
   if (connection.connectorId !== "gitlab" || !match) throw new Error("Invalid GitLab MR identity");
   const base = `/projects/${encodeURIComponent(match[1])}/merge_requests/${match[2]}`;
@@ -156,6 +188,7 @@ export async function mergeReviewedRequest(connection: StoredConnection, target:
     gates.push(backlogGate("policy", "Required review discussions are not resolved.", "MR reviewers", target.identity));
   }
   if (gates.length) return { target, gates, changed: false };
+  if (!writesUnlocked(connection, "merge_change_request", workspaceWrites)) return writesLockedOutcome(target);
   if (!mayWrite()) throw new Error("The goal stopped before the SHA-locked merge was sent");
   const merged = await gitlabRequest(connection, `${base}/merge`, fetchImpl, { method: "PUT",
     headers: { "content-type": "application/json" }, body: JSON.stringify({ sha }) });
@@ -167,7 +200,7 @@ export async function mergeReviewedRequest(connection: StoredConnection, target:
 }
 
 export async function transitionEvidencedJiraIssue(connection: StoredConnection, target: BacklogTarget,
-  fetchImpl: typeof fetch = fetch, mayWrite: () => boolean = () => true): Promise<Outcome> {
+  fetchImpl: typeof fetch = fetch, mayWrite: () => boolean = () => false, workspaceWrites = false): Promise<Outcome> {
   if (connection.connectorId !== "jira" || !/^[A-Z][A-Z0-9_]*-\d+$/i.test(target.externalId)) throw new Error("Invalid Jira issue identity");
   const prefix = connection.settings.edition === "datacenter" ? "/rest/api/2" : "/rest/api/3";
   const base = `${prefix}/issue/${encodeURIComponent(target.externalId)}`;
@@ -184,6 +217,7 @@ export async function transitionEvidencedJiraIssue(connection: StoredConnection,
     typeof value.id === "string");
   if (done.length !== 1) return { target, gates: [backlogGate("policy", "Choose or configure a single valid Jira done transition for this issue.",
     "Jira project manager", target.identity)], changed: false };
+  if (!writesUnlocked(connection, "complete_work_item", workspaceWrites)) return writesLockedOutcome(target);
   if (!mayWrite()) throw new Error("The goal stopped before the Jira transition was sent");
   const changed = await jiraRequest(connection, `${base}/transitions`, fetchImpl, { method: "POST", body: JSON.stringify({ transition: { id: done[0].id } }) });
   if (!changed.ok) throw new Error(`Jira transition returned ${changed.status}`);
