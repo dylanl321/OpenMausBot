@@ -64,11 +64,13 @@ import { mentionChoicesForQuery } from "@/lib/mentions";
 import { serializeThreadRefs, threadTokenFromPaste, threadTokenSpacing } from "@/lib/thread-refs";
 import { randomId } from "@/lib/random-id";
 import {
+  composerPursueAvailable,
   composerSlashTrigger,
   goalTextFromComposer,
   replaceComposerSlashTrigger,
   type ComposerSlashCommand,
 } from "@/lib/composer-commands";
+import { useGoalCapabilities } from "@/lib/use-goal-capabilities";
 
 /** The active @mention query at the caret: the text between an `@` that
  * starts a word and the caret. null = no mention being typed. */
@@ -118,6 +120,8 @@ export function Composer({
   const { state, dispatch } = useStore();
   const { threads, currentBotId } = useThreadRefs();
   const { capabilities } = useDesktopCapabilities();
+  const goalCaps = useGoalCapabilities();
+  const canPursue = composerPursueAvailable(goalCaps.canCreate, group);
   const remoteClient = window.ogb?.remoteClient?.active === true;
   // Unified target: a 1:1 bot thread or a room. In a room the @ picker
   // offers members plus @everyone; explicit mentions override the room's
@@ -263,7 +267,7 @@ export function Composer({
     if (!slash || slash.start === dismissedSlashAt) return [];
     const supportsAgents = (candidate?: Bot) => selectedModelCapabilities(state.instances, candidate?.modelSelection).agentsMcp === true;
     const available: ComposerSlashCommand[] = [];
-    if (!group || !group.dm) available.push({ id: "pursue", label: "/pursue", description: t("composer.command.pursueDesc") });
+    if (canPursue) available.push({ id: "pursue", label: "/pursue", description: t("composer.command.pursueDesc") });
     if (group && !group.dm) available.push({
       id: "goal",
       label: "/goal",
@@ -293,7 +297,7 @@ export function Composer({
         command.id.startsWith(query) ||
         command.description.toLowerCase().includes(query),
     );
-  }, [slash, dismissedSlashAt, group, members, bot, state.config, state.instances, locale]);
+  }, [slash, dismissedSlashAt, group, members, bot, state.config, state.instances, locale, canPursue]);
   const commandPickerOpen = commandCandidates.length > 0;
 
   // Tag another bot; the agent reaches it via ask_bot.
@@ -527,7 +531,7 @@ export function Composer({
   const send = () => {
     if (locked || attachmentPending) return;
     const pursuit = /^\/pursue(?:\s+([\s\S]*))?$/i.exec(text);
-    if (pursuit && !attachments.length) {
+    if (canPursue && pursuit && !attachments.length) {
       setPursuitObjective((pursuit[1] ?? "").trim());
       setPursuitOpen(true);
       setText("");
@@ -853,6 +857,7 @@ export function Composer({
           onClose={() => setPursuitOpen(false)}
           onOpen={() => setPursuitOpen(true)}
           initialObjective={pursuitObjective}
+          capabilities={goalCaps}
         />}
         {replyTo && (
           <div className="mb-2 px-1">
@@ -952,7 +957,7 @@ export function Composer({
                   {effectiveChannelMode === "goal" ? "/goal" : t("composer.goal.chip")}
                 </button>
               )}
-              {(!group || !group.dm) && <button type="button" onClick={() => setPursuitOpen(value => !value)}
+              {canPursue && <button type="button" onClick={() => setPursuitOpen(value => !value)}
                 aria-label={t("goal.panel.title")} className="flex h-8 items-center gap-1 rounded-full border border-hairline/30 px-2 text-xs text-accent">
                 <Target size={13} aria-hidden="true" /> {t("goal.panel.chip")}
               </button>}

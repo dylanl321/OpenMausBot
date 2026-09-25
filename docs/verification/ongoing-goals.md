@@ -3,7 +3,7 @@
 Run the server state-machine tests and the isolated fake-engine fixture:
 
 ```sh
-pnpm exec vitest run server/ongoing-goals.test.ts server/ongoing-goals.e2e.test.ts src/components/OngoingGoalPanel.test.ts --maxWorkers=1
+pnpm exec vitest run server/ongoing-goals.test.ts server/ongoing-goals.e2e.test.ts server/ongoing-goals-auth.test.ts src/components/OngoingGoalPanel.test.ts --maxWorkers=1
 ```
 
 The fixture starts a separate OpenMausBot process in a temporary home using

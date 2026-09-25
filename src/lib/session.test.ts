@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { isConnected, isOwnerOrAdmin, readSessionState, reasonWorthShowing, SERVICE_TRUST_REASON, takeInvitedEmailFromLocation } from "./session";
+import { goalCapabilities, isConnected, isOwnerOrAdmin, readSessionState, reasonWorthShowing, SERVICE_TRUST_REASON, takeInvitedEmailFromLocation } from "./session";
 
 describe("what the pair page says about why it was shown", () => {
   it("stays quiet for the ordinary no-session case and repeats anything else", () => {
@@ -39,6 +39,13 @@ describe("who the served UI is on its own machine", () => {
     expect(isOwnerOrAdmin({ kind: "session", id: "s", label: "l", scopes: ["client"], expiresAt: 1 })).toBe(false);
     expect(isOwnerOrAdmin({ kind: "session", id: "s", label: "l", scopes: ["admin", "client"], expiresAt: 1 })).toBe(true);
     expect(isOwnerOrAdmin(null)).toBe(false);
+    expect(goalCapabilities(owner)).toEqual({ canCreate: true, canControl: true, canResume: true });
+    expect(goalCapabilities({ kind: "session", id: "s", label: "l", scopes: ["client"], expiresAt: 1 }))
+      .toEqual({ canCreate: true, canControl: true, canResume: false });
+    expect(goalCapabilities({ kind: "session", id: "s", label: "l", scopes: ["admin", "client"], expiresAt: 1 }))
+      .toEqual({ canCreate: true, canControl: true, canResume: true });
+    expect(goalCapabilities(service)).toEqual({ canCreate: false, canControl: false, canResume: false });
+    expect(goalCapabilities(null)).toEqual({ canCreate: false, canControl: false, canResume: false });
   });
 });
 

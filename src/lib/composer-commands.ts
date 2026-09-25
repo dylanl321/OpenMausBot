@@ -12,6 +12,15 @@ export interface ComposerSlashTrigger {
   end: number;
 }
 
+/** `/pursue` POSTs /api/goals. Offer it only when this session may call
+ * that route, and never inside a 1:1 DM. */
+export function composerPursueAvailable(
+  canCreateGoal: boolean,
+  group?: { dm?: boolean } | null,
+): boolean {
+  return canCreateGoal && (!group || !group.dm);
+}
+
 /** Slash commands configure the whole send, so they are offered only at the
  * beginning of a draft and only while the first token is being typed. */
 export function composerSlashTrigger(text: string, caretInput: number): ComposerSlashTrigger | null {
