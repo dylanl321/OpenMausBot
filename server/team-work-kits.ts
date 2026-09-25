@@ -27,6 +27,9 @@ export function defaultMissionKinds(manifest: Pick<ConnectorManifest, "kinds">):
 /**
  * Today's Jira-tracker + GitLab-MR shape. Existing mixed teams keep dropping
  * GitLab issues until they opt into the gitlab kit or add work_item.
+ * Extra approval-rule names are connection settings, not compiled into this
+ * kit. A jira-gitlab org that still wants named extras documents them on the
+ * GitLab connection (`requiredApprovalRules`), not here.
  */
 export const JIRA_GITLAB_KIT: TeamWorkKit = {
   id: "jira-gitlab",

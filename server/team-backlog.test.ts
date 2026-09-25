@@ -473,7 +473,7 @@ describe("team backlog scope and inventory", () => {
     expect(goal.status).toBe("working");
     await advanceTeamBacklog(goal, deps);
     expect(goal.teamBacklog?.targets.filter(target => target.gateCheckedAt)).toHaveLength(10);
-    expect(new Set(goal.teamBacklog?.gates.filter(gate => gate.kind === "security").map(gate => gate.identity)).size).toBe(10);
+    expect(new Set(goal.teamBacklog?.gates.filter(gate => gate.kind === "policy").map(gate => gate.identity)).size).toBe(10);
     expect(goal.status).toBe("waiting");
   });
 

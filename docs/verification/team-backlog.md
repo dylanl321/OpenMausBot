@@ -56,6 +56,15 @@ To unlock a synthetic write in an isolated fixture only:
 Either lock closed records an `access` gate and leaves the tracker/MR
 unchanged. Do not enable these locks against live tokens from a recipe.
 
+GitLab merge policy is the live required `approval_state` rules, project
+pipeline/discussion flags, and mergeable/not-draft. Optional connection
+`requiredApprovalRules` (comma-separated names) add extras on top; empty
+means live required rules only. A jira-gitlab team that still wants named
+extras such as Security or Manager sets those names on the GitLab
+connection. Jira completion uses the unique-Done heuristic unless
+`doneTransitionId` or `doneTransitionName` is set. Missing
+`approval_state.rules` or unknown policy fields fail closed and never write.
+
 Before rollout, run `pnpm lint`, `pnpm typecheck`, `pnpm build`, and
 `pnpm build:server`. Identify the connected workspace explicitly and check
 that its running turns are quiescent before replacing its server/UI. Do not

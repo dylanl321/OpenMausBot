@@ -1,18 +1,22 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { ConnectionContext } from "../types.ts";
 import { gitlabConnector } from "./index.ts";
 
 const sha = "a".repeat(40);
 const newer = "b".repeat(40);
+const here = dirname(fileURLToPath(import.meta.url));
 
 function mutating(requests: Array<{ method: string }>) {
   return requests.filter(request => ["PUT", "POST", "PATCH", "DELETE"].includes(request.method));
 }
 
-function ctx(fetchImpl: typeof fetch): ConnectionContext {
+function ctx(fetchImpl: typeof fetch, settings: Record<string, string | number | boolean> = {}): ConnectionContext {
   return {
     connectionId: "gitlab-main",
-    settings: { site: "http://127.0.0.1:8325", project: "acme/app" },
+    settings: { site: "http://127.0.0.1:8325", project: "acme/app", ...settings },
     secret(key) {
       if (!gitlabConnector.manifest.secrets.some(secret => secret.key === key)) throw new Error(`${key} is not declared`);
       return key === "token" ? "fixture" : undefined;
@@ -22,17 +26,28 @@ function ctx(fetchImpl: typeof fetch): ConnectionContext {
   };
 }
 
-function actMerge(fetchImpl: typeof fetch, mode: "dry-run" | "commit" = "commit") {
-  return gitlabConnector.act!(ctx(fetchImpl), {
+function actMerge(fetchImpl: typeof fetch, mode: "dry-run" | "commit" = "commit",
+  settings: Record<string, string | number | boolean> = {}) {
+  return gitlabConnector.act!(ctx(fetchImpl, settings), {
     action: "merge_change_request",
     target: { kind: "change_request", externalId: "acme/app!10", headSha: sha },
     mode,
   });
 }
 
-function gitlabFixture(options: { head?: string; manager?: boolean; error?: boolean; pipeline?: string;
-  pipelineSha?: string | null; staleApproval?: boolean; policyUnknown?: boolean;
-  undated?: boolean; forgedNote?: boolean; noteError?: boolean; alreadyMerged?: boolean } = {}) {
+function defaultRequiredRules(options: { appsec?: boolean; owners?: boolean } = {}) {
+  return [
+    { name: "AppSec", approvals_required: 1, approved: options.appsec !== false, approved_by: options.appsec === false ? [] : [{ id: 101 }] },
+    { name: "Code owners", approvals_required: 1, approved: options.owners !== false, approved_by: options.owners === false ? [] : [{ id: 102 }] },
+  ];
+}
+
+function gitlabFixture(options: {
+  head?: string; error?: boolean; pipeline?: string; pipelineSha?: string | null;
+  staleApproval?: boolean; policyUnknown?: boolean; undated?: boolean; forgedNote?: boolean;
+  noteError?: boolean; alreadyMerged?: boolean; missingRules?: boolean;
+  rules?: Array<Record<string, any>>;
+} = {}) {
   let merged = false;
   const requests: Array<{ url: string; method: string; body?: string }> = [];
   const body = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
@@ -55,10 +70,10 @@ function gitlabFixture(options: { head?: string; manager?: boolean; error?: bool
     if (url.endsWith("/merge_requests/10/approvals")) return options.error ? new Response("error", { status: 503 }) : body({ approvals_left: 0,
       approved_by: [{ user: { id: 101 }, ...(!options.undated ? { approved_at: "2026-09-24T11:00:00Z" } : {}) },
         { user: { id: 102 }, ...(!options.undated ? { approved_at: options.staleApproval ? "2026-09-24T09:00:00Z" : "2026-09-24T11:00:00Z" } : {}) }] });
-    if (url.endsWith("/merge_requests/10/approval_state")) return body({ rules: [
-      { name: "Security", approved: true, approved_by: [{ id: 101 }] },
-      { name: "Manager", approved: options.manager !== false, approved_by: options.manager === false ? [] : [{ id: 102 }] },
-    ] });
+    if (url.endsWith("/merge_requests/10/approval_state")) {
+      if (options.missingRules) return body({});
+      return body({ rules: options.rules ?? defaultRequiredRules() });
+    }
     if (url.endsWith("/merge_requests/10/versions?per_page=100")) return body([{ head_commit_sha: sha, created_at: "2026-09-24T10:00:00Z" }]);
     if (url.includes("/merge_requests/10/notes?")) {
       if (options.noteError) return new Response("error", { status: 503 });
@@ -82,19 +97,69 @@ describe("gitlab merge_change_request", () => {
     expect(gitlabConnector.manifest.actions).toEqual([
       expect.objectContaining({ id: "merge_change_request", kind: "change_request" }),
     ]);
+    expect(gitlabConnector.manifest.settings.some(field => field.key === "requiredApprovalRules")).toBe(true);
     const api = gitlabFixture();
     expect(await actMerge(api.fetchImpl, "dry-run")).toMatchObject({ changed: false, gates: [] });
     expect(mutating(api.requests)).toEqual([]);
     expect(api.requests.some(request => request.url.endsWith("/approvals"))).toBe(true);
   });
 
-  it("merges only after current-head Security, Manager and project policy checks, with an exact SHA precondition", async () => {
+  it("dry-run passes when live required AppSec and Code owners rules are current-head approved", async () => {
+    const api = gitlabFixture();
+    expect(await actMerge(api.fetchImpl, "dry-run")).toMatchObject({ changed: false, gates: [] });
+    expect(mutating(api.requests)).toEqual([]);
+  });
+
+  it("merges only after current-head required rules and project policy checks, with an exact SHA precondition", async () => {
     const api = gitlabFixture();
     const result = await actMerge(api.fetchImpl);
     expect(result).toMatchObject({ changed: true, target: { state: "done", label: "merged", headSha: sha }, gates: [] });
     expect(result.target.result).toContain(newer);
     expect(api.requests.filter(request => request.method === "PUT")).toHaveLength(1);
     expect(api.requests.some(request => /pipelines\/?$|close/.test(request.url))).toBe(false);
+  });
+
+  it("does not require Security or Manager unless extras or live required rules say so", async () => {
+    const optional = [
+      { name: "Security", approvals_required: 0, approved: false, approved_by: [] },
+      { name: "Manager", approvals_required: 0, approved: false, approved_by: [] },
+    ];
+    const ignored = gitlabFixture({ rules: optional });
+    expect(await actMerge(ignored.fetchImpl, "dry-run")).toMatchObject({ changed: false, gates: [] });
+    expect(mutating(ignored.requests)).toEqual([]);
+    const withLive = gitlabFixture({ rules: [...optional, ...defaultRequiredRules()] });
+    expect(await actMerge(withLive.fetchImpl, "dry-run")).toMatchObject({ changed: false, gates: [] });
+
+    const extras = gitlabFixture({
+      rules: [
+        { name: "Security", approvals_required: 0, approved: true, approved_by: [{ id: 101 }] },
+        { name: "Manager", approvals_required: 0, approved: false, approved_by: [] },
+        ...defaultRequiredRules(),
+      ],
+    });
+    const missing = await actMerge(extras.fetchImpl, "dry-run", { requiredApprovalRules: "Security, Manager" });
+    expect(missing.gates.map(gate => gate.kind)).toContain("manager");
+    expect(missing.gates.find(gate => gate.kind === "manager")?.decisionMaker).toBe("Manager");
+    expect(mutating(extras.requests)).toEqual([]);
+
+    const live = gitlabFixture({
+      rules: [
+        { name: "Security", approvals_required: 1, approved: true, approved_by: [{ id: 101 }] },
+        { name: "Manager", approvals_required: 1, approved: false, approved_by: [] },
+      ],
+    });
+    const liveMissing = await actMerge(live.fetchImpl, "dry-run");
+    expect(liveMissing.gates.map(gate => gate.kind)).toContain("manager");
+    expect(mutating(live.requests)).toEqual([]);
+
+    const satisfied = gitlabFixture({
+      rules: [
+        { name: "Security", approvals_required: 0, approved: true, approved_by: [{ id: 101 }] },
+        { name: "Manager", approvals_required: 0, approved: true, approved_by: [{ id: 102 }] },
+      ],
+    });
+    expect(await actMerge(satisfied.fetchImpl, "dry-run", { requiredApprovalRules: "Security, Manager" }))
+      .toMatchObject({ changed: false, gates: [] });
   });
 
   it("treats an already-merged MR as a successful observation without writing", async () => {
@@ -108,14 +173,14 @@ describe("gitlab merge_change_request", () => {
   it("invalidates a stale head and waits for the actual reviewer or policy actor without writing", async () => {
     const head = gitlabFixture({ head: newer });
     expect(await actMerge(head.fetchImpl, "dry-run")).toMatchObject({ changed: false,
-      target: { headSha: newer }, gates: [expect.objectContaining({ kind: "review" })] });
+      target: { headSha: newer }, gates: [expect.objectContaining({ kind: "review", decisionMaker: "Project approvers" })] });
     expect(head.requests.some(request => request.method === "PUT")).toBe(false);
-    const manager = gitlabFixture({ manager: false });
-    const missing = await actMerge(manager.fetchImpl);
-    expect(missing.gates.map(gate => gate.kind)).toContain("manager");
-    expect(manager.requests.some(request => request.method === "PUT")).toBe(false);
-    const stale = gitlabFixture({ staleApproval: true });
-    expect((await actMerge(stale.fetchImpl)).gates.map(gate => gate.kind)).toContain("manager");
+    const owners = gitlabFixture({ rules: defaultRequiredRules({ owners: false }) });
+    const missing = await actMerge(owners.fetchImpl);
+    expect(missing.gates.map(gate => [gate.kind, gate.decisionMaker])).toContainEqual(["review", "Code owners"]);
+    expect(owners.requests.some(request => request.method === "PUT")).toBe(false);
+    const stale = gitlabFixture({ staleApproval: true, rules: defaultRequiredRules({ owners: true }) });
+    expect((await actMerge(stale.fetchImpl)).gates.map(gate => gate.decisionMaker)).toContain("Code owners");
     expect(stale.requests.some(request => request.method === "PUT")).toBe(false);
     const policy = gitlabFixture({ pipeline: "running" });
     expect((await actMerge(policy.fetchImpl)).gates.map(gate => gate.kind)).toContain("policy");
@@ -129,13 +194,32 @@ describe("gitlab merge_change_request", () => {
     expect(error.requests.some(request => request.method === "PUT")).toBe(false);
   });
 
+  it("fails closed when approval rules are missing or a required rule field is unknown", async () => {
+    const missing = gitlabFixture({ missingRules: true });
+    await expect(actMerge(missing.fetchImpl, "dry-run")).rejects.toThrow(/approval rules are unavailable/);
+    expect(mutating(missing.requests)).toEqual([]);
+    for (const rules of [
+      [{ name: "AppSec", approvals_required: "all", approved: true, approved_by: [{ id: 101 }] }],
+      [{ name: "AppSec", approved: true, approved_by: [{ id: 101 }] }],
+    ]) {
+      const unknown = gitlabFixture({ rules });
+      const gated = await actMerge(unknown.fetchImpl, "dry-run");
+      expect(gated).toMatchObject({ changed: false, gates: [expect.objectContaining({ kind: "policy" })] });
+      expect(mutating(unknown.requests)).toEqual([]);
+    }
+    const badExtras = gitlabFixture();
+    expect(await actMerge(badExtras.fetchImpl, "dry-run", { requiredApprovalRules: true }))
+      .toMatchObject({ changed: false, gates: [expect.objectContaining({ kind: "policy" })] });
+    expect(mutating(badExtras.requests)).toEqual([]);
+  });
+
   it("proves undated current approvers using paginated post-head system notes, not forged or stale comments", async () => {
     const proved = gitlabFixture({ undated: true });
     expect((await actMerge(proved.fetchImpl)).target.state).toBe("done");
     expect(proved.requests.filter(request => request.url.includes("/notes?"))).toHaveLength(2);
     for (const unsafe of [gitlabFixture({ undated: true, forgedNote: true }),
       gitlabFixture({ undated: true, staleApproval: true })]) {
-      expect((await actMerge(unsafe.fetchImpl)).gates.map(gate => gate.kind)).toContain("manager");
+      expect((await actMerge(unsafe.fetchImpl)).gates.map(gate => gate.decisionMaker)).toContain("Code owners");
       expect(unsafe.requests.some(request => request.method === "PUT")).toBe(false);
     }
     const incomplete = gitlabFixture({ undated: true, noteError: true });
@@ -158,5 +242,13 @@ describe("gitlab merge_change_request", () => {
     }
     expect(leaked).toEqual([]);
     expect(() => ctx(api.fetchImpl).secret("not-declared")).toThrow(/not declared/);
+  });
+
+  it("does not compile extra approval-rule names into production code", () => {
+    for (const file of ["actions.ts", "../jira/actions.ts", "../../team-backlog-runner.ts", "../../team-work-kits.ts"]) {
+      const source = readFileSync(join(here, file), "utf8");
+      expect(source, file).not.toMatch(/["']Security["']/);
+      expect(source, file).not.toMatch(/["']Manager["']/);
+    }
   });
 });

@@ -57,6 +57,49 @@ async function read(response: Response, label: string): Promise<Record<string, a
   return body as Record<string, any>;
 }
 
+function rejectedDoneName(name: string): boolean {
+  return /cancel|won'?t do|obsolete|reject|duplicate|invalid|declined|abandon/i.test(name);
+}
+
+function heuristicDoneName(name: string): boolean {
+  return /\b(?:done|complete(?:d)?|resolved|closed|shipped|delivered|accepted)\b/i.test(name);
+}
+
+function isUsableDoneTransition(value: Record<string, any>): boolean {
+  return value.to?.statusCategory?.key === "done" &&
+    !rejectedDoneName(String(value.to?.name ?? "")) &&
+    typeof value.id === "string";
+}
+
+/** Configured id, then configured name, else today's unique-Done heuristic.
+ * Unknown setting types and a missing/ambiguous match fail closed. */
+function chooseDoneTransition(
+  transitions: Array<Record<string, any>>,
+  settings: ConnectionContext["settings"],
+): Record<string, any> | undefined {
+  const idRaw = settings.doneTransitionId;
+  const nameRaw = settings.doneTransitionName;
+  const hasId = idRaw !== undefined && idRaw !== "";
+  const hasName = nameRaw !== undefined && nameRaw !== "";
+  if (hasId && typeof idRaw !== "string" && typeof idRaw !== "number") return undefined;
+  if (hasName && typeof nameRaw !== "string") return undefined;
+  const usable = transitions.filter(isUsableDoneTransition);
+  if (hasId) {
+    const id = String(idRaw).trim();
+    const match = usable.filter(value => value.id === id);
+    return match.length === 1 ? match[0] : undefined;
+  }
+  if (hasName) {
+    const name = String(nameRaw).trim().toLowerCase();
+    const match = usable.filter(value =>
+      String(value.name ?? "").trim().toLowerCase() === name ||
+      String(value.to?.name ?? "").trim().toLowerCase() === name);
+    return match.length === 1 ? match[0] : undefined;
+  }
+  const done = usable.filter(value => heuristicDoneName(String(value.to?.name ?? "")));
+  return done.length === 1 ? done[0] : undefined;
+}
+
 export async function actJiraComplete(ctx: ConnectionContext, input: ConnectorActInput): Promise<ConnectorActResult> {
   if (input.action !== "complete_work_item" || input.target.kind !== "work_item") {
     throw new Error("Unsupported Jira action");
@@ -80,11 +123,8 @@ export async function actJiraComplete(ctx: ConnectionContext, input: ConnectorAc
   }
   const transitions = await get(`${base}/transitions`, "Jira transitions");
   if (!Array.isArray(transitions.transitions)) throw new Error("Jira transitions are unavailable");
-  const done = (transitions.transitions as Array<Record<string, any>>).filter(value => value.to?.statusCategory?.key === "done" &&
-    /\b(?:done|complete(?:d)?|resolved|closed|shipped|delivered|accepted)\b/i.test(String(value.to?.name ?? "")) &&
-    !/cancel|won'?t do|obsolete|reject|duplicate|invalid|declined|abandon/i.test(String(value.to?.name ?? "")) &&
-    typeof value.id === "string");
-  if (done.length !== 1) {
+  const chosen = chooseDoneTransition(transitions.transitions as Array<Record<string, any>>, ctx.settings);
+  if (!chosen) {
     return {
       changed: false,
       target: {},
@@ -95,7 +135,7 @@ export async function actJiraComplete(ctx: ConnectionContext, input: ConnectorAc
   if (input.mode !== "commit") return { changed: false, target: {}, gates: [] };
   const changed = await jiraFetch(ctx, `${base}/transitions`, {
     method: "POST",
-    body: JSON.stringify({ transition: { id: done[0].id } }),
+    body: JSON.stringify({ transition: { id: chosen.id } }),
   });
   if (!changed.ok) throw new Error(`Jira transition returned ${changed.status}`);
   const observed = await get(`${base}?fields=status`, "Jira transition readback");

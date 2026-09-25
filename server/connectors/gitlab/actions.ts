@@ -47,6 +47,62 @@ async function read(response: Response, label: string): Promise<Record<string, a
 const shaOf = (mr: Record<string, any>): string | undefined =>
   typeof mr.sha === "string" && /^[0-9a-f]{40}$/i.test(mr.sha) ? mr.sha.toLowerCase() : undefined;
 
+function extraApprovalRuleNames(settings: ConnectionContext["settings"]):
+  { ok: true; names: string[] } | { ok: false } {
+  const raw = settings.requiredApprovalRules;
+  if (raw === undefined || raw === "") return { ok: true, names: [] };
+  if (typeof raw !== "string") return { ok: false };
+  return { ok: true, names: raw.split(",").map(name => name.trim()).filter(Boolean) };
+}
+
+function ruleName(rule: Record<string, any>): string {
+  return typeof rule.name === "string" ? rule.name.trim() : "";
+}
+
+function sameRuleName(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
+}
+
+/** Live required when approvals_required is a positive integer. Missing means
+ * not live-required. A present but unusable value is unknown policy. */
+function liveRequired(rule: Record<string, any>): { required: boolean } | { unknown: true } {
+  if (!Object.hasOwn(rule, "approvals_required") ||
+      !Number.isSafeInteger(rule.approvals_required) || rule.approvals_required < 0) {
+    return { unknown: true };
+  }
+  return { required: rule.approvals_required > 0 };
+}
+
+function ruleGateKind(name: string): BacklogGate["kind"] {
+  const key = name.toLowerCase();
+  if (key === "security") return "security";
+  if (key === "manager") return "manager";
+  return "review";
+}
+
+function currentHeadApproved(
+  rule: Record<string, any>,
+  approvalsByUser: Map<string, number>,
+  versionAt: number,
+): boolean {
+  if (rule.approved !== true) return false;
+  const approvers = Array.isArray(rule.approved_by) ? rule.approved_by as Array<Record<string, any>> : [];
+  return approvers.some(approval => {
+    const id = approval.user?.id ?? approval.id;
+    const at = typeof id === "number" || typeof id === "string"
+      ? approvalsByUser.get(String(id))
+      : Date.parse(String(approval.approved_at ?? ""));
+    return at !== undefined && Number.isFinite(at) && at >= versionAt;
+  });
+}
+
+function ruleNeedsNoteTimes(rule: Record<string, any>, approvalsByUser: Map<string, number>): boolean {
+  return Array.isArray(rule.approved_by) && (rule.approved_by as Array<Record<string, any>>).some(approval => {
+    const id = approval?.user?.id ?? approval?.id;
+    return (typeof id === "number" || typeof id === "string") && !approvalsByUser.has(String(id));
+  });
+}
+
 /** GitLab's current approved_by list often has no timestamps. A system note
  * ties the same current approver to an actual post-head event; an ordinary
  * comment with the same words cannot manufacture review evidence. */
@@ -114,7 +170,7 @@ export async function actGitlabMerge(ctx: ConnectionContext, input: ConnectorAct
       changed: false,
       target: { ...(sha ? { headSha: sha } : {}), observedAt: Date.now() },
       gates: [gate("review", "MR head changed or has no verifiable SHA; review the current head again.",
-        "Security and Manager", identity)],
+        "Project approvers", identity)],
     };
   }
   const [approvals, approvalState, project, versions] = await Promise.all([
@@ -131,43 +187,59 @@ export async function actGitlabMerge(ctx: ConnectionContext, input: ConnectorAct
   const version = versions.find(value => value.head_commit_sha === sha);
   if (!version || !Date.parse(String(version.created_at ?? ""))) throw new Error("Cannot identify when the current MR head was created");
   const versionAt = Date.parse(version.created_at);
+  const extras = extraApprovalRuleNames(ctx.settings);
   const gates: BacklogGate[] = [];
-  const rules = Array.isArray(approvalState.rules) ? approvalState.rules as Array<Record<string, any>> : null;
-  if (!rules) throw new Error("GitLab approval rules are unavailable");
+  if (!extras.ok) {
+    return {
+      changed: false,
+      target: {},
+      gates: [gate("policy", "Connection requiredApprovalRules must be a comma-separated list of rule names.",
+        "Connection owner", identity)],
+    };
+  }
+  const extraNames = extras.names;
+  if (!Array.isArray(approvalState.rules)) throw new Error("GitLab approval rules are unavailable");
+  const rules = approvalState.rules as Array<Record<string, any>>;
   const approvalsByUser = new Map<string, number>();
   for (const approval of Array.isArray(approvals.approved_by) ? approvals.approved_by as Array<Record<string, any>> : []) {
     const id = approval.user?.id;
     const at = Date.parse(String(approval.approved_at ?? ""));
     if ((typeof id === "number" || typeof id === "string") && Number.isFinite(at)) approvalsByUser.set(String(id), at);
   }
-  const needsNoteTimes = rules.some(rule => ["Security", "Manager"].some(role =>
-    String(rule.name ?? "").toLowerCase() === role.toLowerCase()) &&
-    Array.isArray(rule.approved_by) && rule.approved_by.some((approval: Record<string, any>) => {
-      const id = approval?.user?.id ?? approval?.id;
-      return (typeof id === "number" || typeof id === "string") && !approvalsByUser.has(String(id));
-    }));
-  if (needsNoteTimes) {
+  const enforced: Array<{ rule: Record<string, any>; name: string }> = [];
+  for (const rule of rules) {
+    const name = ruleName(rule);
+    const live = liveRequired(rule);
+    if ("unknown" in live) {
+      gates.push(gate("policy", `GitLab approval rule ${name || "unnamed"} is missing a usable approvals_required field.`,
+        name || "Project approvers", identity));
+      continue;
+    }
+    const extra = Boolean(name && extraNames.some(entry => sameRuleName(entry, name)));
+    if (!live.required && !extra) continue;
+    enforced.push({ rule, name });
+  }
+  for (const extra of extraNames) {
+    if (!rules.some(rule => sameRuleName(ruleName(rule), extra))) {
+      gates.push(gate(ruleGateKind(extra), `${extra} must authorize the reviewed current head ${sha.slice(0, 12)}.`,
+        extra, identity));
+    }
+  }
+  if (enforced.some(({ rule }) => ruleNeedsNoteTimes(rule, approvalsByUser))) {
     for (const [id, at] of await approvalNoteTimes(ctx, base)) {
       approvalsByUser.set(id, Math.max(approvalsByUser.get(id) ?? 0, at));
     }
   }
-  for (const role of ["Security", "Manager"] as const) {
-    const rule = rules.find(candidate => typeof candidate.name === "string" && candidate.name.toLowerCase() === role.toLowerCase());
-    const approvers = Array.isArray(rule?.approved_by) ? rule.approved_by as Array<Record<string, any>> : [];
-    const current = approvers.some(approval => {
-      const id = approval.user?.id ?? approval.id;
-      const at = typeof id === "number" || typeof id === "string"
-        ? approvalsByUser.get(String(id)) : Date.parse(String(approval.approved_at ?? ""));
-      return at !== undefined && Number.isFinite(at) && at >= versionAt;
-    });
-    if (!rule || rule.approved !== true || !current) {
-      gates.push(gate(role.toLowerCase() as "security" | "manager",
-        `${role} must authorize the reviewed current head ${sha.slice(0, 12)}.`, role, identity));
+  for (const { rule, name } of enforced) {
+    const maker = name || "Project approvers";
+    if (typeof rule.approved !== "boolean") {
+      gates.push(gate("policy", `GitLab approval rule ${maker} is missing a usable approved field.`, maker, identity));
+      continue;
     }
-  }
-  if (gates.some(entry => entry.kind === "security" || entry.kind === "manager")) {
-    gates.unshift(gate("review", `Current-head review evidence is required for ${sha.slice(0, 12)}.`,
-      "Security and Manager", identity));
+    if (!currentHeadApproved(rule, approvalsByUser, versionAt)) {
+      gates.push(gate(ruleGateKind(maker), `${maker} must authorize the reviewed current head ${sha.slice(0, 12)}.`,
+        maker, identity));
+    }
   }
   if (!Number.isSafeInteger(approvals.approvals_left) || approvals.approvals_left !== 0) {
     gates.push(gate("policy", "GitLab still requires project approvals.", "Project approvers", identity));

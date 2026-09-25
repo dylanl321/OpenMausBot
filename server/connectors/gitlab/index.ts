@@ -1210,6 +1210,8 @@ export const gitlabConnector: Connector = {
     settings: [
       { key: "site", label: "Instance URL", type: "string", help: "https://gitlab.com or your self-managed GitLab URL" },
       { key: "project", label: "Default project", type: "string", help: "group/project used for #140, !482, commit hashes, and issue or merge-request queries" },
+      { key: "requiredApprovalRules", label: "Required approval rules", type: "string",
+        help: "Optional comma-separated GitLab approval rule names required in addition to live required rules. Empty means live required rules only." },
     ],
     secrets: [
       { key: "token", label: "Access token", help: "Personal or project access token with read_api" },

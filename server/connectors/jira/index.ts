@@ -677,6 +677,10 @@ export const jiraConnector: Connector = {
       { key: "edition", label: "Edition", type: "enum", enum: ["cloud", "datacenter"], help: "Cloud uses an email and API token. Data Center uses a personal access token." },
       { key: "inReview", label: "In-review statuses", type: "string", help: "Comma-separated Jira status names treated as in review" },
       { key: "blocked", label: "Blocked statuses", type: "string", help: "Comma-separated Jira status names treated as blocked" },
+      { key: "doneTransitionId", label: "Done transition id", type: "string",
+        help: "Optional. When set, this Jira transition id is used instead of inferring a unique Done transition." },
+      { key: "doneTransitionName", label: "Done transition name", type: "string",
+        help: "Optional. When set, this transition name is used if no id is configured." },
     ],
     secrets: [
       { key: "email", label: "Email", help: "Atlassian account email for Jira Cloud" },
