@@ -26,6 +26,7 @@ import { customMcpServers,
   saveConfig,
   skillAuthoringEnabled,
   sharedComputersEnabled,
+  teamMissionWritesEnabled,
   builtInBrowserEnabled,
   browserProfilePartitionId,
   browserProfilePartitionTarget,
@@ -523,6 +524,20 @@ describe("configuration boundaries", () => {
     });
     expect(() => parseConfigPatch({ features: { sharedComputers: "yes" } })).toThrow(
       "features.sharedComputers",
+    );
+  });
+
+  it("keeps team mission writes off unless config.json explicitly turns them on", () => {
+    expect(teamMissionWritesEnabled({})).toBe(false);
+    expect(teamMissionWritesEnabled({ features: {} })).toBe(false);
+    expect(teamMissionWritesEnabled({ features: { sharedComputers: true } })).toBe(false);
+    expect(teamMissionWritesEnabled({ features: { teamMissionWrites: false } })).toBe(false);
+    expect(teamMissionWritesEnabled({ features: { teamMissionWrites: true } })).toBe(true);
+    expect(parseConfigPatch({ features: { teamMissionWrites: true } })).toEqual({
+      features: { teamMissionWrites: true },
+    });
+    expect(() => parseConfigPatch({ features: { teamMissionWrites: "yes" } })).toThrow(
+      "features.teamMissionWrites",
     );
   });
 

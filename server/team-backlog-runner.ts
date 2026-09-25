@@ -3,7 +3,9 @@ import type { OngoingGoal } from "../shared/ongoing-goal.ts";
 import type { BacklogGate, BacklogTarget, TeamBacklog } from "../shared/team-backlog.ts";
 import type { Watch } from "../shared/watches.ts";
 import type { StoredConnection } from "./connectors/types.ts";
-import { mergeReviewedRequest, transitionEvidencedJiraIssue } from "./team-backlog-actions.ts";
+import {
+  mergeReviewedRequest, missionActionFor, teamMissionWriteAllowed, transitionEvidencedJiraIssue,
+} from "./team-backlog-actions.ts";
 import { backlogGate, inferTeamBacklog, scanTeamBacklog } from "./team-backlog.ts";
 import type { OngoingGoals } from "./ongoing-goals.ts";
 import type { GroupRecord } from "./store.ts";
@@ -13,6 +15,11 @@ import type { WorkRecord } from "./work-items.ts";
 
 const MAX_STEPS = 4;
 const MAX_GATE_CHECKS = 8;
+
+function workspaceWritesEnabled(deps: BacklogRunnerDeps): boolean {
+  const flag = deps.teamMissionWrites;
+  return (typeof flag === "function" ? flag() : flag) === true;
+}
 
 function priority(target: BacklogTarget) {
   const rank: Record<string, number> = { blocker: 0, highest: 1, critical: 2, high: 3, medium: 4, low: 5, lowest: 6 };
@@ -45,6 +52,9 @@ export interface BacklogRunnerDeps {
   watches(): Watch[];
   ownerSection(botId: string): string | undefined;
   fetchImpl?: typeof fetch;
+  /** Workspace lock. Absent / false = dry-run only. A function is re-read
+   * immediately before each attested write. */
+  teamMissionWrites?: boolean | (() => boolean);
 }
 
 /** A server-owned turn. Bots do implementation in their existing shared task
@@ -198,9 +208,12 @@ export async function advanceTeamBacklog(goal: OngoingGoal, deps: BacklogRunnerD
     for (const { target, connection } of selected) {
       if (!stillActive()) break;
       try {
+        const action = missionActionFor(target.kind);
+        const workspaceWrites = workspaceWritesEnabled(deps);
+        const mayWrite = () => teamMissionWriteAllowed(stillActive(), workspaceWrites, connection, action);
         const result = target.kind === "change_request"
-          ? await mergeReviewedRequest(connection, target, deps.fetchImpl, stillActive)
-          : await transitionEvidencedJiraIssue(connection, target, deps.fetchImpl, stillActive);
+          ? await mergeReviewedRequest(connection, target, deps.fetchImpl, mayWrite, workspaceWrites)
+          : await transitionEvidencedJiraIssue(connection, target, deps.fetchImpl, mayWrite, workspaceWrites);
         Object.assign(target, result.target);
         gates.push(...result.gates);
         if (result.changed) { changedExternally = true; steps += 1; }

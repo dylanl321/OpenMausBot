@@ -1,10 +1,14 @@
 import { z } from "zod";
 import type { LinkKind, SyncedItem } from "../shared/work-links.ts";
 import { connectorById, CONNECTORS } from "./connectors/registry.ts";
-import { linkId, observedLink, type ConnectionContext, type ConnectionListing, type StoredConnection } from "./connectors/types.ts";
+import { linkId, MISSION_ACTION_IDS, observedLink, type ConnectionContext, type ConnectionListing, type StoredConnection } from "./connectors/types.ts";
 
 const idSchema = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/);
 const settingValue = z.union([z.string().max(2_000), z.number().finite(), z.boolean()]);
+const connectionWritesSchema = z.object({
+  enabled: z.boolean().optional(),
+  allow: z.array(z.enum(MISSION_ACTION_IDS)).max(MISSION_ACTION_IDS.length).optional(),
+}).strict();
 
 const storedSchema = z.object({
   id: idSchema,
@@ -14,6 +18,7 @@ const storedSchema = z.object({
   secrets: z.record(z.string(), z.string().max(16_000)).default({}),
   sections: z.array(z.string().max(200)).max(50).default([]),
   enabled: z.boolean().default(true),
+  writes: connectionWritesSchema.optional(),
 }).strict();
 
 const mutationSchema = storedSchema.extend({
@@ -26,7 +31,14 @@ export function parseStoredConnections(raw: unknown): StoredConnection[] {
   if (!Array.isArray(raw)) return [];
   return raw.flatMap(entry => {
     const parsed = storedSchema.safeParse(entry);
-    return parsed.success && connectorById(parsed.data.connectorId) ? [parsed.data] : [];
+    if (parsed.success && connectorById(parsed.data.connectorId)) return [parsed.data];
+    // Invalid writes stay fail-closed (omitted = off) without dropping the
+    // rest of a readable connection. Other schema failures still drop the row.
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) || !Object.hasOwn(entry, "writes")) return [];
+    const rest = { ...(entry as Record<string, unknown>) };
+    delete rest.writes;
+    const fallback = storedSchema.safeParse(rest);
+    return fallback.success && connectorById(fallback.data.connectorId) ? [fallback.data] : [];
   });
 }
 

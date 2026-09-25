@@ -149,6 +149,7 @@ import {
   sharedComputersEnabled,
   builtInBrowserEnabled,
   llmThreadTitlesEnabled,
+  teamMissionWritesEnabled,
   browserProfileReplacementConflict,
   browserProfilePartitionTarget,
   syncCredentialEnv,
@@ -9696,6 +9697,7 @@ async function advanceOngoingGoals() {
       void advanceTeamBacklog(goal, { goals: ongoingGoals, coordination: workCoordination,
         connections: taskConnectionList, groups: () => store.groups, watches: () => watches?.list() ?? [],
         ownerSection: id => store.bot(id)?.section ?? (store.bot(id) ? "" : undefined),
+        teamMissionWrites: () => teamMissionWritesEnabled(cfg),
       }).catch(error => console.error("team backlog goal:", error));
       continue;
     }

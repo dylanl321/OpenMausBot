@@ -78,6 +78,115 @@ function mockApi() {
     moveHead: () => { currentSha = "b".repeat(40); } };
 }
 
+function mutatingWrite(request: string) {
+  return /^(PUT|PATCH|DELETE) /.test(request) || /^(POST) .*(?:\/merge$|\/transitions$)/.test(request);
+}
+
+function writeReadyApi() {
+  let merged = false;
+  let jiraDone = false;
+  const requested: string[] = [];
+  const body = (value: unknown, headers?: Record<string, string>) => new Response(JSON.stringify(value), {
+    status: 200, headers: { "content-type": "application/json", ...headers },
+  });
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    requested.push(`${method} ${url}`);
+    if (url.endsWith("/rest/api/3/search/jql")) return body({ issues: [{ key: "PAY-1", fields: {
+      summary: "Deliver PAY-1", description: "Accept PAY-1",
+      status: { name: jiraDone ? "Done" : "In Progress", statusCategory: { key: jiraDone ? "done" : "indeterminate" } },
+      project: { key: "PAY" }, updated: "2026-09-24T10:00:00Z",
+    } }] });
+    if (url.includes("/issues?")) return body([], { "x-next-page": "" });
+    if (url.includes("/merge_requests?")) return body([{ iid: 10, title: "Ready", state: merged ? "merged" : "opened",
+      sha, updated_at: "2026-09-24T10:00:00Z" }], { "x-next-page": "" });
+    if (url.endsWith("/merge_requests/10/merge")) {
+      merged = true;
+      return body({ state: "merged" });
+    }
+    if (url.endsWith("/merge_requests/10")) return body({
+      state: merged ? "merged" : "opened", sha, detailed_merge_status: "mergeable",
+      draft: false, has_conflicts: false, blocking_discussions_resolved: true,
+      head_pipeline: { status: "success", sha }, merge_commit_sha: merged ? "c".repeat(40) : null,
+    });
+    if (url.endsWith("/merge_requests/10/approvals")) return body({
+      approvals_left: 0,
+      approved_by: [
+        { user: { id: 101 }, approved_at: "2026-09-24T11:00:00Z" },
+        { user: { id: 102 }, approved_at: "2026-09-24T11:00:00Z" },
+      ],
+    });
+    if (url.endsWith("/merge_requests/10/approval_state")) return body({ rules: [
+      { name: "Security", approved: true, approved_by: [{ id: 101 }] },
+      { name: "Manager", approved: true, approved_by: [{ id: 102 }] },
+    ] });
+    if (url.includes("/merge_requests/10/versions")) return body([{ head_commit_sha: sha, created_at: "2026-09-24T10:00:00Z" }]);
+    if (url.endsWith("/projects/acme%2Fapp")) return body({
+      only_allow_merge_if_pipeline_succeeds: true, only_allow_merge_if_all_discussions_are_resolved: true,
+    });
+    if (url.includes("/issue/PAY-1/transitions")) {
+      if (method === "POST") {
+        jiraDone = true;
+        return new Response(null, { status: 204 });
+      }
+      return body({ transitions: [{ id: "11", to: { name: "Done", statusCategory: { key: "done" } } }] });
+    }
+    if (url.includes("/issue/PAY-1")) return body({ key: "PAY-1", fields: { status: {
+      name: jiraDone ? "Done" : "In Progress", statusCategory: { key: jiraDone ? "done" : "indeterminate" },
+    } } });
+    throw new Error(`Unexpected fixture request ${method} ${url}`);
+  };
+  return { fetchImpl, requested };
+}
+
+function evidencedItem(id: string, identity: string): WorkRecord {
+  return {
+    id, groupId: "room", threadId: `hub-${id}`, scope: "Delivery", identity, coordinatorBotId: "lead",
+    title: identity, status: "completed", revision: 1, objective: "Deliver", detail: "Evidenced",
+    acceptanceCriteria: ["Done"], criteria: [{ id: "check", text: "Done", state: "checked", evidence: ["ev"] }],
+    assignments: [], decisions: [], artifacts: [], evidence: [], links: [], inputHash: "fixture",
+    executions: 1, runStartedAt: 1, sources: [], createdAt: 1, updatedAt: 1,
+  } as WorkRecord;
+}
+
+function evidencedWriteGoal(dir: string, fetchImpl: typeof fetch, options: {
+  connections?: StoredConnection[];
+  teamMissionWrites?: boolean;
+} = {}) {
+  const goals = new OngoingGoals(join(dir, "goals.json"));
+  const jiraIdentity = "jira:jira-main:PAY-1";
+  const gitlabIdentity = "gitlab:gitlab-main:acme/app!10";
+  const goal = goals.create({ ownerBotId: "lead", sourceThreadId: "room-thread",
+    objective: "finish our current Jira work and merge the MRs" }, "execution", {
+    ...emptyTeamBacklog("Delivery"), scopes, targets: [
+      { identity: jiraIdentity, connectorId: "jira", connectionId: "jira-main", externalId: "PAY-1",
+        kind: "work_item", title: "Deliver PAY-1", state: "in_progress", label: "In Progress",
+        updatedAt: 1, observedAt: 1, taskId: "jira-task" },
+      { identity: gitlabIdentity, connectorId: "gitlab", connectionId: "gitlab-main", externalId: "acme/app!10",
+        kind: "change_request", title: "Ready", state: "in_review", label: "opened",
+        updatedAt: 1, observedAt: 1, headSha: sha, dispatchedHeadSha: sha, taskId: "mr-task" },
+    ],
+  });
+  const records = new Map<string, WorkRecord>([
+    ["jira-task", evidencedItem("jira-task", jiraIdentity)],
+    ["mr-task", evidencedItem("mr-task", gitlabIdentity)],
+  ]);
+  const coordination = {
+    items: { records, find: (_section: string, identity: string) => [...records.values()].find(item => item.identity === identity) },
+    accessible: () => true, evidenceProvenance: () => "observed",
+    ensure: async () => { throw new Error("should reuse evidenced tasks"); },
+  } as unknown as WorkCoordination;
+  return {
+    goal,
+    deps: {
+      goals, coordination, connections: () => options.connections ?? connections, groups: () => [group],
+      watches: () => [], ownerSection: () => "Delivery", fetchImpl,
+      ...(options.teamMissionWrites !== undefined ? { teamMissionWrites: options.teamMissionWrites } : {}),
+    },
+  };
+}
+
 describe("team backlog scope and inventory", () => {
   it("takes the assigned Jira board, scoped repository watches and linked work, excluding another team", () => {
     const watch = { section: "Delivery", enabled: true,
@@ -397,5 +506,34 @@ describe("team backlog scope and inventory", () => {
     expect(goal.teamBacklog?.targets.filter(target => target.gateCheckedAt)).toHaveLength(10);
     expect(new Set(goal.teamBacklog?.gates.filter(gate => gate.kind === "security").map(gate => gate.identity)).size).toBe(10);
     expect(goal.status).toBe("waiting");
+  });
+
+  it("records an access gate and never merges or transitions when write locks are off", async () => {
+    const api = writeReadyApi();
+    const dir = mkdtempSync(join(tmpdir(), "omb-backlog-lock-")); dirs.push(dir);
+    const { goal, deps } = evidencedWriteGoal(dir, api.fetchImpl);
+    await advanceTeamBacklog(goal, deps);
+    expect(api.requested.filter(request => mutatingWrite(request))).toEqual([]);
+    expect(goal.teamBacklog?.gates.filter(gate => gate.kind === "access")).toHaveLength(2);
+    expect(goal.teamBacklog?.targets.map(target => target.state)).toEqual(["in_progress", "in_review"]);
+    expect(goal.status).not.toBe("completed");
+  });
+
+  it("merges and transitions when both locks are on and the goal is still active", async () => {
+    const api = writeReadyApi();
+    const dir = mkdtempSync(join(tmpdir(), "omb-backlog-unlock-")); dirs.push(dir);
+    const unlocked = connections.map(connection => ({
+      ...connection,
+      writes: { enabled: true as const, allow: [connection.connectorId === "gitlab"
+        ? "merge_change_request" as const : "complete_work_item" as const] },
+    }));
+    const { goal, deps } = evidencedWriteGoal(dir, api.fetchImpl, {
+      connections: unlocked, teamMissionWrites: true,
+    });
+    await advanceTeamBacklog(goal, deps);
+    expect(api.requested.some(request => request.startsWith("PUT ") && request.includes("/merge"))).toBe(true);
+    expect(api.requested.some(request => request.startsWith("POST ") && request.includes("/transitions"))).toBe(true);
+    expect(goal.teamBacklog?.targets.every(target => target.state === "done")).toBe(true);
+    expect(goal.teamBacklog?.gates.filter(gate => gate.kind === "access")).toEqual([]);
   });
 });
