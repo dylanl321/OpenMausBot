@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { wizardAssistInputSchema, wizardCommitInputSchema, type WizardDraft } from "../shared/setup-wizard.ts";
-import { draftFromWizardAi, parseWizardAiOutput, setupWizardPrompt, validateWizardDraft } from "./setup-wizard.ts";
+import { draftFromWizardAi, parseWizardAiOutput, setupWizardAssistModel, setupWizardPrompt, validateWizardDraft } from "./setup-wizard.ts";
 
 const models = [
   { instanceId: "claude", model: "claude-sonnet", label: "Sonnet", coordination: true, effortLevels: ["low", "high"] },
@@ -17,6 +17,22 @@ const input = wizardAssistInputSchema.parse({ instanceId: "claude", goal: "Build
   destination: { kind: "new", name: "" }, answers: [] });
 const state = { teams: ["", "Operations"], bots: [] as Array<{ name: string; section?: string; chiefOfStaff?: boolean }>,
   maxBots: 100, models };
+
+describe("Setup Guide assist model", () => {
+  const engine = { models: [{ model: "listed-first" }, { model: "instance-default" }, { model: "listed-later" }] };
+
+  it("picks the instance default when that is not the first listed model", () => {
+    expect(setupWizardAssistModel(engine, "instance-default")).toEqual({ ok: true, model: "instance-default" });
+    expect(setupWizardAssistModel({ models: [{ model: "only-listed" }] }, "")).toEqual({ ok: true, model: "only-listed" });
+  });
+
+  it("requires an explicit assist model to be on that engine's list", () => {
+    expect(setupWizardAssistModel(engine, "instance-default", "listed-later")).toEqual({ ok: true, model: "listed-later" });
+    expect(setupWizardAssistModel(engine, "instance-default", "invented")).toEqual({
+      ok: false, status: 409, error: "Choose a listed model for this Setup Guide engine",
+    });
+  });
+});
 
 describe("reviewed Setup Guide boundary", () => {
   it("accepts only structured questions or a strictly scoped proposal", () => {

@@ -1,10 +1,10 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { canSubmitScopeChoice } from "../../shared/team-backlog";
+import { canSubmitScopeChoice, sourceRowDetail } from "../../shared/team-backlog";
 import type { BacklogScope } from "../../shared/team-backlog";
 import type { WorkOverviewCard } from "../../shared/work-overview";
-import { WorkCard, WorkScopeForm } from "./WorkPage";
+import { WORK_FALLBACK_POLL_MS, WorkCard, WorkScopeForm } from "./WorkPage";
 
 const pending: WorkOverviewCard = { entryId: "work", threadId: "thread", messageId: "message",
   canAct: true, decisionMaker: "Requester", card: { title: "Review command",
@@ -31,6 +31,18 @@ describe("Work inline decisions", () => {
     expect(question).toContain("Which project?");
     expect(question).toContain("Send answer");
     expect(question).not.toContain("Approve once");
+  });
+});
+
+describe("Work fallback poll", () => {
+  it("keeps a 30s fallback and shares the serial helper interval", () => {
+    expect(WORK_FALLBACK_POLL_MS).toBe(30_000);
+  });
+
+  it("names source rows by inventory kind", () => {
+    expect(sourceRowDetail({ kind: "work_item", label: "Blocked" })).toBe("Work item: Blocked");
+    expect(sourceRowDetail({ kind: "change_request", label: "Review" })).toBe("Change request: Review");
+    expect(sourceRowDetail({ kind: "work_item", label: "Blocked", requirements: "Needs PAY-2" })).toBe("Needs PAY-2");
   });
 });
 

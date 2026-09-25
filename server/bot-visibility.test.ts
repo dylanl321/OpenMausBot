@@ -17,6 +17,7 @@ import {
   SEES_EVERYTHING,
   storedVisibility,
   viewerSees,
+  workGoalVisible,
   VisibleSet,
   type FrameContext,
   type StreamSeen,
@@ -210,8 +211,41 @@ describe("live frames for a member", () => {
       { kind: "webhook.attempt", attempt: { webhookId: "hook-hr" } },
       { kind: "future-kind", threadId: "t-hr" },
       { kind: "work.event", workItem: { groupId: "room-mixed", threadId: "t-hr", coordinatorBotId: "hr" }, event: { id: "e1" } },
+      { kind: "goal", goal: { id: "secret-mission", revision: 3, status: "working", detail: "PAY-99 inventory",
+        scan: { status: "complete", itemCount: 2, errors: [] }, gateCount: 1, gateCounts: { review: 1 } },
+        ownerBotId: "hr", sourceThreadId: "t-hr", workItemIds: [], workItems: [], scopeGroupIds: ["room-mixed"] },
     ];
     for (const frame of hidden) expect(frameForMember(frame, ctx, seen()), JSON.stringify(frame)).toBeUndefined();
+  });
+
+  it("hides another team's mission detail from a member without hub access", () => {
+    const bob = new VisibleSet(bots, groups, BOB);
+    const ctx = context(bob);
+    const mission = {
+      kind: "goal",
+      goal: { id: "delivery-mission", revision: 4, status: "working",
+        detail: "Current inventory: PAY-99 awaits review",
+        scan: { status: "complete", itemCount: 3, errors: ["tracker page 2 unavailable"] },
+        gateCount: 2, gateCounts: { review: 1, policy: 1 } },
+      ownerBotId: "pub",
+      sourceThreadId: "t-room-pub",
+      workItemIds: ["hub-task"],
+      workItems: [{ id: "hub-task", groupId: "room-mixed", threadId: "t-room-mixed", coordinatorBotId: "pub" }],
+      scopeGroupIds: ["room-mixed"],
+    };
+    expect(frameForMember(mission, ctx, seen())).toBeUndefined();
+    expect(JSON.stringify(frameForMember(mission, ctx, seen()) ?? {})).not.toContain("PAY-99");
+    const open = {
+      ...mission,
+      workItemIds: [],
+      workItems: [],
+      scopeGroupIds: ["room-pub"],
+    };
+    expect(frameForMember(open, ctx, seen())).toBe(open);
+    expect(workGoalVisible({
+      ownerBotId: "pub", sourceThreadId: "t-room-pub", workItemIds: ["hub-task"],
+      teamBacklog: { scopes: [{ groupId: "room-mixed" }], choices: [] },
+    }, bob, new Map([["hub-task", { groupId: "room-mixed", threadId: "t-room-mixed", coordinatorBotId: "pub" }]]))).toBe(false);
   });
 
   it("passes visible frames through untouched and narrows the lists", () => {

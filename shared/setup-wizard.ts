@@ -55,6 +55,8 @@ export const wizardAssistInputSchema = z.object({
   answers: z.array(z.object({ question: line(300), answer: line(2_000) }).strict()).max(SETUP_WIZARD_MAX_QUESTIONS).default([]),
   followUp: z.string().trim().max(2_000).optional(),
   currentDraft: wizardDraftSchema.optional(),
+  /** When present, must be an exact model id listed on the selected engine. */
+  model: line(200).optional(),
 }).strict();
 
 export const wizardAiOutputSchema = z.discriminatedUnion("kind", [

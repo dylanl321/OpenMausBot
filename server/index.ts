@@ -411,7 +411,8 @@ import { RoutineRequestService } from "./routine-requests.ts";
 import { buildBotOverview, type BotOverview, connectedAppsFacts } from "./bot-overview.ts";
 import { ProfileRequestService } from "./profile-requests.ts";
 import { TeamSetupError, TeamSetupRequestService } from "./team-setup-requests.ts";
-import { draftFromWizardAi, parseWizardAiOutput, setupWizardPrompt, SetupWizardError, validateWizardDraft, wizardReceiptDigest, type WizardModelChoice } from "./setup-wizard.ts";
+import { draftFromWizardAi, parseWizardAiOutput, setupWizardAssistModel, setupWizardPrompt, SetupWizardError, validateWizardDraft, wizardReceiptDigest, type WizardModelChoice } from "./setup-wizard.ts";
+import { goalLiveFrame } from "./goal-live.ts";
 import { generateCodexSetupDraft } from "./setup-wizard-codex.ts";
 import { wizardAssistInputSchema, wizardCommitInputSchema } from "../shared/setup-wizard.ts";
 import { CodexDriver } from "./drivers/codex.ts";
@@ -2460,7 +2461,7 @@ async function setupWizardCatalog() {
         effortLevels: selected.adapter.capabilities.effortLevels ?? [] }];
     });
     return models.length ? [{ instanceId: row.instanceId, label: row.displayName,
-      driverKind: row.driverKind, models }] : [];
+      driverKind: row.driverKind, instanceDefault: row.models.default || undefined, models }] : [];
   });
   const engines = modelEngines.filter(row => {
     const instance = registry.get(row.instanceId);
@@ -9667,6 +9668,7 @@ watches = new WatchManager({
 });
 
 ongoingGoals = new OngoingGoals(join(DATA_DIR, "ongoing-goals.json"), goal => {
+  broadcast(goalLiveFrame(goal, workCoordination.items.records));
   const bot = store.bot(goal.ownerBotId);
   if (bot) broadcast({ kind: "bot", bot: wireBot(bot) });
   const group = store.groupByThread(goal.sourceThreadId);
@@ -17239,6 +17241,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const engine = catalog.engines.find(row => row.instanceId === input.instanceId);
       const instance = engine && registry.get(engine.instanceId);
       if (!engine || !instance) return json(res, 409, { error: "Select a supported, connected Setup Guide engine in Engines" });
+      const assistModel = setupWizardAssistModel(engine, engine.instanceDefault, input.model);
+      if (!assistModel.ok) return json(res, assistModel.status, { error: assistModel.error });
       const prompt = setupWizardPrompt(input, catalog.models, MAX_WORKSPACE_BOTS - store.bots.length);
       const cancellation = new AbortController();
       const timer = setTimeout(() => cancellation.abort(), 65_000);
@@ -17253,7 +17257,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           if (!entry || entry.driver !== "codex") throw new SetupWizardError("This Codex account cannot run an isolated guide", 409);
           const config = CodexDriver.decodeConfig(entry.config);
           return generateCodexSetupDraft({ cli: config.cli, config, environment: entry.environment,
-            model: engine.models[0]!.model, prompt, signal });
+            model: assistModel.model, prompt, signal });
         }, cancellation.signal);
       } catch (error) {
         if (res.destroyed) return;

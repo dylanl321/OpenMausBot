@@ -28,6 +28,7 @@ import type { GroupGoalRunCardData } from "../../shared/group-goal-run";
 import type { WorkItem } from "../../shared/work-item";
 import type { LinkedItem } from "../../shared/work-links";
 import { publishWorkLive } from "@/lib/work-live";
+import { publishGoalLive } from "@/lib/goal-live";
 import {
   reviewedSkillSha256,
   skillRequestBehavior,
@@ -3754,6 +3755,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "work.link":
           publishWorkLive(frame);
           rawDispatch({ type: "workLink", groupId: frame.workItem.groupId, threadId: frame.workItem.threadId, link: frame.link });
+          break;
+        case "goal":
+          publishGoalLive(frame);
           break;
         case "group.deleted":
           rawDispatch({ type: "groupDeleted", groupId: frame.groupId });

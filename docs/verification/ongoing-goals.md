@@ -9,7 +9,10 @@ pnpm exec vitest run server/ongoing-goals.test.ts server/ongoing-goals.e2e.test.
 The fixture starts a separate OpenMausBot process in a temporary home using
 `launchVerificationServer`, never the user's running server. It checks explicit
 creation, actual provider dispatch, a recorded completion and evidence, and
-the absence of private pursuit control text from the conversation.
+the absence of private pursuit control text from the conversation. Goal
+changes also emit visibility-filtered `goal` SSE frames (id, revision, status,
+detail, scan, gate counts). The goal panel and Work view subscribe and keep a
+30s fallback poll; they do not start a second fetch while one is in flight.
 
 Then run the adjacent coordination and watch regressions:
 

@@ -109,3 +109,9 @@ export function scopeChoiceLabel(choice: Pick<BacklogScope, "label" | "query" | 
   const name = connectorName?.trim() || choice.connectorId;
   return `${choice.label} · ${name}`;
 }
+
+/** Work source-row copy from inventory kind, not a provider name. */
+export function sourceRowDetail(target: Pick<BacklogTarget, "kind" | "label" | "requirements">): string {
+  if (target.requirements) return target.requirements;
+  return `${target.kind === "change_request" ? "Change request" : "Work item"}: ${target.label}`;
+}

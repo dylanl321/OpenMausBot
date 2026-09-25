@@ -100,6 +100,7 @@ it("interviews in an isolated engine, commits only the reviewed batch, retries a
       selections, draft: prepared.draft });
 
     await api("POST", "/api/setup-wizard/assist", { instanceId: "missing", destination: newTeam, goal: "Example" }, 409);
+    await api("POST", "/api/setup-wizard/assist", { instanceId: "codex", destination: newTeam, goal: "Example", model: "not-a-listed-model" }, 409);
     writeFileSync(replyFile, "__FAIL__");
     await api("POST", "/api/setup-wizard/assist", { instanceId: "claude", destination: newTeam, goal: "Example" }, 502);
     writeFileSync(replyFile, JSON.stringify(proposal(selections)));
@@ -110,6 +111,8 @@ it("interviews in an isolated engine, commits only the reviewed batch, retries a
     const codexDraft = await assist({ kind: "new", name: "" }, [], "codex");
     expect(codexDraft.draft.bots).toHaveLength(1);
     const codexDump = JSON.parse(readFileSync(join(dataDir, "fake-codex-wizard-dump.json"), "utf8"));
+    expect(codex.instanceDefault).toBeTruthy();
+    expect(codexDump.argv[codexDump.argv.indexOf("--model") + 1]).toBe(codex.instanceDefault);
     expect(codexDump.argv).toEqual(expect.arrayContaining(["--ignore-user-config", "exec", "--ephemeral", "--sandbox", "read-only", "--ask-for-approval", "never"]));
     expect(codexDump.argv).toContain("features.apps=false");
     expect(codexDump.argv).toContain("mcp_servers={}");
