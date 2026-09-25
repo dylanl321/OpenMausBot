@@ -86,8 +86,8 @@ function writeReadyApi() {
   let merged = false;
   let jiraDone = false;
   const requested: string[] = [];
-  const body = (value: unknown) => new Response(JSON.stringify(value), {
-    status: 200, headers: { "content-type": "application/json" },
+  const body = (value: unknown, headers?: Record<string, string>) => new Response(JSON.stringify(value), {
+    status: 200, headers: { "content-type": "application/json", ...headers },
   });
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = String(input);
