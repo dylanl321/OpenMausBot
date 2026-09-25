@@ -122,7 +122,7 @@ describe("jira complete_work_item", () => {
     const named = ambiguous();
     expect(await actComplete(named.fetchImpl, "dry-run", { doneTransitionName: "Ship" }))
       .toMatchObject({ changed: false, gates: [] });
-    expect(mutating(named.requests)).toEqual([]);
+    expect(named.requests.every(request => request.startsWith("GET"))).toBe(true);
     const unknown = ambiguous();
     expect(await actComplete(unknown.fetchImpl, "dry-run", { doneTransitionId: true }))
       .toMatchObject({ changed: false, gates: [expect.objectContaining({ kind: "policy" })] });
