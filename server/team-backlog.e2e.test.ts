@@ -55,6 +55,40 @@ async function fixture(nonempty: boolean) {
   return { api, bot, room, writes };
 }
 
+async function gitlabOnlyFixture() {
+  const writes: string[] = [];
+  external = createServer(async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+    const rows = (value: unknown, headers?: Record<string, string>) => {
+      res.writeHead(200, { "content-type": "application/json", ...headers }); res.end(JSON.stringify(value));
+    };
+    if (req.method !== "GET" && req.method !== "POST") writes.push(`${req.method} ${url.pathname}`);
+    if (url.pathname.endsWith("/issues")) return rows([{ iid: 71, title: "GitLab issue", state: "opened",
+      updated_at: "2026-09-24T10:00:00Z" }], { "x-next-page": "" });
+    if (url.pathname.endsWith("/merge_requests")) return rows([{ iid: 10, state: "opened", title: "Review the fix",
+      sha: "a".repeat(40), updated_at: "2026-09-24T10:00:00Z" }], { "x-next-page": "" });
+    if (url.pathname.endsWith("/merge_requests/10")) return rows({ iid: 10, state: "opened", title: "Review the fix",
+      sha: "a".repeat(40), updated_at: "2026-09-24T10:00:00Z" });
+    res.writeHead(404); res.end("fixture endpoint not found");
+  });
+  await new Promise<void>(ready => external!.listen(0, "127.0.0.1", ready));
+  const site = `http://127.0.0.1:${(external.address() as AddressInfo).port}`;
+  isolated = await launchVerificationServer(process.env);
+  const api = async (method: string, path: string, body?: unknown) => {
+    const response = await fetch(`${isolated!.info.url}${path}`, { method,
+      headers: body ? { "content-type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined });
+    return { status: response.status, body: await response.json() as any };
+  };
+  const bot = (await api("POST", "/api/bots", { name: "Delivery lead", section: "Delivery",
+    modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } })).body.bot;
+  const room = (await api("POST", "/api/groups", { name: "Delivery backlog", section: "Delivery", memberIds: [bot.id],
+    setup: { bulletin: "", defaultResponder: { kind: "member", botId: bot.id } } })).body.group;
+  expect((await api("POST", "/api/task-connections", { id: "gitlab-fixture", connectorId: "gitlab", label: "GitLab fixture",
+    settings: { site, project: "acme/app" }, secrets: { token: "fixture" }, sections: ["Delivery"], enabled: true })).status).toBe(201);
+  return { api, bot, room, writes };
+}
+
 describe("isolated OpenMausBot team backlog fixture", () => {
   it("turns the exact misspelled outcome into one completed mission after a real complete empty scan", async () => {
     const { api, bot, room, writes } = await fixture(false);
@@ -85,6 +119,24 @@ describe("isolated OpenMausBot team backlog fixture", () => {
     expect(overview.body.entries.some((entry: { id: string }) => entry.id === goal.id)).toBe(true);
     const again = await api("POST", "/api/goals", { ownerBotId: bot.id, sourceThreadId: room.threadId, objective });
     expect(again).toMatchObject({ status: 200, body: { goal: { id: goal.id } } });
+    expect(writes).toEqual([]);
+  }, 35_000);
+
+  it("inventories GitLab issues and MRs for a GitLab-only team without asking for Jira", async () => {
+    const { api, bot, room, writes } = await gitlabOnlyFixture();
+    const created = await api("POST", "/api/goals", { ownerBotId: bot.id, sourceThreadId: room.threadId,
+      objective: "finish our current GitLab merge requests and issues" });
+    expect(created.status).toBe(201);
+    await expect.poll(async () => {
+      const goal = (await api("GET", `/api/goals/${created.body.goal.id}`)).body.goal;
+      return goal.teamBacklog.scan.itemCount;
+    }, { timeout: 12_000 }).toBe(2);
+    const goal = (await api("GET", `/api/goals/${created.body.goal.id}`)).body.goal;
+    expect(goal.teamBacklog.scopes).toEqual([expect.objectContaining({ connectorId: "gitlab" })]);
+    expect(goal.teamBacklog.choices).toEqual([]);
+    expect(goal.teamBacklog.targets.map((target: { externalId: string }) => target.externalId).sort())
+      .toEqual(["acme/app!10", "acme/app#71"]);
+    expect(goal.status).not.toBe("needs-input");
     expect(writes).toEqual([]);
   }, 35_000);
 });

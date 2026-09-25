@@ -3,8 +3,11 @@ import { Check, ChevronRight, RefreshCw } from "lucide-react";
 import { api, openThread, useStore } from "@/state/store";
 import { formatQuestionAnswers } from "../../shared/ask-question";
 import { reviewedSkillSha256 } from "../../shared/skill-request";
+import { canSubmitScopeChoice, scopeChoiceLabel } from "../../shared/team-backlog";
+import type { BacklogScope } from "../../shared/team-backlog";
 import type { WorkOverview, WorkOverviewCard, WorkOverviewEntry, WorkQueue } from "../../shared/work-overview";
 import { SkillRequestPreview } from "./SkillRequestPreview";
+import { loadTaskConnectors, type TaskConnectorManifest } from "./work/model";
 
 const labels: Record<WorkQueue, string> = {
   "needs-you": "Needs You", waiting: "Waiting on Others", working: "Working", completed: "Completed",
@@ -79,10 +82,36 @@ export function WorkCard({ pending, onResolved }: { pending: WorkOverviewCard; o
   </div>;
 }
 
-function WorkRow({ entry, cards, refresh }: { entry: WorkOverviewEntry; cards: WorkOverviewCard[]; refresh: () => Promise<void> }) {
+export function WorkScopeForm({
+  choices, connectors = [], selected, busy, onChange, onSubmit,
+}: {
+  choices: BacklogScope[];
+  connectors?: readonly TaskConnectorManifest[];
+  selected: string[];
+  busy?: boolean;
+  onChange: (ids: string[]) => void;
+  onSubmit: () => void;
+}) {
+  return <form className="mt-3 space-y-2" onSubmit={event => { event.preventDefault(); onSubmit(); }}>
+    <p className="text-sm">Choose the team’s inventory scopes:</p>
+    {choices.map(choice => {
+      const connector = connectors.find(item => item.id === choice.connectorId);
+      return <label key={choice.id} className="flex items-start gap-2 text-sm"><input type="checkbox" checked={selected.includes(choice.id)}
+        onChange={event => onChange(event.target.checked ? [...selected, choice.id] : selected.filter(id => id !== choice.id))} />
+        <span>{scopeChoiceLabel(choice, connector?.name)} · {choice.query}</span></label>;
+    })}
+    <button type="submit" disabled={busy || !canSubmitScopeChoice(selected, choices)}
+      className="rounded bg-accent px-3 py-1.5 text-sm text-white disabled:opacity-40">Use selected scopes</button>
+  </form>;
+}
+
+function WorkRow({ entry, cards, refresh, connectors }: {
+  entry: WorkOverviewEntry; cards: WorkOverviewCard[]; refresh: () => Promise<void>;
+  connectors: readonly TaskConnectorManifest[];
+}) {
   const { state, dispatch } = useStore();
   const [answer, setAnswer] = useState("");
-  const [selected, setSelected] = useState<string[]>(entry.choices?.filter(choice => choice.connectorId === "jira").map(choice => choice.id) ?? []);
+  const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const action = async (path: string, body: unknown, method = "POST") => {
@@ -112,17 +141,9 @@ function WorkRow({ entry, cards, refresh }: { entry: WorkOverviewEntry; cards: W
     {entry.gates?.map((gate, index) => <p key={`${gate.kind}:${gate.identity ?? ""}:${index}`} className="mt-2 text-xs text-warning">
       {gate.kind}: {gate.detail} · Decision-maker: {gate.decisionMaker}
     </p>)}
-    {entry.canChooseScope && entry.choices?.length ? <form className="mt-3 space-y-2" onSubmit={event => {
-      event.preventDefault(); void action(`/api/goals/${entry.id}/scope-choice`, { expectedRevision: entry.revision, scopeIds: selected });
-    }}>
-      <p className="text-sm">Choose the team’s Jira and GitLab scopes:</p>
-      {entry.choices.map(choice => <label key={choice.id} className="flex items-start gap-2 text-sm"><input type="checkbox" checked={selected.includes(choice.id)}
-        onChange={event => setSelected(values => event.target.checked ? [...values, choice.id] : values.filter(id => id !== choice.id))} />
-        <span>{choice.label} · {choice.query}</span></label>)}
-      <button type="submit" disabled={busy || !selected.some(id => entry.choices?.find(choice => choice.id === id)?.connectorId === "jira") ||
-        !selected.some(id => entry.choices?.find(choice => choice.id === id)?.connectorId === "gitlab")}
-        className="rounded bg-accent px-3 py-1.5 text-sm text-white disabled:opacity-40">Use selected scopes</button>
-    </form> : null}
+    {entry.canChooseScope && entry.choices?.length ? <WorkScopeForm choices={entry.choices} connectors={connectors}
+      selected={selected} busy={busy} onChange={setSelected}
+      onSubmit={() => { void action(`/api/goals/${entry.id}/scope-choice`, { expectedRevision: entry.revision, scopeIds: selected }); }} /> : null}
     {entry.canAnswerTask && <form className="mt-3 flex gap-2" onSubmit={event => {
       event.preventDefault(); if (answer.trim()) void action(`/api/work-items/${entry.id}/answer`, { expectedRevision: entry.revision, text: answer.trim() });
     }}><input aria-label="Task answer" value={answer} onChange={event => setAnswer(event.target.value)}
@@ -144,6 +165,7 @@ export function WorkPage() {
   const [teamOptions, setTeamOptions] = useState<string[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [connectors, setConnectors] = useState<TaskConnectorManifest[]>([]);
   const serial = useRef(0);
   const refresh = useCallback(async () => {
     const request = ++serial.current;
@@ -162,6 +184,7 @@ export function WorkPage() {
   }, [team, status, pages]);
   useEffect(() => {
     let live = true;
+    void loadTaskConnectors(path => api(path)).then(list => { if (live) setConnectors(list); });
     const update = () => { void refresh().catch(cause => { if (live) {
       setError(cause instanceof Error ? cause.message : String(cause)); setLoading(false);
     } }); };
@@ -197,7 +220,7 @@ export function WorkPage() {
             {queue === "needs-you" && <Check size={17} className="text-accent" />}{labels[queue]}
             <span className="text-xs text-ink-secondary">{overview.counts[queue]}</span>
           </h2>
-          {entries.length ? entries.map(entry => <WorkRow key={entry.id} entry={entry}
+          {entries.length ? entries.map(entry => <WorkRow key={entry.id} entry={entry} connectors={connectors}
             cards={overview.cards.filter(card => card.entryId === entry.id)} refresh={() => refresh()} />)
             : <p className="text-sm text-ink-secondary">No visible items in this queue.</p>}
         </section>;

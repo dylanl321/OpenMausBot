@@ -75,10 +75,39 @@ describe("ongoing goal accounting", () => {
     expect(requiresExternalInventory("Close all Jira work for PAY-123 and merge repo/app!15")).toBe(true);
     expect(requiresExternalInventory("Close all Jira issues")).toBe(true);
     expect(requiresExternalInventory("Merge all GitLab MRs")).toBe(true);
-    expect(isTeamBacklogObjective("Close all Jira issues")).toBe(false);
+    expect(isTeamBacklogObjective("Close all Jira issues")).toBe(true);
+    expect(isTeamBacklogObjective("finish our current GitLab merge requests")).toBe(true);
+    expect(isTeamBacklogObjective("close all Plane work")).toBe(true);
+    expect(isTeamBacklogObjective("finish our current unfinished work", { hasQueryCapableConnection: true })).toBe(true);
+    expect(isTeamBacklogObjective("finish our current unfinished work")).toBe(false);
     expect(isTeamBacklogObjective("Close all Jira work for PAY-123 and merge repo/app!15")).toBe(false);
     expect(isTeamBacklogObjective("finish our current Jira work and merge the MRs")).toBe(true);
     expect(requiresExternalInventory("Verify an artifact")).toBe(false);
+  });
+
+  it("accepts a one-sided inventory choice and restamps kinds from the selected mix", () => {
+    const { goals } = fixture();
+    const goal = goals.create({ ownerBotId: "lead", sourceThreadId: "scope-room",
+      objective: "finish our current GitLab merge requests" }, "scope-exec", {
+      ...emptyTeamBacklog("Delivery"),
+      choices: [
+        { id: "jira", connectorId: "jira", connectionId: "jira-main", query: "project = PAY", label: "Jira",
+          kinds: ["work_item"] },
+        { id: "repo", connectorId: "gitlab", connectionId: "gitlab-main", query: "acme/app", label: "GitLab",
+          kinds: ["change_request"] },
+      ],
+      gates: [{ kind: "scope", detail: "Choose scopes", decisionMaker: "Requester" }],
+    });
+    const updated = goals.chooseBacklogScopes(goal, goal.revision, ["repo"]);
+    expect(updated.status).toBe("working");
+    expect(updated.teamBacklog?.scopes).toEqual([expect.objectContaining({
+      connectorId: "gitlab", query: "acme/app", kinds: ["work_item", "change_request"],
+    })]);
+    expect(updated.teamBacklog?.choices).toEqual([]);
+    expect(updated.acceptanceCriteria).toEqual([
+      "Every scoped work item is evidenced and done",
+      "Every scoped change request is merged at a reviewed head",
+    ]);
   });
 
   it("pauses after repeated unsupported completion claims instead of spinning", () => {

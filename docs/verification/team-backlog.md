@@ -5,7 +5,7 @@ loopback-only synthetic Jira/GitLab service; it never connects to an account or
 the user's running app.
 
 ```sh
-pnpm exec vitest run server/work-coordination.test.ts server/work-items.test.ts server/connectors/jira/jira.test.ts server/connectors/gitlab/gitlab.test.ts server/ongoing-goals.test.ts server/ongoing-goals.e2e.test.ts server/team-backlog.e2e.test.ts server/team-backlog.test.ts server/team-backlog-actions.test.ts server/routes/work-overview.test.ts src/components/WorkPage.test.ts --maxWorkers=2
+pnpm exec vitest run server/work-coordination.test.ts server/work-items.test.ts server/connectors/jira/jira.test.ts server/connectors/gitlab/gitlab.test.ts server/ongoing-goals.test.ts server/ongoing-goals.e2e.test.ts server/team-backlog.e2e.test.ts server/team-backlog.test.ts server/team-work-kits.test.ts server/team-backlog-actions.test.ts server/routes/work-overview.test.ts src/components/WorkPage.test.ts --maxWorkers=2
 ```
 
 With the pinned UI browser installed, run the real Work renderer against its
@@ -25,8 +25,21 @@ deduplication against shared work hubs.
 
 The e2e case sends the exact misspelled backlog prompt into a team with an
 assigned Jira board. It proves that an empty backlog is complete only after
-both external lists finish, and that open work instead appears in the Work
+the scoped inventory finishes, and that open work instead appears in the Work
 overview without any synthetic Jira transition or GitLab merge.
+
+A mission is ready when it has at least one query-capable scope and no
+unresolved choices. Jira-only, GitLab-only, and Plane-only teams can leave
+`needs-input` after a valid one-sided choice. The default `jira-gitlab` kit
+still inventories Jira `work_item`s and GitLab `change_request`s only (GitLab
+issues stay dropped) until the team uses a `gitlab` kit or adds `work_item`
+to that scope. GitLab-only fixtures include issues and merge requests.
+
+Verify the kind-driven suites with:
+
+```sh
+pnpm exec vitest run server/team-backlog.test.ts server/team-work-kits.test.ts server/team-backlog.e2e.test.ts server/ongoing-goals.test.ts src/components/WorkPage.test.ts --maxWorkers=2
+```
 
 **Writes stay off unless both locks are set.** Default config and default
 connections never send PUT/POST/PATCH/DELETE for a merge or Jira Done

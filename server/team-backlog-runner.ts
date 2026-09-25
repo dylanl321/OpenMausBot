@@ -6,7 +6,9 @@ import type { StoredConnection } from "./connectors/types.ts";
 import {
   mergeReviewedRequest, missionActionFor, teamMissionWriteAllowed, transitionEvidencedJiraIssue,
 } from "./team-backlog-actions.ts";
-import { backlogGate, inferTeamBacklog, scanTeamBacklog } from "./team-backlog.ts";
+import { MISSION_KINDS } from "../shared/team-backlog.ts";
+import { backlogGate, backlogReadyToRun, inferTeamBacklog, scanTeamBacklog } from "./team-backlog.ts";
+import { scopeKinds } from "./team-work-kits.ts";
 import type { OngoingGoals } from "./ongoing-goals.ts";
 import type { GroupRecord } from "./store.ts";
 import { sectionKey } from "./store.ts";
@@ -15,6 +17,13 @@ import type { WorkRecord } from "./work-items.ts";
 
 const MAX_STEPS = 4;
 const MAX_GATE_CHECKS = 8;
+
+function inventoryNoun(scopes: TeamBacklog["scopes"]): string {
+  const kinds = MISSION_KINDS.filter(kind => scopes.some(scope => scopeKinds(scope).includes(kind)));
+  if (kinds.includes("work_item") && kinds.includes("change_request")) return "work items and change requests";
+  if (kinds.includes("change_request")) return "change requests";
+  return "work items";
+}
 
 function workspaceWritesEnabled(deps: BacklogRunnerDeps): boolean {
   const flag = deps.teamMissionWrites;
@@ -80,16 +89,14 @@ export async function advanceTeamBacklog(goal: OngoingGoal, deps: BacklogRunnerD
       return;
     }
     let state: TeamBacklog = goal.teamBacklog;
-    if (!state.scopes.some(scope => scope.connectorId === "jira") ||
-        !state.scopes.some(scope => scope.connectorId === "gitlab")) {
+    if (state.scopes.length < 1) {
       state = inferTeamBacklog({ section: state.section, ownerBotId: goal.ownerBotId,
         groups: deps.groups(), watches: deps.watches(), connections: deps.connections(),
         work: [...deps.coordination.items.records.values()] });
       deps.goals.recordBacklog(goal, state);
     }
-    if (state.choices.length || !state.scopes.some(scope => scope.connectorId === "jira") ||
-        !state.scopes.some(scope => scope.connectorId === "gitlab")) {
-      finish("needs-input", state.gates[0]?.detail ?? "Choose the team's Jira board and GitLab repository.");
+    if (!backlogReadyToRun(state)) {
+      finish("needs-input", state.gates[0]?.detail ?? "Choose the team's inventory scopes.");
       return;
     }
     state = await scanTeamBacklog(state, deps.connections(), deps.fetchImpl);
@@ -243,7 +250,7 @@ export async function advanceTeamBacklog(goal: OngoingGoal, deps: BacklogRunnerD
     const changedDuringScan = targets.some(target => target.taskId &&
       (deps.coordination.items.records.get(target.taskId)?.updatedAt ?? 0) > (state.scan.attemptedAt ?? 0));
     if (current && !gates.length && !changedExternally && !changedDuringScan && steps === 0) {
-      finish("completed", `Fresh complete inventory verified ${targets.length} Jira issues and MRs.`, undefined,
+      finish("completed", `Fresh complete inventory verified ${targets.length} scoped ${inventoryNoun(state.scopes)}.`, undefined,
         [`inventory:${state.scan.completedAt}`, ...targets.slice(0, 19).map(target => `${target.identity}:${target.result ?? "observed done"}`)]);
       return;
     }

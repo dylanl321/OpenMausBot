@@ -1,8 +1,10 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { canSubmitScopeChoice } from "../../shared/team-backlog";
+import type { BacklogScope } from "../../shared/team-backlog";
 import type { WorkOverviewCard } from "../../shared/work-overview";
-import { WorkCard } from "./WorkPage";
+import { WorkCard, WorkScopeForm } from "./WorkPage";
 
 const pending: WorkOverviewCard = { entryId: "work", threadId: "thread", messageId: "message",
   canAct: true, decisionMaker: "Requester", card: { title: "Review command",
@@ -29,5 +31,37 @@ describe("Work inline decisions", () => {
     expect(question).toContain("Which project?");
     expect(question).toContain("Send answer");
     expect(question).not.toContain("Approve once");
+  });
+});
+
+describe("Work inventory scope form", () => {
+  const gitlab: BacklogScope = {
+    id: "repo", connectorId: "gitlab", connectionId: "gitlab-main", query: "acme/app",
+    label: "App repo", kinds: ["work_item", "change_request"],
+  };
+  const jira: BacklogScope = {
+    id: "board", connectorId: "jira", connectionId: "jira-main", query: "project = PAY",
+    label: "PAY board", kinds: ["work_item"],
+  };
+
+  it("enables submit for a valid one-sided choice and labels scopes from manifests", () => {
+    expect(canSubmitScopeChoice(["repo"], [gitlab, jira])).toBe(true);
+    expect(canSubmitScopeChoice(["board"], [gitlab, jira])).toBe(true);
+    expect(canSubmitScopeChoice([], [gitlab, jira])).toBe(false);
+    const html = renderToStaticMarkup(createElement(WorkScopeForm, {
+      choices: [gitlab], selected: ["repo"], connectors: [{ id: "gitlab", name: "GitLab" }],
+      onChange() {}, onSubmit() {},
+    }));
+    expect(html).toContain("Choose the team’s inventory scopes");
+    expect(html).toContain("App repo · GitLab");
+    expect(html).not.toContain('disabled=""');
+    const idle = renderToStaticMarkup(createElement(WorkScopeForm, {
+      choices: [gitlab, jira], selected: [], connectors: [
+        { id: "gitlab", name: "GitLab" }, { id: "jira", name: "Jira" },
+      ],
+      onChange() {}, onSubmit() {},
+    }));
+    expect(idle).toContain('disabled=""');
+    expect(idle).toContain("PAY board · Jira");
   });
 });

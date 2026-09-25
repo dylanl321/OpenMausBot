@@ -7,7 +7,9 @@ import {
   type OngoingGoal,
 } from "../shared/ongoing-goal.ts";
 import type { WorkRecord, WorkSource } from "./work-items.ts";
-import type { TeamBacklog } from "../shared/team-backlog.ts";
+import { criteriaFromScopes, canSubmitScopeChoice, type TeamBacklog } from "../shared/team-backlog.ts";
+import { CONNECTORS } from "./connectors/registry.ts";
+import { stampScopes } from "./team-work-kits.ts";
 
 const DELAYS = [5, 15, 60, 360].map(minutes => minutes * 60_000);
 const MAX_GOALS = 1000;
@@ -26,18 +28,31 @@ export function referencedGoalWork(objective: string, items: readonly WorkRecord
   return matches.length === 1 ? matches[0] : undefined;
 }
 
-export function requiresExternalInventory(objective: string): boolean {
-  return /\ball\b/i.test(objective) && /\b(?:jira|gitlab|merge requests?|mrs?)\b/i.test(objective) ||
-    isTeamBacklogObjective(objective);
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function isTeamBacklogObjective(objective: string): boolean {
+function namesConnectorOrMergeRequests(objective: string): boolean {
+  if (/\bmerge requests?\b/i.test(objective) || /\bmrs?\b/i.test(objective)) return true;
+  return CONNECTORS.some(connector => {
+    const id = escapeRegExp(connector.manifest.id);
+    const name = escapeRegExp(connector.manifest.name);
+    return new RegExp(`\\b${id}\\b`, "i").test(objective) || new RegExp(`\\b${name}\\b`, "i").test(objective);
+  });
+}
+
+export function requiresExternalInventory(objective: string, options?: { hasQueryCapableConnection?: boolean }): boolean {
+  return /\ball\b/i.test(objective) && namesConnectorOrMergeRequests(objective) ||
+    isTeamBacklogObjective(objective, options);
+}
+
+export function isTeamBacklogObjective(objective: string, options?: { hasQueryCapableConnection?: boolean }): boolean {
   // A named issue or MR is a specific deliverable. Never widen that request
   // into authority over every project item just because it also says "all".
   if (/\b[A-Z][A-Z0-9_]*-\d+\b/i.test(objective) || /(?:[\w.-]+\/)+[\w.-]+!\d+/.test(objective) ||
       /(?:^|[^\w])!\d+\b/.test(objective)) return false;
-  return /\b(?:all|current|our|backlog|unfinished)\b/i.test(objective) && /\bjira\b/i.test(objective) &&
-    /\b(?:gitlab|merge requests?|mrs?|merge)\b/i.test(objective);
+  if (!/\b(?:all|current|our|backlog|unfinished)\b/i.test(objective)) return false;
+  return namesConnectorOrMergeRequests(objective) || options?.hasQueryCapableConnection === true;
 }
 
 export function inGoalScope(goal: OngoingGoal, identity: string): boolean {
@@ -172,7 +187,7 @@ export class OngoingGoals {
       kind: teamBacklog ? "mission" : input.kind ?? "deliverable",
       scope: input.scope ?? `goal:${input.requestId ?? randomUUID()}:`,
       acceptanceCriteria: input.acceptanceCriteria ?? (teamBacklog
-        ? ["Every current Jira issue in the team scope is evidenced and done", "Every scoped MR is merged at an authorized, reviewed head"]
+        ? criteriaFromScopes(teamBacklog.scopes.length ? teamBacklog.scopes : teamBacklog.choices)
         : [input.objective.slice(0, 1000)]),
       criteriaPending: !input.acceptanceCriteria && !teamBacklog,
       status: "working", detail: "Queued for the coordinator", nextWakeAt: at,
@@ -281,14 +296,14 @@ export class OngoingGoals {
     if (!(active(goal) || goal.status === "needs-input") || !goal.teamBacklog || !goal.teamBacklog.choices.length) throw new Error("There is no pending scope choice");
     if (goal.revision !== expectedRevision) throw new Error("Goal revision changed; read the current choices");
     const choices = goal.teamBacklog.choices;
-    if (!ids.length || new Set(ids).size !== ids.length || ids.some(id => !choices.some(choice => choice.id === id))) {
-      throw new Error("Choose only the listed Jira and GitLab scopes");
+    if (!canSubmitScopeChoice(ids, choices) || new Set(ids).size !== ids.length) {
+      throw new Error("Choose one or more of the listed inventory scopes");
     }
-    const selected = choices.filter(choice => ids.includes(choice.id));
-    if (!selected.some(scope => scope.connectorId === "jira") || !selected.some(scope => scope.connectorId === "gitlab")) {
-      throw new Error("Choose a Jira board/project and a GitLab repository");
-    }
-    return this.update(goal, { status: "working", teamBacklog: { ...goal.teamBacklog, scopes: selected, choices: [], targets: [], gates: [],
+    const selected = stampScopes(choices.filter(choice => ids.includes(choice.id)));
+    return this.update(goal, {
+      status: "working",
+      acceptanceCriteria: criteriaFromScopes(selected),
+      teamBacklog: { ...goal.teamBacklog, scopes: selected, choices: [], targets: [], gates: [],
       scan: { status: "not-scanned", itemCount: 0, errors: [] } }, nextWakeAt: this.now() });
   }
 
